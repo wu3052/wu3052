@@ -31,8 +31,10 @@ BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 # 🔹 LINE Messaging API 模組
 # =====================
 def send_line_message(msg):
+    # 從 Secrets 讀取 (請確保後台名稱為 LINE_ACCESS_TOKEN 與 LINE_USER_ID)
     token = st.secrets.get("LINE_ACCESS_TOKEN")
     user_id = st.secrets.get("LINE_USER_ID")
+    
     if not token or not user_id:
         return
     
@@ -46,9 +48,12 @@ def send_line_message(msg):
         "messages": [{"type": "text", "text": msg}]
     }
     try:
-        requests.post(url, json=payload, timeout=5)
-    except:
-        pass
+        # 增加狀態碼檢查，若失敗可在 Streamlit Logs 查看
+        res = requests.post(url, json=payload, timeout=10)
+        if res.status_code != 200:
+            print(f"LINE 發送失敗: {res.text}")
+    except Exception as e:
+        print(f"LINE 連線錯誤: {e}")
 
 # =====================
 # 🔹 數據獲取模組
@@ -198,10 +203,10 @@ with st.sidebar:
     if secret_token:
         fm_token = secret_token
     else:
-        fm_token = st.text_input("請輸入 FinMind Token", type="password", help="在 Streamlit Cloud 設定 Secrets 可隱藏此框")
+        fm_token = st.text_input("請輸入 FinMind Token", type="password")
     
     if not fm_token:
-        st.warning("⚠️ 尚未偵測到 Token，請檢查 Secrets 或手動輸入。")
+        st.warning("⚠️ 尚未偵測到 Token")
 
     st.divider()
     st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
@@ -209,23 +214,30 @@ with st.sidebar:
     
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟自動監控 (保持網頁開啟)")
+    
+    # LINE 測試按鈕：用來排除通知失敗的原因
+    if st.button("🔔 測試 LINE 通知"):
+        send_line_message("🏹 股票狙擊手：連線測試成功！")
+        st.toast("測試訊息已發出，請檢查手機")
+        
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
 
-# 掃描邏輯封裝
+# 掃描邏輯
 def perform_scan():
+    if not fm_token:
+        st.error("請先提供 FinMind Token")
+        return
+
     scan_results = []
     
-    st.subheader(f"📊 掃描報告 - 最後更新: {datetime.now().strftime('%H:%M:%S')}")
-    
     # --- 1. 大盤戰情區 ---
+    st.subheader(" 🌐 台股加權指數 (TAIEX)")
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df)
         m_last = m_df.iloc[-1]
         score = m_last["score"]
-        if score >= 60: cmd, cmd_class = "🚀 強力買進", "buy-signal"
-        elif score >= 40: cmd, cmd_class = "🤏 少量買進", "buy-signal"
-        else: cmd, cmd_class = "💀 分批賣出", "sell-signal"
+        cmd, cmd_class = ("🚀 強力買進", "buy-signal") if score >= 60 else (("🤏 少量買進", "buy-signal") if score >= 40 else ("💀 分批賣出", "sell-signal"))
 
         col1, col2 = st.columns([1, 2])
         with col1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
@@ -255,9 +267,9 @@ def perform_scan():
         if sid in snipe_list: tags.append("【狙擊個股通知】")
         tag_str = "".join(tags)
 
-        # LINE 推播判斷
+        # 訊號觸發通知
         if last["warning"] != "趨勢穩定中" or last["star_signal"]:
-            line_msg = f"{tag_str}\n代號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}"
+            line_msg = f"{tag_str}\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}"
             if last["star_signal"]: line_msg += "\n🏹 觸發星級發動點買入訊號!"
             send_line_message(line_msg)
 
@@ -272,25 +284,29 @@ def perform_scan():
         </div>
         """, unsafe_allow_html=True)
         
-        with st.expander(f"查看 {sid} 圖表"):
+        with st.expander(f"查看 {sid} {s_name} 圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {s_name}"), use_container_width=True)
 
         scan_results.append({"代碼": sid, "名稱": s_name, "收盤價": last['close'], "分數": last['score'], "戰情提醒": last['warning']})
     
     if scan_results:
         st.subheader("🏆 本次掃描排行")
-        st.dataframe(pd.DataFrame(scan_results).sort_values("分數", ascending=False), use_container_width=True)
+        st.dataframe(pd.DataFrame(scan_results).sort_values("分數", ascending=False), use_container_width=True, hide_index=True)
 
-# 執行邏輯
-if analyze_btn:
-    perform_scan()
+# 介面執行與自動監控循環
+placeholder = st.empty()
 
-if auto_monitor:
-    st.toast("🛡️ 自動監控已啟動")
-    # 修正：直接執行一次，然後等待 rerun
-    perform_scan()
-    time.sleep(interval * 60)
-    st.rerun()
+if analyze_btn or auto_monitor:
+    if auto_monitor:
+        while True:
+            with placeholder.container():
+                perform_scan()
+                st.caption(f"🔄 自動監控中... 下次更新時間: {(datetime.now() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
+            time.sleep(interval * 60)
+            st.rerun()
+    else:
+        with placeholder.container():
+            perform_scan()
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"股票狙擊手 2026/04/14 | 狀態: {'監控中' if auto_monitor else '手動掃描'}")
+st.sidebar.caption(f"最後更新: {datetime.now().strftime('%H:%M:%S')}")
