@@ -189,28 +189,48 @@ def plot_advanced_chart(df, title=""):
     return fig
 
 # =====================
-# 🚀 主應用程式
+# 📂 Google Sheets 數據讀取模組
 # =====================
-if 'search_codes' not in st.session_state:
-    st.session_state.search_codes = ""
-if 'inventory_codes' not in st.session_state:
-    st.session_state.inventory_codes = "6257 2303 8028 2811 8374 3019 6188 6727 6643 2382 00679B"
+def get_list_from_sheets():
+    sheet_id = st.secrets.get("MONITOR_SHEET_ID")
+    if not sheet_id:
+        # 如果沒設定 Sheet ID，就回傳空字串或預設值
+        return "", ""
+    
+    # 這裡利用 Google Sheets 的 CSV 導出功能，不需要 API Key 即可讀取公開(檢視者)的表格
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+    try:
+        df_sheet = pd.read_csv(url)
+        # 確保代號轉為字串並移除空白
+        snipe = " ".join(df_sheet['snipe_list'].dropna().astype(str).tolist())
+        inventory = " ".join(df_sheet['inventory_list'].dropna().astype(str).tolist())
+        return snipe, inventory
+    except Exception as e:
+        st.error(f"讀取 Google Sheets 失敗: {e}")
+        return "", ""
+
+# =====================
+# 🚀 整合進主程式
+# =====================
+
+# 在初始化 Session State 的地方改用 Sheets 資料
+if 'search_codes' not in st.session_state or st.sidebar.button("🔄 同步 Google 表格清單"):
+    with st.spinner("同步雲端清單中..."):
+        s_list, i_list = get_list_from_sheets()
+        st.session_state.search_codes = s_list
+        st.session_state.inventory_codes = i_list
+    st.toast("✅ 清單已同步")
 
 with st.sidebar:
     st.header("🛡️ 指揮中心設定")
+    # ... (其餘 Token 設定不變)
     
-    secret_token = st.secrets.get("FINMIND_TOKEN")
-    if secret_token:
-        fm_token = secret_token
-    else:
-        fm_token = st.text_input("請輸入 FinMind Token", type="password")
-    
-    if not fm_token:
-        st.warning("⚠️ 尚未偵測到 Token")
-
     st.divider()
-    st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
-    st.session_state.inventory_codes = st.text_area("📦 庫存股清單", value=st.session_state.inventory_codes)
+    # 顯示從 Sheet 抓到的內容，也可以手動臨時微調
+    st.session_state.search_codes = st.text_area("🎯 狙擊個股清單 (來自雲端)", value=st.session_state.search_codes)
+    st.session_state.inventory_codes = st.text_area("📦 庫存股清單 (來自雲端)", value=st.session_state.inventory_codes)
+    
+    # ... (其餘監控頻率與按鈕邏輯)
     
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟自動監控 (保持網頁開啟)")
