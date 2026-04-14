@@ -186,7 +186,6 @@ def plot_advanced_chart(df, title=""):
 # =====================
 # 🚀 主應用程式
 # =====================
-# 初始化 Session State 用於持久化存儲代碼
 if 'search_codes' not in st.session_state:
     st.session_state.search_codes = ""
 if 'inventory_codes' not in st.session_state:
@@ -195,22 +194,16 @@ if 'inventory_codes' not in st.session_state:
 with st.sidebar:
     st.header("🛡️ 指揮中心設定")
     
-    # 1. 嘗試從 Secrets 讀取
     secret_token = st.secrets.get("FINMIND_TOKEN")
-    
-    # 2. 判斷邏輯：有 Secret 就直接用，沒有才顯示輸入框
     if secret_token:
         fm_token = secret_token
-        # 這裡不放 st.success 就不會出現任何提示，介面最乾淨
     else:
-        # 只有在 Secrets 沒設定時，才會出現這個醜醜的輸入框
         fm_token = st.text_input("請輸入 FinMind Token", type="password", help="在 Streamlit Cloud 設定 Secrets 可隱藏此框")
     
     if not fm_token:
         st.warning("⚠️ 尚未偵測到 Token，請檢查 Secrets 或手動輸入。")
 
     st.divider()
-    # ... 後面維持不變 (狙擊個股清單等)
     st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存股清單", value=st.session_state.inventory_codes)
     
@@ -222,8 +215,9 @@ with st.sidebar:
 def perform_scan():
     scan_results = []
     
+    st.subheader(f"📊 掃描報告 - 最後更新: {datetime.now().strftime('%H:%M:%S')}")
+    
     # --- 1. 大盤戰情區 ---
-    st.subheader(" 🌐 台股加權指數 (TAIEX)")
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df)
@@ -243,7 +237,7 @@ def perform_scan():
     # --- 2. 個股掃描 ---
     snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
     inv_list = [c for c in re.split(r'[\s\n,]+', st.session_state.inventory_codes) if c]
-    all_codes = list(set(snipe_list + inv_list))
+    all_codes = sorted(list(set(snipe_list + inv_list)))
     
     stock_info = get_stock_info()
     
@@ -255,21 +249,18 @@ def perform_scan():
         
         s_row = stock_info[stock_info["stock_id"] == sid]
         s_name = s_row["stock_name"].values[0] if not s_row.empty else "未知"
-        industry = s_row["industry_category"].values[0] if not s_row.empty else "N/A"
         
-        # 標籤判定
         tags = []
         if sid in inv_list: tags.append("【庫存通知】")
         if sid in snipe_list: tags.append("【狙擊個股通知】")
         tag_str = "".join(tags)
 
-        # LINE 推播判斷 (當有警示訊息或發動點)
+        # LINE 推播判斷
         if last["warning"] != "趨勢穩定中" or last["star_signal"]:
             line_msg = f"{tag_str}\n代號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}"
             if last["star_signal"]: line_msg += "\n🏹 觸發星級發動點買入訊號!"
             send_line_message(line_msg)
 
-        # 介面渲染
         border = "#ff4b4b" if last["score"] >= 75 else "#28a745" if last["score"] <= 30 else "#adb5bd"
         st.markdown(f"""
         <div style="background: white; padding: 20px; border-left: 10px solid {border}; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 15px;">
@@ -290,17 +281,16 @@ def perform_scan():
         st.subheader("🏆 本次掃描排行")
         st.dataframe(pd.DataFrame(scan_results).sort_values("分數", ascending=False), use_container_width=True)
 
-# 運算觸發
+# 執行邏輯
 if analyze_btn:
     perform_scan()
 
 if auto_monitor:
     st.toast("🛡️ 自動監控已啟動")
-    while True:
-        st.empty() # 清除舊介面
-        perform_scan()
-        time.sleep(interval * 60)
-        st.rerun() # 重新執行 App 獲取最新資料
+    # 修正：直接執行一次，然後等待 rerun
+    perform_scan()
+    time.sleep(interval * 60)
+    st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"股票狙擊手 2026/04/14 | 最後更新: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"股票狙擊手 2026/04/14 | 狀態: {'監控中' if auto_monitor else '手動掃描'}")
