@@ -187,10 +187,19 @@ if 'search_codes' not in st.session_state:
 if 'inventory_codes' not in st.session_state:
     st.session_state.inventory_codes = "6257 2303 8028 2811 8374 3019 6188 6727 6643 2382 00679B"
 
+# --- 修正後的 Token 讀取邏輯 ---
 with st.sidebar:
     st.header("🛡️ 指揮中心設定")
-    # 優先從 secrets 讀取，沒有的話才顯示輸入框
-    fm_token = st.secrets.get("FINMIND_TOKEN", st.text_input("FinMind Token", type="password"))
+    
+    # 1. 檢查 Secrets 是否存在
+    secret_token = st.secrets.get("FINMIND_TOKEN")
+    
+    # 2. 如果 Secrets 有值，直接使用；沒有值才顯示輸入框
+    if secret_token:
+        fm_token = secret_token
+        st.success("✅ 已從 Secrets 自動載入 Token")
+    else:
+        fm_token = st.text_input("FinMind Token", type="password", help="請在 Streamlit Secrets 設定 FINMIND_TOKEN 以隱藏此框")
     
     st.divider()
     st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
