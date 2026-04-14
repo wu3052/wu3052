@@ -203,7 +203,7 @@ def plot_advanced_chart(df, title=""):
     return fig
 
 # =====================
-# 📂 Google Sheets 數據讀取模組
+# 📂 Google Sheets 數據讀取模組 (強化格式修正版)
 # =====================
 def get_list_from_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
@@ -212,14 +212,31 @@ def get_list_from_sheets():
     
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     try:
+        # 讀取 CSV
         df_sheet = pd.read_csv(url)
-        snipe = " ".join(df_sheet['snipe_list'].dropna().astype(str).tolist())
-        inventory = " ".join(df_sheet['inventory_list'].dropna().astype(str).tolist())
+        
+        # 定義一個處理格式的內部函數
+        def clean_codes(series):
+            if series is None or series.empty:
+                return []
+            # 1. 轉成字串 2. 去除 .0 (如果是浮點數) 3. 去除前後空白
+            codes = series.dropna().astype(str).tolist()
+            cleaned = [c.split('.')[0].strip() for c in codes if c.strip()]
+            return cleaned
+
+        snipe_list = clean_codes(df_sheet.get('snipe_list'))
+        inv_list = clean_codes(df_sheet.get('inventory_list'))
+        
+        snipe = " ".join(snipe_list)
+        inventory = " ".join(inv_list)
+        
+        # 偵錯用：在介面上方顯示一下抓到了什麼 (確認後可以刪除這行)
+        # st.toast(f"📥 抓取成功！狙擊：{snipe} | 庫存：{inventory}")
+        
         return snipe, inventory
     except Exception as e:
         st.error(f"讀取 Google Sheets 失敗: {e}")
         return "", ""
-
 # =====================
 # 🚀 整合進主程式
 # =====================
