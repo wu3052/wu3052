@@ -109,12 +109,15 @@ def analyze_strategy(df):
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_ratio"] = df["volume"] / df["vol_ma5"].replace(0, np.nan) 
     
-    # 關鍵位邏輯
+    # 關鍵位邏輯 (修正後)
+    # 死亡交叉定義：5MA 跌破 10MA
     df["dc_signal"] = (df["ma5"] < df["ma10"]) & (df["ma5"].shift(1) >= df["ma10"].shift(1))
+    # 黃金交叉定義：5MA 突破 10MA
     df["gc_signal"] = (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
 
-    # 使用 ffill 傳遞關鍵價位
+    # 上漲關鍵位：5,10死亡交叉點的股價 (ffill 傳遞直到下一個交叉)
     df["upward_key"] = df["close"].where(df["dc_signal"]).ffill()
+    # 下跌關鍵位：5,10黃金交叉點的股價 (ffill 傳遞直到下一個交叉)
     df["downward_key"] = df["close"].where(df["gc_signal"]).ffill()
 
     df["star_signal"] = False
@@ -138,6 +141,12 @@ def analyze_strategy(df):
     if row["close"] > row["ma5"] and prev_row["close"] <= prev_row["ma5"]: warnings.append("🏹 站上5MA(買點)")
     elif row["close"] < row["ma5"] and prev_row["close"] >= prev_row["ma5"]: warnings.append("⚠️ 跌破5MA(注意賣點)")
     
+    # 新增關鍵位提示
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev_row["close"] <= row["upward_key"]:
+        warnings.append("🎯 站上死亡交叉關鍵位(上漲買入)")
+    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev_row["close"] >= row["downward_key"]:
+        warnings.append("📉 跌破黃金交叉關鍵位(下跌賣出)")
+
     if row["vol_ratio"] > 2.0: warnings.append("🔥 量能爆發(2倍均量)")
     if row["hist"] > 0 and row["hist"] < prev_row["hist"]: warnings.append("🎯 目標達成/紅柱縮短")
     if row["bias_20"] > 10: warnings.append("⚠️ 乖離過高")
@@ -184,12 +193,14 @@ def plot_advanced_chart(df, title=""):
 
     # 【新增】上漲/下跌關鍵位
     last_row = df_plot.iloc[-1]
+    # 上漲關鍵位 (紅虛線) - 死亡交叉點
     if not pd.isna(last_row["upward_key"]):
         fig.add_trace(go.Scatter(x=df_plot["date"], y=[last_row["upward_key"]]*len(df_plot), 
-                                 name="上漲關鍵位", line=dict(color="rgba(255, 75, 75, 0.6)", width=2, dash="dash")), row=1, col=1)
+                                 name="上漲關鍵位(死叉收盤)", line=dict(color="rgba(255, 75, 75, 0.8)", width=2, dash="dash")), row=1, col=1)
+    # 下跌關鍵位 (綠虛線) - 黃金交叉點
     if not pd.isna(last_row["downward_key"]):
         fig.add_trace(go.Scatter(x=df_plot["date"], y=[last_row["downward_key"]]*len(df_plot), 
-                                 name="下跌關鍵位", line=dict(color="rgba(40, 167, 69, 0.6)", width=2, dash="dash")), row=1, col=1)
+                                 name="下跌關鍵位(金叉收盤)", line=dict(color="rgba(40, 167, 69, 0.8)", width=2, dash="dash")), row=1, col=1)
 
     # 發動點
     stars = df_plot[df_plot["star_signal"]]
@@ -203,7 +214,7 @@ def plot_advanced_chart(df, title=""):
     return fig
 
 # =====================
-# 📂 Google Sheets 數據讀取模組 (強化格式修正版)
+# 📂 Google Sheets 數據讀取模組
 # =====================
 def get_list_from_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
@@ -212,36 +223,27 @@ def get_list_from_sheets():
     
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     try:
-        # 讀取 CSV
         df_sheet = pd.read_csv(url)
-        
-        # 定義一個處理格式的內部函數
         def clean_codes(series):
             if series is None or series.empty:
                 return []
-            # 1. 轉成字串 2. 去除 .0 (如果是浮點數) 3. 去除前後空白
             codes = series.dropna().astype(str).tolist()
             cleaned = [c.split('.')[0].strip() for c in codes if c.strip()]
             return cleaned
 
         snipe_list = clean_codes(df_sheet.get('snipe_list'))
         inv_list = clean_codes(df_sheet.get('inventory_list'))
-        
         snipe = " ".join(snipe_list)
         inventory = " ".join(inv_list)
-        
-        # 偵錯用：在介面上方顯示一下抓到了什麼 (確認後可以刪除這行)
-        # st.toast(f"📥 抓取成功！狙擊：{snipe} | 庫存：{inventory}")
-        
         return snipe, inventory
     except Exception as e:
         st.error(f"讀取 Google Sheets 失敗: {e}")
         return "", ""
+
 # =====================
 # 🚀 整合進主程式
 # =====================
 
-# 【修正處】獲取 FinMind Token
 fm_token = st.secrets.get("FINMIND_TOKEN", "")
 
 if 'search_codes' not in st.session_state or st.sidebar.button("🔄 同步 Google 表格清單"):
