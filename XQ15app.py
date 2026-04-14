@@ -109,15 +109,11 @@ def analyze_strategy(df):
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_ratio"] = df["volume"] / df["vol_ma5"].replace(0, np.nan) 
     
-    # 關鍵位邏輯 (修正後)
-    # 死亡交叉定義：5MA 跌破 10MA
+    # 關鍵位邏輯
     df["dc_signal"] = (df["ma5"] < df["ma10"]) & (df["ma5"].shift(1) >= df["ma10"].shift(1))
-    # 黃金交叉定義：5MA 突破 10MA
     df["gc_signal"] = (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
 
-    # 上漲關鍵位：5,10死亡交叉點的股價 (ffill 傳遞直到下一個交叉)
     df["upward_key"] = df["close"].where(df["dc_signal"]).ffill()
-    # 下跌關鍵位：5,10黃金交叉點的股價 (ffill 傳遞直到下一個交叉)
     df["downward_key"] = df["close"].where(df["gc_signal"]).ffill()
 
     df["star_signal"] = False
@@ -141,7 +137,6 @@ def analyze_strategy(df):
     if row["close"] > row["ma5"] and prev_row["close"] <= prev_row["ma5"]: warnings.append("🏹 站上5MA(買點)")
     elif row["close"] < row["ma5"] and prev_row["close"] >= prev_row["ma5"]: warnings.append("⚠️ 跌破5MA(注意賣點)")
     
-    # 新增關鍵位提示
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev_row["close"] <= row["upward_key"]:
         warnings.append("🎯 站上死亡交叉關鍵位(上漲買入)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev_row["close"] >= row["downward_key"]:
@@ -195,7 +190,6 @@ def plot_advanced_chart(df, title=""):
     stars = df_plot[df_plot["star_signal"]]
     fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=14, color="#FFD700"), name="發動點"), row=1, col=1)
 
-    # MACD 柱狀圖搭配成交量視覺 (可依需求調整，此處維持原本 MACD)
     colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
 
@@ -203,6 +197,7 @@ def plot_advanced_chart(df, title=""):
     fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
     fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
     return fig
+
 # =====================
 # 📂 Google Sheets 數據讀取模組
 # =====================
@@ -235,6 +230,10 @@ def get_list_from_sheets():
 # =====================
 
 fm_token = st.secrets.get("FINMIND_TOKEN", "")
+
+# 初始化通知紀錄字典
+if 'notified_stocks' not in st.session_state:
+    st.session_state.notified_stocks = {}
 
 if 'search_codes' not in st.session_state or st.sidebar.button("🔄 同步 Google 表格清單"):
     with st.spinner("同步雲端清單中..."):
@@ -299,10 +298,30 @@ def perform_scan():
         if sid in snipe_list: tags.append("【狙擊通知】")
         tag_str = "".join(tags)
 
-        if last["warning"] != "趨勢穩定中" or last["star_signal"]:
-            line_msg = f"{tag_str}\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}"
-            if last["star_signal"]: line_msg += "\n🏹 觸發星級發動點買入訊號!"
-            send_line_message(line_msg)
+        # --- 自動推播與防洗版邏輯 ---
+        should_notify = False
+        notify_reason = ""
+        
+        if last["score"] >= 80:
+            should_notify = True
+            notify_reason = f"🔥 高分優質股 ({last['score']}分)"
+        elif last["star_signal"]:
+            should_notify = True
+            notify_reason = "🏹 觸發星級發動點"
+        elif last["warning"] != "趨勢穩定中":
+            # 一般戰情變動也發送通知
+            should_notify = True
+            notify_reason = "⚠️ 戰情提醒"
+
+        if should_notify:
+            current_time = time.time()
+            last_notify_time = st.session_state.notified_stocks.get(sid, 0)
+            # 設定冷卻時間：1 小時 (3600 秒) 內不重複通知同一隻股票
+            if (current_time - last_notify_time) > 3600:
+                line_msg = f"{tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
+                send_line_message(line_msg)
+                st.session_state.notified_stocks[sid] = current_time
+        # ----------------------------
 
         border = "#ff4b4b" if last["score"] >= 75 else "#28a745" if last["score"] <= 30 else "#adb5bd"
         st.markdown(f"""
