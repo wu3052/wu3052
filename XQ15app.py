@@ -177,8 +177,7 @@ def analyze_strategy(df):
 def plot_advanced_chart(df, title=""):
     df_plot = df.tail(100).copy()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    
-    # K線
+
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], 
         low=df_plot["low"], close=df_plot["close"], name="K線",
@@ -186,33 +185,24 @@ def plot_advanced_chart(df, title=""):
         decreasing_line_color='#2ecc71', decreasing_fillcolor='#2ecc71'
     ), row=1, col=1)
 
-    # 均線
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
 
-    # 【新增】上漲/下跌關鍵位
-    last_row = df_plot.iloc[-1]
-    # 上漲關鍵位 (紅虛線) - 死亡交叉點
-    if not pd.isna(last_row["upward_key"]):
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=[last_row["upward_key"]]*len(df_plot), 
-                                 name="上漲關鍵位(死叉收盤)", line=dict(color="rgba(255, 75, 75, 0.8)", width=2, dash="dash")), row=1, col=1)
-    # 下跌關鍵位 (綠虛線) - 黃金交叉點
-    if not pd.isna(last_row["downward_key"]):
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=[last_row["downward_key"]]*len(df_plot), 
-                                 name="下跌關鍵位(金叉收盤)", line=dict(color="rgba(40, 167, 69, 0.8)", width=2, dash="dash")), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.5)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.5)', dash='dash')), row=1, col=1)
 
-    # 發動點
     stars = df_plot[df_plot["star_signal"]]
     fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=14, color="#FFD700"), name="發動點"), row=1, col=1)
 
-    # MACD
+    # MACD 柱狀圖搭配成交量視覺 (可依需求調整，此處維持原本 MACD)
     colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
 
     fig.update_layout(title=title, height=700, template="plotly_white", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
+    fig.update_xaxes(showgrid=True, gridcolor='#f0f0f0')
+    fig.update_yaxes(showgrid=True, gridcolor='#f0f0f0')
     return fig
-
 # =====================
 # 📂 Google Sheets 數據讀取模組
 # =====================
