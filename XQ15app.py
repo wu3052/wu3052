@@ -259,7 +259,20 @@ with st.sidebar:
         
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
 
-def perform_scan():
+def perform_scan(is_auto=False):
+    # --- 開盤時間檢查邏輯 ---
+    now = datetime.now()
+    weekday = now.weekday()
+    current_time = now.time()
+    start_time = datetime.strptime("08:55", "%H:%M").time()
+    end_time = datetime.strptime("14:00", "%H:%M").time()
+    
+    # 如果是自動監控模式，且不在開盤時間，則跳過
+    if is_auto and not (0 <= weekday <= 4 and start_time <= current_time <= end_time):
+        st.info(f"💤 當前非開盤時間 ({now.strftime('%H:%M:%S')})，自動監控暫停中。")
+        return
+    # ---------------------------
+
     if not fm_token:
         st.error("請先提供 FinMind Token")
         return
@@ -309,18 +322,16 @@ def perform_scan():
             should_notify = True
             notify_reason = "🏹 觸發星級發動點"
         elif last["warning"] != "趨勢穩定中":
-            # 一般戰情變動也發送通知
             should_notify = True
             notify_reason = "⚠️ 戰情提醒"
 
         if should_notify:
-            current_time = time.time()
+            current_time_ts = time.time()
             last_notify_time = st.session_state.notified_stocks.get(sid, 0)
-            # 設定冷卻時間：1 小時 (3600 秒) 內不重複通知同一隻股票
-            if (current_time - last_notify_time) > 3600:
+            if (current_time_ts - last_notify_time) > 3600:
                 line_msg = f"{tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
                 send_line_message(line_msg)
-                st.session_state.notified_stocks[sid] = current_time
+                st.session_state.notified_stocks[sid] = current_time_ts
         # ----------------------------
 
         border = "#ff4b4b" if last["score"] >= 75 else "#28a745" if last["score"] <= 30 else "#adb5bd"
@@ -343,17 +354,22 @@ def perform_scan():
         st.dataframe(pd.DataFrame(scan_results).sort_values("分數", ascending=False), use_container_width=True, hide_index=True)
 
 placeholder = st.empty()
-if analyze_btn or auto_monitor:
-    if auto_monitor:
-        while True:
-            with placeholder.container():
-                perform_scan()
-                st.caption(f"🔄 自動監控中... 下次更新時間: {(datetime.now() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
-            time.sleep(interval * 60)
-            st.rerun()
-    else:
+
+# Cron-job 偵測與自動掃描邏輯優化
+if analyze_btn:
+    with placeholder.container():
+        perform_scan(is_auto=False) # 手動掃描不受時間限制
+elif auto_monitor:
+    while True:
         with placeholder.container():
-            perform_scan()
+            perform_scan(is_auto=True)
+            st.caption(f"🔄 自動監控中... 下次更新時間: {(datetime.now() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
+        time.sleep(interval * 60)
+        st.rerun()
+else:
+    # 這是為了 Cron-job。當網頁被讀取且沒按按鈕時，自動執行一次開盤時間檢查掃描
+    with placeholder.container():
+        perform_scan(is_auto=True)
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"最後更新: {datetime.now().strftime('%H:%M:%S')}")
