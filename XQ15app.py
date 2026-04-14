@@ -28,10 +28,9 @@ st.markdown("""
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
 # =====================
-# 🔹 LINE Messaging API 模組 (已修正)
+# 🔹 LINE Messaging API 模組
 # =====================
 def send_line_message(msg):
-    # 建議 Secrets 統一命名為 LINE_ACCESS_TOKEN 與 LINE_USER_ID
     token = st.secrets.get("LINE_ACCESS_TOKEN")
     user_id = st.secrets.get("LINE_USER_ID")
     
@@ -48,7 +47,6 @@ def send_line_message(msg):
         "messages": [{"type": "text", "text": msg}]
     }
     try:
-        # 【修正處】必須加入 headers=headers，否則 LINE 無法驗證身份
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         if res.status_code != 200:
             print(f"LINE 發送失敗: {res.text}")
@@ -111,9 +109,11 @@ def analyze_strategy(df):
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_ratio"] = df["volume"] / df["vol_ma5"].replace(0, np.nan) 
     
+    # 關鍵位邏輯
     df["dc_signal"] = (df["ma5"] < df["ma10"]) & (df["ma5"].shift(1) >= df["ma10"].shift(1))
     df["gc_signal"] = (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
 
+    # 使用 ffill 傳遞關鍵價位
     df["upward_key"] = df["close"].where(df["dc_signal"]).ffill()
     df["downward_key"] = df["close"].where(df["gc_signal"]).ffill()
 
@@ -168,6 +168,8 @@ def analyze_strategy(df):
 def plot_advanced_chart(df, title=""):
     df_plot = df.tail(100).copy()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    
+    # K線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], 
         low=df_plot["low"], close=df_plot["close"], name="K線",
@@ -175,13 +177,25 @@ def plot_advanced_chart(df, title=""):
         decreasing_line_color='#2ecc71', decreasing_fillcolor='#2ecc71'
     ), row=1, col=1)
 
+    # 均線
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
 
+    # 【新增】上漲/下跌關鍵位
+    last_row = df_plot.iloc[-1]
+    if not pd.isna(last_row["upward_key"]):
+        fig.add_trace(go.Scatter(x=df_plot["date"], y=[last_row["upward_key"]]*len(df_plot), 
+                                 name="上漲關鍵位", line=dict(color="rgba(255, 75, 75, 0.6)", width=2, dash="dash")), row=1, col=1)
+    if not pd.isna(last_row["downward_key"]):
+        fig.add_trace(go.Scatter(x=df_plot["date"], y=[last_row["downward_key"]]*len(df_plot), 
+                                 name="下跌關鍵位", line=dict(color="rgba(40, 167, 69, 0.6)", width=2, dash="dash")), row=1, col=1)
+
+    # 發動點
     stars = df_plot[df_plot["star_signal"]]
     fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=14, color="#FFD700"), name="發動點"), row=1, col=1)
 
+    # MACD
     colors = ['#eb4d4b' if val >= 0 else '#2ecc71' for val in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
 
@@ -194,14 +208,11 @@ def plot_advanced_chart(df, title=""):
 def get_list_from_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
     if not sheet_id:
-        # 如果沒設定 Sheet ID，就回傳空字串或預設值
         return "", ""
     
-    # 這裡利用 Google Sheets 的 CSV 導出功能，不需要 API Key 即可讀取公開(檢視者)的表格
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     try:
         df_sheet = pd.read_csv(url)
-        # 確保代號轉為字串並移除空白
         snipe = " ".join(df_sheet['snipe_list'].dropna().astype(str).tolist())
         inventory = " ".join(df_sheet['inventory_list'].dropna().astype(str).tolist())
         return snipe, inventory
@@ -213,7 +224,9 @@ def get_list_from_sheets():
 # 🚀 整合進主程式
 # =====================
 
-# 在初始化 Session State 的地方改用 Sheets 資料
+# 【修正處】獲取 FinMind Token
+fm_token = st.secrets.get("FINMIND_TOKEN", "")
+
 if 'search_codes' not in st.session_state or st.sidebar.button("🔄 同步 Google 表格清單"):
     with st.spinner("同步雲端清單中..."):
         s_list, i_list = get_list_from_sheets()
@@ -223,14 +236,11 @@ if 'search_codes' not in st.session_state or st.sidebar.button("🔄 同步 Goog
 
 with st.sidebar:
     st.header("🛡️ 指揮中心設定")
-    # ... (其餘 Token 設定不變)
+    fm_token = st.text_input("FinMind Token", value=fm_token, type="password")
     
     st.divider()
-    # 顯示從 Sheet 抓到的內容，也可以手動臨時微調
     st.session_state.search_codes = st.text_area("🎯 狙擊個股清單 (來自雲端)", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存股清單 (來自雲端)", value=st.session_state.inventory_codes)
-    
-    # ... (其餘監控頻率與按鈕邏輯)
     
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟自動監控 (保持網頁開啟)")
