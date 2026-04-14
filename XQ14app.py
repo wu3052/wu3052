@@ -194,12 +194,23 @@ if 'inventory_codes' not in st.session_state:
 
 with st.sidebar:
     st.header("🛡️ 指揮中心設定")
-    # 優先從 Secrets 讀取
-    fm_token = st.secrets.get("FINMIND_TOKEN", st.text_input("FinMind Token", type="password"))
-    if st.secrets.get("FINMIND_TOKEN"):
-        st.caption("✅ 已從 Secrets 自動載入 Token")
     
+    # 1. 嘗試從 Secrets 讀取
+    secret_token = st.secrets.get("FINMIND_TOKEN")
+    
+    # 2. 判斷邏輯：有 Secret 就直接用，沒有才顯示輸入框
+    if secret_token:
+        fm_token = secret_token
+        # 這裡不放 st.success 就不會出現任何提示，介面最乾淨
+    else:
+        # 只有在 Secrets 沒設定時，才會出現這個醜醜的輸入框
+        fm_token = st.text_input("請輸入 FinMind Token", type="password", help="在 Streamlit Cloud 設定 Secrets 可隱藏此框")
+    
+    if not fm_token:
+        st.warning("⚠️ 尚未偵測到 Token，請檢查 Secrets 或手動輸入。")
+
     st.divider()
+    # ... 後面維持不變 (狙擊個股清單等)
     st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存股清單", value=st.session_state.inventory_codes)
     
