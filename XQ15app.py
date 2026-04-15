@@ -28,38 +28,28 @@ st.markdown("""
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
 # =====================
-# 🔹 LINE Messaging API 模組
+# 🔹 Discord Webhook 模組 (取代原 LINE 模組)
 # =====================
-def send_line_message(msg):
-    # 強制檢查 Secrets 內容
-    token = st.secrets.get("LINE_ACCESS_TOKEN")
-    user_id = st.secrets.get("LINE_USER_ID")
+def send_discord_message(msg):
+    # 檢查 Secrets 內容
+    webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
     
-    # 這是最強診斷：如果沒抓到，直接在螢幕上顯示
-    if not token:
-        st.error("❌ 診斷：程式找不到 LINE_ACCESS_TOKEN，請檢查 Secrets 設定！")
-        return
-    if not user_id:
-        st.error("❌ 診斷：程式找不到 LINE_USER_ID，請檢查 Secrets 設定！")
+    if not webhook_url:
+        st.error("❌ 診斷：程式找不到 DISCORD_WEBHOOK_URL，請檢查 Secrets 設定！")
         return
 
-    url = "https://api.line.me/v2/bot/message/push"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {token}"
-    }
     payload = {
-        "to": user_id,
-        "messages": [{"type": "text", "text": msg}]
+        "content": msg
     }
     
     try:
-        res = requests.post(url, json=payload, headers=headers)
-        if res.status_code == 200:
-            st.success("✅ LINE 發送成功！")
+        res = requests.post(webhook_url, json=payload, timeout=10)
+        # Discord Webhook 成功通常回傳 204 No Content
+        if res.status_code == 204 or res.status_code == 200:
+            st.success("✅ Discord 訊息發送成功！")
         else:
-            st.error(f"❌ LINE 回傳錯誤代碼: {res.status_code}")
-            st.write(res.text) # 顯示 LINE 給的具體錯誤原因
+            st.error(f"❌ Discord 回傳錯誤代碼: {res.status_code}")
+            st.write(res.text) 
     except Exception as e:
         st.error(f"❌ 發生異常: {str(e)}")
 
@@ -263,9 +253,9 @@ with st.sidebar:
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟自動監控 (保持網頁開啟)")
     
-    if st.button("🔔 測試 LINE 通知"):
-        send_line_message("🏹 股票狙擊手：連線測試成功！")
-        st.toast("測試訊息已發出，請檢查手機")
+    if st.button("🔔 測試 Discord 通知"):
+        send_discord_message("🏹 股票狙擊手：Discord 連線測試成功！")
+        st.toast("測試訊息已發出，請檢查頻道")
         
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
 
@@ -339,8 +329,8 @@ def perform_scan(is_auto=False):
             current_time_ts = time.time()
             last_notify_time = st.session_state.notified_stocks.get(sid, 0)
             if (current_time_ts - last_notify_time) > 3600:
-                line_msg = f"{tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
-                send_line_message(line_msg)
+                discord_msg = f"{tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
+                send_discord_message(discord_msg)
                 st.session_state.notified_stocks[sid] = current_time_ts
         # ----------------------------
 
