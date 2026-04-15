@@ -31,12 +31,18 @@ BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 # 🔹 LINE Messaging API 模組
 # =====================
 def send_line_message(msg):
+    # 強制檢查 Secrets 內容
     token = st.secrets.get("LINE_ACCESS_TOKEN")
     user_id = st.secrets.get("LINE_USER_ID")
     
-    if not token or not user_id:
+    # 這是最強診斷：如果沒抓到，直接在螢幕上顯示
+    if not token:
+        st.error("❌ 診斷：程式找不到 LINE_ACCESS_TOKEN，請檢查 Secrets 設定！")
         return
-    
+    if not user_id:
+        st.error("❌ 診斷：程式找不到 LINE_USER_ID，請檢查 Secrets 設定！")
+        return
+
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -46,12 +52,16 @@ def send_line_message(msg):
         "to": user_id,
         "messages": [{"type": "text", "text": msg}]
     }
+    
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        if res.status_code != 200:
-            print(f"LINE 發送失敗: {res.text}")
+        res = requests.post(url, json=payload, headers=headers)
+        if res.status_code == 200:
+            st.success("✅ LINE 發送成功！")
+        else:
+            st.error(f"❌ LINE 回傳錯誤代碼: {res.status_code}")
+            st.write(res.text) # 顯示 LINE 給的具體錯誤原因
     except Exception as e:
-        print(f"LINE 連線錯誤: {e}")
+        st.error(f"❌ 發生異常: {str(e)}")
 
 # =====================
 # 🔹 數據獲取模組
