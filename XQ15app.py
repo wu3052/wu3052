@@ -254,7 +254,7 @@ with st.sidebar:
     auto_monitor = st.checkbox("🔄 開啟自動監控 (保持網頁開啟)")
     
     if st.button("🔔 測試 Discord 通知"):
-        send_discord_message("🏹 股票狙擊手：Discord 連線測試成功！")
+        send_discord_message("@everyone 🏹 股票狙擊手：Discord 連線測試成功！")
         st.toast("測試訊息已發出，請檢查頻道")
         
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
@@ -329,7 +329,8 @@ def perform_scan(is_auto=False):
             current_time_ts = time.time()
             last_notify_time = st.session_state.notified_stocks.get(sid, 0)
             if (current_time_ts - last_notify_time) > 3600:
-                discord_msg = f"{tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
+                # 已修改：加入 @everyone 以確保手機強制通知
+                discord_msg = f"@everyone {tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
                 send_discord_message(discord_msg)
                 st.session_state.notified_stocks[sid] = current_time_ts
         # ----------------------------
