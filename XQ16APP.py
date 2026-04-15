@@ -86,9 +86,9 @@ def analyze_strategy(df):
     for ma in [5, 10, 20, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
-    # 特殊均線邏輯
-    df["ma144_60min"] = df["close"].rolling(36).mean() # 模擬 60分 K 144MA
-    df["ma55_60min"] = df["close"].rolling(14).mean()  # 模擬 60分 K 55MA
+    # 特殊均線邏輯 (模擬 60分K 的視角)
+    df["ma144_60min"] = df["close"].rolling(36).mean() 
+    df["ma55_60min"] = df["close"].rolling(14).mean()  
     
     # MACD
     exp1 = df['close'].ewm(span=12, adjust=False).mean()
@@ -103,16 +103,16 @@ def analyze_strategy(df):
     df["upward_key"] = df["close"].where(df["dc_signal"]).ffill()
     df["downward_key"] = df["close"].where(df["gc_signal"]).ffill()
 
-    # 星級發動點 (買點判斷之一)
+    # 星級發動點
     df["star_signal"] = False
     for i in range(1, len(df)):
         is_golden_cross = (df["ma5"].iloc[i] > df["ma10"].iloc[i]) and (df["ma5"].iloc[i-1] <= df["ma10"].iloc[i-1])
         if df["close"].iloc[i] > df["ma5"].iloc[i] and is_golden_cross:
             df.loc[df.index[i], "star_signal"] = True
 
-    # 狀態初始化
-    df["warning_buy"] = []
-    df["warning_sell"] = []
+    # --- 修正後的狀態初始化 ---
+    df["warning_buy"] = "" 
+    df["warning_sell"] = ""
     df["score"] = 50
     
     last_idx = df.index[-1]
@@ -140,12 +140,12 @@ def analyze_strategy(df):
     # --- 評分邏輯修正 ---
     current_score = 50
     if buy_signals: current_score += (len(buy_signals) * 10)
-    if sell_signals: current_score -= (len(sell_signals) * 15) # 賣點扣分權重較高
+    if sell_signals: current_score -= (len(sell_signals) * 15)
 
-    # 基礎分限制
+    # 寫入最後一行
     df.at[last_idx, "score"] = max(10, min(current_score, 100))
-    df.at[last_idx, "warning_buy"] = buy_signals
-    df.at[last_idx, "warning_sell"] = sell_signals
+    df.at[last_idx, "warning_buy"] = " / ".join(buy_signals)
+    df.at[last_idx, "warning_sell"] = " / ".join(sell_signals)
 
     # 型態判斷
     df["pattern"] = "一般盤整"
@@ -248,7 +248,7 @@ def perform_scan(is_auto=False):
         with col1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
         with col2: st.markdown(f"<div class='status-card {cmd_class}'>指揮官指令：{cmd}<br><small>{risk_tip}</small></div>", unsafe_allow_html=True)
         
-        # 大盤推播
+        # 大盤推播 (間隔 2 小時)
         if is_auto and (time.time() - st.session_state.notified_stocks.get("TAIEX", 0)) > 7200:
             send_discord_message(f"🌐 **大盤戰情通知**\n狀態：`{cmd}`\n分數：`{score}`\n提醒：{risk_tip}")
             st.session_state.notified_stocks["TAIEX"] = time.time()
@@ -275,9 +275,9 @@ def perform_scan(is_auto=False):
         # 通知邏輯過濾
         notify_msg = ""
         if is_inv and last["warning_sell"]:
-            notify_msg = f"🟢 **【庫存賣點】** 觸發！\n原因：`{' / '.join(last['warning_sell'])}`"
+            notify_msg = f"🟢 **【庫存賣點】** 觸發！\n原因：`{last['warning_sell']}`"
         elif is_snipe and last["warning_buy"]:
-            notify_msg = f"🔴 **【狙擊買點】** 觸發！\n原因：`{' / '.join(last['warning_buy'])}`"
+            notify_msg = f"🔴 **【狙擊買點】** 觸發！\n原因：`{last['warning_buy']}`"
 
         if notify_msg and (time.time() - st.session_state.notified_stocks.get(sid, 0)) > 3600:
             full_msg = (
@@ -298,8 +298,8 @@ def perform_scan(is_auto=False):
                 <span style="background:{border_color}; color:white; padding:2px 10px; border-radius:10px;">評分: {last['score']}</span>
             </div>
             <div style="margin-top: 10px;">
-                <span style="color:#ff4b4b; font-weight:bold;">{' '.join(last['warning_buy'])}</span>
-                <span style="color:#28a745; font-weight:bold;">{' '.join(last['warning_sell'])}</span>
+                <span style="color:#ff4b4b; font-weight:bold;">{last['warning_buy']}</span>
+                <span style="color:#28a745; font-weight:bold;">{last['warning_sell']}</span>
                 {'' if (last['warning_buy'] or last['warning_sell']) else '<span style="color:gray;">趨勢穩定中</span>'}
             </div>
         </div>
