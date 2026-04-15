@@ -145,11 +145,12 @@ def analyze_strategy(df):
     # 多頭排列加分
     if row["ma5"] > row["ma20"] > row["ma60"]: score += 10
     
-    df.at[last_idx, "score"] = max(0, min(100, score))
+    df.at[last_idx, "score"] = int(max(0, min(100, score)))
     df.at[last_idx, "warning"] = " | ".join(buy_signals + trace_signals + sell_signals) if (buy_signals or trace_signals or sell_signals) else "趨勢穩定中"
-    df.at[last_idx, "buy_trigger"] = buy_signals
-    if trace_signals: df.at[last_idx, "buy_trigger"] = buy_signals + trace_signals
-    df.at[last_idx, "sell_trigger"] = sell_signals
+    
+    # 修正 ValueError: 將 list 轉為 string 儲存
+    df.at[last_idx, "buy_trigger"] = ", ".join(buy_signals + trace_signals)
+    df.at[last_idx, "sell_trigger"] = ", ".join(sell_signals)
 
     # 型態
     ma_diff = (max(row["ma5"], row["ma10"], row["ma20"]) - min(row["ma5"], row["ma10"], row["ma20"])) / row["close"]
@@ -207,8 +208,13 @@ with st.sidebar:
         st.session_state.search_codes = s_list
         st.session_state.inventory_codes = i_list
         st.toast("✅ 清單已同步")
-    st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.get('search_codes', ""))
-    st.session_state.inventory_codes = st.text_area("📦 庫存股清單", value=st.session_state.get('inventory_codes', ""))
+    
+    # 確保 session_state 裡有初始值避免報錯
+    if 'search_codes' not in st.session_state: st.session_state.search_codes = ""
+    if 'inventory_codes' not in st.session_state: st.session_state.inventory_codes = ""
+    
+    st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
+    st.session_state.inventory_codes = st.text_area("📦 庫存股清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟自動監控")
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
@@ -226,6 +232,7 @@ def perform_scan(is_auto=False):
         m_df = analyze_strategy(m_df)
         m_last = m_df.iloc[-1]
         score = m_last["score"]
+        
         if score >= 80: cmd, cmd_class, risk_tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強。"
         elif score >= 60: cmd, cmd_class, risk_tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中。"
         elif score >= 40: cmd, cmd_class, risk_tip = "🤏 少量買進", "buy-signal", "⚠️ 處於震盪區。"
@@ -238,14 +245,16 @@ def perform_scan(is_auto=False):
         
         # 大盤通知
         if m_last["buy_trigger"] or m_last["sell_trigger"]:
-            ts_key = f"TAIEX_{now_taiwan.strftime('%Y%H')}"
+            ts_key = f"TAIEX_{now_taiwan.strftime('%Y%m%d%H')}"
             if ts_key not in st.session_state.notified_stocks:
-                msg = f"📢 **大盤戰情廣播**\n指令: `{cmd}`\n提醒: `{m_last['warning']}`"
+                msg = f"📢 **大盤戰情廣播**\n指令: `{cmd}`\n現價: `{m_last['close']:.2f}`\n提醒: `{m_last['warning']}`"
                 send_discord_message(msg)
                 st.session_state.notified_stocks[ts_key] = time.time()
         
         with st.expander("查看大盤 K 線圖"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 指數"), use_container_width=True)
+
+    st.divider()
 
     # 個股掃描
     snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
@@ -261,17 +270,16 @@ def perform_scan(is_auto=False):
         s_name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
         
         is_inv = sid in inv_list
-        is_snipe = sid in snipe_list
         tag_str = "📦庫存" if is_inv else "🎯狙擊"
         
-        # 通知邏輯
+        # 通知過濾邏輯
         notify_reason = ""
         should_send = False
-        if is_inv and last["sell_trigger"]: # 庫存只報憂
-            notify_reason = f"🚨 庫存賣點：{', '.join(last['sell_trigger'])}"
+        if is_inv and last["sell_trigger"]: # 庫存只報賣點
+            notify_reason = f"🚨 庫存賣點：{last['sell_trigger']}"
             should_send = True
-        elif is_snipe and last["buy_trigger"]: # 狙擊只報喜
-            notify_reason = f"🏹 狙擊買點：{', '.join(last['buy_trigger'])}"
+        elif not is_inv and last["buy_trigger"]: # 狙擊只報買點
+            notify_reason = f"🏹 狙擊買點：{last['buy_trigger']}"
             should_send = True
             
         if should_send:
@@ -291,31 +299,35 @@ def perform_scan(is_auto=False):
                 if send_discord_message(discord_msg):
                     st.session_state.notified_stocks[sid] = curr_ts
 
-        # 顯示卡片
+        # 顯示卡片 (顏色隨買賣點變化)
         border = "#28a745" if last["sell_trigger"] else ("#ff4b4b" if last["buy_trigger"] else "#adb5bd")
         st.markdown(f"""
         <div style="background: white; padding: 15px; border-left: 8px solid {border}; border-radius: 10px; margin-bottom: 10px;">
             <div style="display: flex; justify-content: space-between;">
-                <span style="font-weight: bold;">{tag_str} {sid} {s_name} | {last['close']:.2f}</span>
-                <span style="color: {border}; font-weight: bold;">評分: {last['score']}</span>
+                <span style="font-size: 1.1em; font-weight: bold;">{tag_str} {sid} {s_name} | {last['close']:.2f}</span>
+                <span style="color: {border}; font-weight: bold; font-size: 1.2em;">評分: {last['score']}</span>
             </div>
-            <div style="font-size: 0.9em; color: #555;">提醒: {last['warning']}</div>
+            <div style="margin-top: 5px; color: #555;">🚩 戰情提醒: {last['warning']}</div>
         </div>
         """, unsafe_allow_html=True)
-        with st.expander(f"查看 {sid} 圖表"):
+        
+        with st.expander(f"查看 {sid} {s_name} 圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {s_name}"), use_container_width=True)
         
         scan_results.append({"類別": tag_str, "代碼": sid, "名稱": s_name, "收盤價": last['close'], "分數": last['score'], "提醒": last['warning']})
 
     if scan_results:
-        st.subheader("🏆 本次掃描排行榜")
+        st.subheader("🏆 本次掃描排行榜 (由強至弱)")
         df_res = pd.DataFrame(scan_results).sort_values("分數", ascending=False)
         c1, c2 = st.columns(2)
-        c1.write("🎯 狙擊股排行")
-        c1.dataframe(df_res[df_res["類別"] == "🎯狙擊"], hide_index=True)
-        c2.write("📦 庫存股排行")
-        c2.dataframe(df_res[df_res["類別"] == "📦庫存"], hide_index=True)
+        with c1:
+            st.markdown("#### 🎯 狙擊股排行榜")
+            st.dataframe(df_res[df_res["類別"] == "🎯狙擊"], hide_index=True, use_container_width=True)
+        with c2:
+            st.markdown("#### 📦 庫存股排行榜")
+            st.dataframe(df_res[df_res["類別"] == "📦庫存"], hide_index=True, use_container_width=True)
 
+# --- 執行執行區 ---
 placeholder = st.empty()
 if analyze_btn:
     with placeholder.container(): perform_scan(is_auto=False)
@@ -328,3 +340,6 @@ elif auto_monitor:
         st.rerun()
 else:
     with placeholder.container(): perform_scan(is_auto=True)
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"最後更新: {(datetime.utcnow() + timedelta(hours=8)).strftime('%H:%M:%S')}")
