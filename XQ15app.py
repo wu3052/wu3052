@@ -28,28 +28,20 @@ st.markdown("""
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
 # =====================
-# 🔹 Discord Webhook 模組 (取代原 LINE 模組)
+# 🔹 Discord Webhook 模組
 # =====================
 def send_discord_message(msg):
-    # 檢查 Secrets 內容
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
-    
     if not webhook_url:
         st.error("❌ 診斷：程式找不到 DISCORD_WEBHOOK_URL，請檢查 Secrets 設定！")
         return
-
-    payload = {
-        "content": msg
-    }
-    
+    payload = {"content": msg}
     try:
         res = requests.post(webhook_url, json=payload, timeout=10)
-        # Discord Webhook 成功通常回傳 204 No Content
-        if res.status_code == 204 or res.status_code == 200:
+        if res.status_code in [200, 204]:
             st.success("✅ Discord 訊息發送成功！")
         else:
             st.error(f"❌ Discord 回傳錯誤代碼: {res.status_code}")
-            st.write(res.text) 
     except Exception as e:
         st.error(f"❌ 發生異常: {str(e)}")
 
@@ -109,7 +101,6 @@ def analyze_strategy(df):
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_ratio"] = df["volume"] / df["vol_ma5"].replace(0, np.nan) 
     
-    # 關鍵位邏輯
     df["dc_signal"] = (df["ma5"] < df["ma10"]) & (df["ma5"].shift(1) >= df["ma10"].shift(1))
     df["gc_signal"] = (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
 
@@ -205,73 +196,65 @@ def get_list_from_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
     if not sheet_id:
         return "", ""
-    
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
     try:
         df_sheet = pd.read_csv(url)
         def clean_codes(series):
-            if series is None or series.empty:
-                return []
+            if series is None or series.empty: return []
             codes = series.dropna().astype(str).tolist()
-            cleaned = [c.split('.')[0].strip() for c in codes if c.strip()]
-            return cleaned
-
-        snipe_list = clean_codes(df_sheet.get('snipe_list'))
-        inv_list = clean_codes(df_sheet.get('inventory_list'))
-        snipe = " ".join(snipe_list)
-        inventory = " ".join(inv_list)
+            return [c.split('.')[0].strip() for c in codes if c.strip()]
+        snipe = " ".join(clean_codes(df_sheet.get('snipe_list')))
+        inventory = " ".join(clean_codes(df_sheet.get('inventory_list')))
         return snipe, inventory
     except Exception as e:
         st.error(f"讀取 Google Sheets 失敗: {e}")
         return "", ""
 
 # =====================
-# 🚀 整合進主程式
+# 🚀 整合與主程式邏輯
 # =====================
-
 fm_token = st.secrets.get("FINMIND_TOKEN", "")
 
-# 初始化通知紀錄字典
 if 'notified_stocks' not in st.session_state:
     st.session_state.notified_stocks = {}
 
-if 'search_codes' not in st.session_state or st.sidebar.button("🔄 同步 Google 表格清單"):
-    with st.spinner("同步雲端清單中..."):
-        s_list, i_list = get_list_from_sheets()
-        st.session_state.search_codes = s_list
-        st.session_state.inventory_codes = i_list
-    st.toast("✅ 清單已同步")
-
+# 側邊欄設定
 with st.sidebar:
     st.header("🛡️ 指揮中心設定")
     fm_token = st.text_input("FinMind Token", value=fm_token, type="password")
     
+    if 'search_codes' not in st.session_state or st.button("🔄 同步 Google 表格清單"):
+        with st.spinner("同步雲端清單中..."):
+            s_list, i_list = get_list_from_sheets()
+            st.session_state.search_codes = s_list
+            st.session_state.inventory_codes = i_list
+        st.toast("✅ 清單已同步")
+
     st.divider()
-    st.session_state.search_codes = st.text_area("🎯 狙擊個股清單 (來自雲端)", value=st.session_state.search_codes)
-    st.session_state.inventory_codes = st.text_area("📦 庫存股清單 (來自雲端)", value=st.session_state.inventory_codes)
+    st.session_state.search_codes = st.text_area("🎯 狙擊個股清單", value=st.session_state.search_codes)
+    st.session_state.inventory_codes = st.text_area("📦 庫存股清單", value=st.session_state.inventory_codes)
     
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟自動監控 (保持網頁開啟)")
     
     if st.button("🔔 測試 Discord 通知"):
         send_discord_message("🏹 股票狙擊手：Discord 連線測試成功！")
-        st.toast("測試訊息已發出，請檢查頻道")
         
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
 
+# 核心掃描函數
 def perform_scan(is_auto=False):
-    # --- 開盤時間檢查邏輯 ---
-    now = datetime.now()
-    weekday = now.weekday()
-    current_time = now.time()
+    # 【時區修正】強制使用台灣時間 (UTC+8)
+    now_taiwan = datetime.utcnow() + timedelta(hours=8)
+    weekday = now_taiwan.weekday()
+    current_time = now_taiwan.time()
+    
     start_time = datetime.strptime("08:55", "%H:%M").time()
     end_time = datetime.strptime("14:00", "%H:%M").time()
     
-    # 如果是自動監控模式，且不在開盤時間，則跳過
     if is_auto and not (0 <= weekday <= 4 and start_time <= current_time <= end_time):
-        st.info(f"💤 當前非開盤時間 ({now.strftime('%H:%M:%S')})，自動監控暫停中。")
+        st.info(f"💤 當前非開盤時間 ({now_taiwan.strftime('%H:%M:%S')})，自動監控暫停中。")
         return
-    # ---------------------------
 
     if not fm_token:
         st.error("請先提供 FinMind Token")
@@ -279,6 +262,7 @@ def perform_scan(is_auto=False):
 
     scan_results = []
     
+    # 大盤分析
     st.subheader(" 🌐 台股加權指數 (TAIEX)")
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
@@ -293,6 +277,7 @@ def perform_scan(is_auto=False):
 
     st.divider()
 
+    # 個股分析
     snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
     inv_list = [c for c in re.split(r'[\s\n,]+', st.session_state.inventory_codes) if c]
     all_codes = sorted(list(set(snipe_list + inv_list)))
@@ -311,29 +296,24 @@ def perform_scan(is_auto=False):
         if sid in snipe_list: tags.append("【狙擊通知】")
         tag_str = "".join(tags)
 
-        # --- 自動推播與防洗版邏輯 ---
+        # 自動推播邏輯
         should_notify = False
         notify_reason = ""
-        
         if last["score"] >= 80:
-            should_notify = True
-            notify_reason = f"🔥 高分優質股 ({last['score']}分)"
+            should_notify, notify_reason = True, f"🔥 高分優質股 ({last['score']}分)"
         elif last["star_signal"]:
-            should_notify = True
-            notify_reason = "🏹 觸發星級發動點"
+            should_notify, notify_reason = True, "🏹 觸發星級發動點"
         elif last["warning"] != "趨勢穩定中":
-            should_notify = True
-            notify_reason = "⚠️ 戰情提醒"
+            should_notify, notify_reason = True, "⚠️ 戰情提醒"
 
         if should_notify:
-            current_time_ts = time.time()
-            last_notify_time = st.session_state.notified_stocks.get(sid, 0)
-            if (current_time_ts - last_notify_time) > 3600:
+            curr_ts = time.time()
+            if (curr_ts - st.session_state.notified_stocks.get(sid, 0)) > 3600:
                 discord_msg = f"{tag_str}\n【{notify_reason}】\n股號: {sid} ({s_name})\n現價: {last['close']:.2f}\n戰情: {last['warning']}\n型態: {last['pattern']}"
                 send_discord_message(discord_msg)
-                st.session_state.notified_stocks[sid] = current_time_ts
-        # ----------------------------
+                st.session_state.notified_stocks[sid] = curr_ts
 
+        # 顯示卡片
         border = "#ff4b4b" if last["score"] >= 75 else "#28a745" if last["score"] <= 30 else "#adb5bd"
         st.markdown(f"""
         <div style="background: white; padding: 20px; border-left: 10px solid {border}; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 15px;">
@@ -353,23 +333,23 @@ def perform_scan(is_auto=False):
         st.subheader("🏆 本次掃描排行")
         st.dataframe(pd.DataFrame(scan_results).sort_values("分數", ascending=False), use_container_width=True, hide_index=True)
 
+# --- 執行控制區 ---
 placeholder = st.empty()
 
-# Cron-job 偵測與自動掃描邏輯優化
 if analyze_btn:
     with placeholder.container():
-        perform_scan(is_auto=False) # 手動掃描不受時間限制
+        perform_scan(is_auto=False)
 elif auto_monitor:
     while True:
         with placeholder.container():
             perform_scan(is_auto=True)
-            st.caption(f"🔄 自動監控中... 下次更新時間: {(datetime.now() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
+            st.caption(f"🔄 自動監控中... 下次更新: {(datetime.utcnow() + timedelta(hours=8, minutes=interval)).strftime('%H:%M:%S')}")
         time.sleep(interval * 60)
         st.rerun()
 else:
-    # 這是為了 Cron-job。當網頁被讀取且沒按按鈕時，自動執行一次開盤時間檢查掃描
+    # 支援 Cron-job/UptimeRobot 存取
     with placeholder.container():
         perform_scan(is_auto=True)
 
 st.sidebar.markdown("---")
-st.sidebar.caption(f"最後更新: {datetime.now().strftime('%H:%M:%S')}")
+st.sidebar.caption(f"最後更新: {(datetime.utcnow() + timedelta(hours=8)).strftime('%H:%M:%S')}")
