@@ -19,14 +19,13 @@ st.markdown("""
     .status-card { padding: 20px; border-radius: 12px; margin-bottom: 20px; font-weight: bold; }
     .buy-signal { background-color: #ff4b4b; color: white; border-left: 8px solid #990000; }
     .sell-signal { background-color: #28a745; color: white; border-left: 8px solid #155724; }
-    .info-tag { font-size: 0.85em; padding: 3px 8px; border-radius: 4px; margin-right: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
 # =====================
-# 🔹 Discord Webhook 模組 (美化版)
+# 🔹 Discord Webhook 模組
 # =====================
 def send_discord_message(msg):
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
@@ -82,35 +81,31 @@ def get_stock_info():
 def analyze_strategy(df):
     if df is None or len(df) < 200: return None
     
-    # 技術指標計算
     for ma in [5, 10, 20, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
-    # 特殊均線邏輯 (模擬 60分K 的視角)
+    # 關鍵位與技術指標
     df["ma144_60min"] = df["close"].rolling(36).mean() 
     df["ma55_60min"] = df["close"].rolling(14).mean()  
     
-    # MACD
     exp1 = df['close'].ewm(span=12, adjust=False).mean()
     exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = exp1 - exp2
     df['signal_line'] = df['macd'].ewm(span=9, adjust=False).mean()
     df['hist'] = df['macd'] - df['signal_line']
     
-    # 關鍵位判斷
     df["dc_signal"] = (df["ma5"] < df["ma10"]) & (df["ma5"].shift(1) >= df["ma10"].shift(1))
     df["gc_signal"] = (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
     df["upward_key"] = df["close"].where(df["dc_signal"]).ffill()
     df["downward_key"] = df["close"].where(df["gc_signal"]).ffill()
 
-    # 星級發動點
     df["star_signal"] = False
     for i in range(1, len(df)):
         is_golden_cross = (df["ma5"].iloc[i] > df["ma10"].iloc[i]) and (df["ma5"].iloc[i-1] <= df["ma10"].iloc[i-1])
         if df["close"].iloc[i] > df["ma5"].iloc[i] and is_golden_cross:
             df.loc[df.index[i], "star_signal"] = True
 
-    # --- 修正後的狀態初始化 ---
+    # 初始化狀態 (修正 ValueError)
     df["warning_buy"] = "" 
     df["warning_sell"] = ""
     df["score"] = 50
@@ -122,14 +117,13 @@ def analyze_strategy(df):
     buy_signals = []
     sell_signals = []
     
-    # --- 買點判斷 ---
+    # 買賣判斷
     if row["close"] > row["ma5"] and prev_row["close"] <= prev_row["ma5"]: buy_signals.append("🏹 站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev_row["close"] <= prev_row["ma144_60min"]: buy_signals.append("🚀 站上60分144MA(買點)")
     if row["star_signal"]: buy_signals.append("⭐ 站上發動點(觀察買點)")
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev_row["close"] <= row["upward_key"]:
         buy_signals.append("🎯 站上死亡交叉關鍵位(上漲買入)")
 
-    # --- 賣點判斷 ---
     if row["close"] < row["ma5"] and prev_row["close"] >= prev_row["ma5"]: sell_signals.append("⚠️ 跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev_row["close"] >= prev_row["ma10"]: sell_signals.append("📉 跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev_row["close"] >= prev_row["ma55_60min"]: sell_signals.append("🩹 跌破60分55MA(注意賣點)")
@@ -137,17 +131,15 @@ def analyze_strategy(df):
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev_row["close"] >= row["downward_key"]:
         sell_signals.append("🚫 跌破黃金交叉關鍵位(下跌賣出)")
 
-    # --- 評分邏輯修正 ---
+    # 評分與型態
     current_score = 50
     if buy_signals: current_score += (len(buy_signals) * 10)
     if sell_signals: current_score -= (len(sell_signals) * 15)
 
-    # 寫入最後一行
     df.at[last_idx, "score"] = max(10, min(current_score, 100))
     df.at[last_idx, "warning_buy"] = " / ".join(buy_signals)
     df.at[last_idx, "warning_sell"] = " / ".join(sell_signals)
 
-    # 型態判斷
     df["pattern"] = "一般盤整"
     ma_diff = (max(row["ma5"], row["ma10"], row["ma20"]) - min(row["ma5"], row["ma10"], row["ma20"])) / row["close"]
     if ma_diff < 0.015: df.at[last_idx, "pattern"] = "💎 鑽石眼"
@@ -156,7 +148,7 @@ def analyze_strategy(df):
     return df
 
 # =====================
-# 📊 圖表繪製模組
+# 📊 圖表繪製模組 (含關鍵位)
 # =====================
 def plot_advanced_chart(df, title=""):
     df_plot = df.tail(100).copy()
@@ -172,6 +164,10 @@ def plot_advanced_chart(df, title=""):
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
+
+    # 繪製關鍵位虛線
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
 
     stars = df_plot[df_plot["star_signal"]]
     fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=14, color="#FFD700"), name="發動點"), row=1, col=1)
@@ -248,10 +244,22 @@ def perform_scan(is_auto=False):
         with col1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
         with col2: st.markdown(f"<div class='status-card {cmd_class}'>指揮官指令：{cmd}<br><small>{risk_tip}</small></div>", unsafe_allow_html=True)
         
-        # 大盤推播 (間隔 2 小時)
+        # 大盤推播
         if is_auto and (time.time() - st.session_state.notified_stocks.get("TAIEX", 0)) > 7200:
-            send_discord_message(f"🌐 **大盤戰情通知**\n狀態：`{cmd}`\n分數：`{score}`\n提醒：{risk_tip}")
+            m_notify_msg = (
+                f"### 🌐 大盤戰情通知\n"
+                f"**──────────────────**\n"
+                f"💡 **目前指令**: `{cmd}`\n"
+                f"📊 **戰情評分**: `{score} 分`\n"
+                f"🚩 **風險提示**: {risk_tip}\n"
+                f"**──────────────────**\n"
+                f"⏰ *通知時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+            )
+            send_discord_message(m_notify_msg)
             st.session_state.notified_stocks["TAIEX"] = time.time()
+        
+        with st.expander("大盤詳細走勢圖"):
+            st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
     st.divider()
 
@@ -260,6 +268,7 @@ def perform_scan(is_auto=False):
     inv_list = [c for c in re.split(r'[\s\n,]+', st.session_state.inventory_codes) if c]
     all_codes = sorted(list(set(snipe_list + inv_list)))
     stock_info = get_stock_info()
+    scan_results = []
     
     for sid in all_codes:
         df = get_stock_data(sid, fm_token)
@@ -271,30 +280,39 @@ def perform_scan(is_auto=False):
         
         is_inv = sid in inv_list
         is_snipe = sid in snipe_list
+        tag_str = ("【庫存股】" if is_inv else "") + ("【狙擊股】" if is_snipe else "")
         
-        # 通知邏輯過濾
-        notify_msg = ""
+        # 通知過濾邏輯
+        should_send = False
+        notify_reason = ""
+        warning_text = ""
+        
         if is_inv and last["warning_sell"]:
-            notify_msg = f"🟢 **【庫存賣點】** 觸發！\n原因：`{last['warning_sell']}`"
+            should_send, notify_reason, warning_text = True, "🛑 庫存出現賣訊", last["warning_sell"]
         elif is_snipe and last["warning_buy"]:
-            notify_msg = f"🔴 **【狙擊買點】** 觸發！\n原因：`{last['warning_buy']}`"
+            should_send, notify_reason, warning_text = True, "🎯 狙擊觸發買點", last["warning_buy"]
 
-        if notify_msg and (time.time() - st.session_state.notified_stocks.get(sid, 0)) > 3600:
-            full_msg = (
-                f"{notify_msg}\n"
-                f"標的：`{sid} {s_name}`\n"
-                f"現價：`{last['close']:.2f}` | 分數：`{last['score']}`\n"
-                f"型態：`{last['pattern']}`"
+        if should_send and (time.time() - st.session_state.notified_stocks.get(sid, 0)) > 3600:
+            discord_msg = (
+                f"### {tag_str} 訊號觸發：{sid} {s_name}\n"
+                f"**──────────────────**\n"
+                f"💡 **觸發原因**: `{notify_reason}`\n"
+                f"💰 **目前現價**: `{last['close']:.2f}`\n"
+                f"📊 **戰情評分**: `{last['score']} 分`\n"
+                f"🧭 **趨勢型態**: {last['pattern']}\n"
+                f"🚩 **戰情提醒**: {warning_text}\n"
+                f"**──────────────────**\n"
+                f"⏰ *通知時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
             )
-            send_discord_message(full_msg)
+            send_discord_message(discord_msg)
             st.session_state.notified_stocks[sid] = time.time()
 
-        # UI 顯示
+        # UI 卡片顯示
         border_color = "#28a745" if last["warning_sell"] else "#ff4b4b" if last["warning_buy"] else "#adb5bd"
         st.markdown(f"""
         <div style="background: white; padding: 20px; border-left: 10px solid {border_color}; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 15px;">
             <div style="display: flex; justify-content: space-between;">
-                <span style="font-size: 20px; font-weight: bold;">{'📦' if is_inv else '🎯'} {sid} {s_name} ({last['close']:.2f})</span>
+                <span style="font-size: 20px; font-weight: bold;">{tag_str} {sid} {s_name} ({last['close']:.2f})</span>
                 <span style="background:{border_color}; color:white; padding:2px 10px; border-radius:10px;">評分: {last['score']}</span>
             </div>
             <div style="margin-top: 10px;">
@@ -307,6 +325,13 @@ def perform_scan(is_auto=False):
         
         with st.expander(f"查看 {sid} {s_name} 圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {s_name}"), use_container_width=True)
+        
+        scan_results.append({"代碼": sid, "名稱": s_name, "現價": last['close'], "評分": last['score'], "買點": last['warning_buy'], "賣點": last['warning_sell']})
+
+    # 本次掃描排行
+    if scan_results:
+        st.subheader("🏆 本次掃描排行")
+        st.dataframe(pd.DataFrame(scan_results).sort_values("評分", ascending=False), use_container_width=True, hide_index=True)
 
 # --- 執行控制區 ---
 placeholder = st.empty()
