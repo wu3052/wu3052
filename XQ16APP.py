@@ -157,8 +157,8 @@ def analyze_strategy(df):
     
     # 合併警告訊息，並標註顏色邏輯
     all_warn = []
-    if buy_warnings: all_warn.append(f"🟢 {', '.join(buy_warnings)}")
-    if sell_warnings: all_warn.append(f"🔴 {', '.join(sell_warnings)}")
+    if buy_warnings: all_warn.append(f"🔴 {', '.join(buy_warnings)}")
+    if sell_warnings: all_warn.append(f"🟢 {', '.join(sell_warnings)}")
     
     df.at[df.index[-1], "warning"] = " | ".join(all_warn) if all_warn else "趨勢穩定中"
     df.at[df.index[-1], "buy_signal_count"] = len(buy_warnings)
@@ -259,7 +259,7 @@ def perform_scan(is_auto=False):
         if score >= 80: cmd, cmd_class, risk_tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強。"
         elif score >= 60: cmd, cmd_class, risk_tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中。"
         elif score >= 40: cmd, cmd_class, risk_tip = "🤏 少量買進", "buy-signal", "⚠️ 處於震盪區。"
-        elif score >= 20: cmd, cmd_class, risk_tip = "📉 分批賣出", "sell-signal", "🛑 趨勢轉弱。"
+        elif score >= 20: cmd, cmd_class, risk_tip = "📉 分批賣出", "sell-signal", "🟢 趨勢轉弱。"
         else: cmd, cmd_class, risk_tip = "💀 強力賣出", "sell-signal", "🚨 極高風險。"
 
         col1, col2 = st.columns([1, 2])
@@ -302,7 +302,7 @@ def perform_scan(is_auto=False):
         if is_inventory:
             # 庫存股：只在意賣點
             if last["sell_signal_count"] > 0:
-                should_notify, notify_reason = True, "🛑 庫存出現賣出訊號"
+                should_notify, notify_reason = True, "⚠️ 庫存出現賣出訊號"
         else:
             # 狙擊股：只在意買點 (包含量縮站穩)
             if last["buy_signal_count"] > 0:
