@@ -1,5 +1,5 @@
 import streamlit as st
-import pd as pd
+import pandas as pd
 import numpy as np
 import requests
 from datetime import datetime, timedelta
@@ -216,6 +216,7 @@ def analyze_strategy(df, is_market=False):
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
+    # 預設解讀（修正空白問題）
     pattern_name = "一般盤整"
     pattern_desc = "目前處於無明顯趨勢的整理區間。建議耐心等待均線糾結後的方向突破，不宜過度頻繁交易。"
 
