@@ -485,7 +485,7 @@ def perform_scan():
             i_res = pd.DataFrame([{"代碼": i["sid"], "名稱": i["name"], "分數": i["score"], "提醒": i["warning"]} for i in inventory_targets])
             st.dataframe(i_res, hide_index=True, use_container_width=True)
 
-    # --- 戰情即時日誌 ---
+    # --- 戰情即時日誌 (最下方) ---
     st.divider()
     st.write("### 📜 戰情即時日誌")
     log_content = "".join(st.session_state.event_log)
