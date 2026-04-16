@@ -60,9 +60,14 @@ st.markdown("""
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
 # 配置 AI
-if "GOOGLE_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-    model = genai.GenerativeModel('gemini-1.5-flash')
+GOOGLE_KEY = st.secrets.get("GOOGLE_API_KEY")
+if GOOGLE_KEY:
+    try:
+        genai.configure(api_key=GOOGLE_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+    except Exception as e:
+        st.error(f"AI 配置失敗: {e}")
+        model = None
 else:
     model = None
 
@@ -145,27 +150,38 @@ def get_stock_data(sid, token):
 
 @st.cache_data(ttl=300)
 def get_ai_sentiment(sid, name):
-    if not model: return "N/A", "無 AI 密鑰"
+    keywords = ["缺貨", "漲價", "聯貸", "擴產", "獲利新高", "擦鞋童", "過熱", "庫存過高", "下修目標"]
     try:
+        # 抓取新聞
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockNews", "data_id": sid,
-            "start_date": (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+            "start_date": (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
         }, timeout=10).json()
-        news_list = [n['title'] for n in res.get("data", [])]
-        if not news_list: return "中性", "查無近期新聞"
         
-        # 關鍵字監控
-        keywords = ["缺貨", "漲價", "聯貸", "擴產", "獲利新高", "擦鞋童", "過熱"]
+        news_data = res.get("data", [])
+        if not news_data: return "中性", "查無近期新聞資料"
+        
+        news_list = [n['title'] for n in news_data]
         found_kw = [k for k in keywords if any(k in t for t in news_list)]
-        
-        prompt = f"分析以下{name}({sid})的新聞標題情緒，只需回饋[看多/看空/中性]以及一句話總結：\n" + "\n".join(news_list[:5])
-        response = model.generate_content(prompt)
-        ai_res = response.text.strip()
-        
-        sentiment = "看多" if "看多" in ai_res else ("看空" if "看空" in ai_res else "中性")
         kw_msg = f" | 偵測關鍵字: {','.join(found_kw)}" if found_kw else ""
+
+        if not model:
+            return "中性", f"AI 未設定 (僅監控關鍵字){kw_msg}"
+
+        # 組合 Prompt 並獲取 AI 回應
+        titles_str = "\n".join(news_list[:5])
+        prompt = f"你是一個專業股市分析師，請分析以下{name}({sid})的新聞標題情緒。請在第一行回答：[看多]、[看空] 或 [中性]。第二行用15個字內簡述原因。新聞如下：\n{titles_str}"
+        
+        response = model.generate_content(prompt)
+        ai_res = response.text.strip().replace("\n", " ")
+        
+        sentiment = "中性"
+        if "看多" in ai_res: sentiment = "看多"
+        elif "看空" in ai_res: sentiment = "看空"
+        
         return sentiment, ai_res + kw_msg
-    except: return "N/A", "分析失敗"
+    except Exception as e:
+        return "N/A", f"連線或分析異常: {str(e)[:20]}"
 
 @st.cache_data(ttl=86400)
 def get_stock_info():
@@ -183,7 +199,7 @@ def analyze_strategy(df):
     for ma in [5, 10, 20, 55, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
-    # 1. ATR 資金控管計算
+    # ATR 資金控管
     high_low = df['high'] - df['low']
     high_close = np.abs(df['high'] - df['close'].shift())
     low_close = np.abs(df['low'] - df['close'].shift())
@@ -230,7 +246,6 @@ def analyze_strategy(df):
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
-    # 評分系統與大盤係數
     score = 50
     if buy_pts: score += 15 * len(buy_pts)
     if sell_pts: score -= 20 * len(sell_pts)
@@ -238,14 +253,12 @@ def analyze_strategy(df):
     if row["close"] > row["ma200"]: score += 5
     if row["is_weekly_bull"]: score += 5
     
-    # 2. 多週期共振：大盤濾網 (非 TAIEX 時套用)
-    if "TAIEX" in st.session_state.notified_status:
-        # 如果大盤分數低，減少個股評分
-        if st.session_state.taiex_score < 40:
-            score -= 30
+    # 大盤濾網
+    if st.session_state.taiex_score < 40:
+        score -= 30
     
-    # 3. 資金控管建議
-    risk_volatility = (row['atr'] / row['close']) * 100
+    # 資金控管
+    risk_volatility = (row['atr'] / row['close']) * 100 if row['close'] > 0 else 0
     if risk_volatility > 4: position = "5% (高波動風險)"
     elif risk_volatility > 2: position = "10% (中等波動)"
     else: position = "15-20% (穩健標的)"
@@ -336,10 +349,8 @@ def perform_scan():
     all_codes = sorted(list(set(snipe_list + inv_list)))
     
     stock_info = get_stock_info()
-    scan_results = []
     processed_stocks = []
 
-    # 大盤優先分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df)
@@ -349,23 +360,19 @@ def perform_scan():
         if score >= 80: cmd, clz, tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強。"
         elif score >= 60: cmd, clz, tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中。"
         elif score >= 40: cmd, clz, tip = "⚠️ 觀望震盪", "buy-signal", "🐌 建議縮減部位。"
-        elif score >= 20: cmd, clz, tip = "📉 分批賣出", "sell-signal", "🛑 趨勢轉弱。"
-        else: cmd, clz, tip = "💀 強力賣出", "sell-signal", "🚨 極高風險。"
+        else: cmd, clz, tip = "💀 強力賣出", "sell-signal", "🚨 趨勢崩壞。"
         
         if st.session_state.notified_status.get("TAIEX") != cmd:
-            send_discord_message(f"🌐 **大盤戰情變更**：{cmd}\n指數：{m_last['close']:.2f}\n戰鬥評分：{score}")
-            if score < 40:
-                send_discord_message("⚠️ **大盤環境惡劣，狙擊手請隱蔽，停止開火！**")
+            send_discord_message(f"🌐 **大盤戰情**：{cmd} | 指數：{m_last['close']:.0f} | 評分：{score}")
+            if score < 40: send_discord_message("⚠️ **環境惡劣，狙擊手隱蔽，停止開火！**")
             st.session_state.notified_status["TAIEX"] = cmd
 
         c1, c2 = st.columns([1, 2])
         with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
         with c2: st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
-        with st.expander("大盤走勢細節"): st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 指數"), use_container_width=True)
 
-    # 隱蔽模式提醒
     if st.session_state.taiex_score < 40:
-        st.warning("🕵️ **隱蔽模式已啟動**：大盤環境惡劣，系統已自動過濾低分買入訊號。")
+        st.warning("🕵️ **隱蔽模式啟動**：大盤環境惡劣，已自動過濾買入訊號。")
 
     for sid in all_codes:
         df = get_stock_data(sid, fm_token)
@@ -375,31 +382,22 @@ def perform_scan():
         name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
         is_inv, is_snipe = sid in inv_list, sid in snipe_list
         
-        # AI 情緒與關鍵字分析
         senti, senti_msg = get_ai_sentiment(sid, name)
         s_color = "#ff4b4b" if senti=="看多" else ("#28a745" if senti=="看空" else "#666")
         
         sig_lvl = f"{'INV' if is_inv else 'SNP'}_{last['sig_type']}_{'BOOM' if (last['sig_type']=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
         
-        # 過濾買入訊號 (大盤濾網)
         should_send = False
         if st.session_state.notified_status.get(sid) != sig_lvl:
-            msg_header = f"### {'📦 庫存' if is_inv else '🎯 狙擊'} 訊號：{sid} {name}"
-            
-            # 賣點警報不受大盤限制
             if is_inv and last["sig_type"] == "SELL":
                 should_send, reason = True, f"🩸 庫存賣點：{last['warning']}"
-            
-            # 買點警報需大盤評分 > 40
             elif is_snipe and st.session_state.taiex_score >= 40:
-                if last["sig_type"] == "BUY" and last["vol_ratio"] > 1.8:
-                    should_send, reason = True, f"⚡ 🔥【狙擊目標】爆量突破：{last['warning']}"
-                elif last["sig_type"] == "BUY":
-                    should_send, reason = True, f"🏹 買點出現：{last['warning']}"
+                if last["sig_type"] == "BUY":
+                    type_str = "🔥【爆量突破】" if last["vol_ratio"] > 1.8 else "🏹 買點出現"
+                    should_send, reason = True, f"{type_str}：{last['warning']}"
             
             if should_send:
-                discord_msg = (f"{msg_header}\n原因: `{reason}`\n現價: `{last['close']:.2f}`\nAI情緒: {senti}\n資金建議: {last['pos_advice']}")
-                send_discord_message(discord_msg)
+                send_discord_message(f"### {'📦 庫存' if is_inv else '🎯 狙擊'}：{sid} {name}\n原因: `{reason}`\n現價: `{last['close']:.2f}`\nAI: {senti}\n資金: {last['pos_advice']}")
                 add_log(f"{'📦' if is_inv else '🎯'} {sid} {name} -> {reason} ({senti})")
                 st.session_state.notified_status[sid] = sig_lvl
         
@@ -409,23 +407,18 @@ def perform_scan():
         })
 
     # --- 狙擊目標區 ---
-    st.subheader("🔥 狙擊目標監控 (含 AI 情緒 & 資金控管)")
+    st.subheader("🔥 狙擊目標監控")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
     for item in snipe_targets:
         last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
-        is_boom = (last["sig_type"]=="BUY" and last["vol_ratio"]>1.8)
         border_clr = "#ff4b4b" if last["sig_type"]=="BUY" else ("#28a745" if last["sig_type"]=="SELL" else "#ccc")
-        
         st.markdown(f"""
-        <div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left;">
+        <div class="dashboard-box {'highlight-snipe' if (last['sig_type']=='BUY' and last['vol_ratio']>1.8) else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div style="font-size:1.1em;"><b>🎯 {sid} {name} | 現價: {last['close']:.2f}</b> 
-                <span class="sentiment-tag" style="background:{item['s_color']}; color:white;">AI: {item['senti']}</span></div>
+                <div style="font-size:1.1em;"><b>🎯 {sid} {name} | 現價: {last['close']:.2f}</b> <span class="sentiment-tag" style="background:{item['s_color']}; color:white;">AI: {item['senti']}</span></div>
                 <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {last['score']}</span></div>
             </div>
-            <div style="font-size:0.9em; margin-top:8px; color:#555;">
-                💰 <b>建議倉位: {last['pos_advice']}</b> | 預估量比: {last['vol_ratio']:.2f}x | 提醒: {last['warning']}
-            </div>
+            <div style="font-size:0.9em; margin-top:8px; color:#555;">💰 <b>建議倉位: {last['pos_advice']}</b> | 預估量比: {last['vol_ratio']:.2f}x | 提醒: {last['warning']}</div>
             <div style="font-size:0.85em; color:#888; margin-top:5px;">🤖 AI 總結: {item['senti_msg']}</div>
         </div>
         """, unsafe_allow_html=True)
@@ -445,35 +438,18 @@ def perform_scan():
                 <div style="font-size:1.1em;"><b>📦 {sid} {name} | 現價: {last['close']:.2f}</b></div>
                 <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康評分: {last['score']}</span></div>
             </div>
-            <div style="font-size:0.9em; margin-top:8px; color:#555;">
-                🛡️ <b>倉位指引: {last['pos_advice']}</b> | 5MA乖離: {last['bias_5']:.2f}% | AI情緒: {item['senti']}
-            </div>
+            <div style="font-size:0.9em; margin-top:8px; color:#555;">🛡️ <b>倉位指引: {last['pos_advice']}</b> | AI情緒: {item['senti']} | {last['warning']}</div>
         </div>
         """, unsafe_allow_html=True)
         with st.expander(f"查看 {sid} {name} 分析圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
-    # --- 快速總覽 ---
-    st.divider()
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.write("### 🎯 狙擊排行")
-        if snipe_targets:
-            s_res = pd.DataFrame([{"代碼": i["sid"], "名稱": i["name"], "分數": i["score"], "AI": i["senti"], "建議倉位": i["last"]["pos_advice"]} for i in snipe_targets])
-            st.dataframe(s_res, hide_index=True, use_container_width=True)
-    with col_b:
-        st.write("### 📦 庫存監控")
-        if inventory_targets:
-            i_res = pd.DataFrame([{"代碼": i["sid"], "名稱": i["name"], "分數": i["score"], "提醒": i["warning"]} for i in inventory_targets])
-            st.dataframe(i_res, hide_index=True, use_container_width=True)
-
     # --- 戰情即時日誌 ---
     st.divider()
     st.write("### 📜 戰情即時日誌")
-    log_content = "".join(st.session_state.event_log)
-    st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='log-container'>{''.join(st.session_state.event_log)}</div>", unsafe_allow_html=True)
 
-# --- 10. 主循環與自動化 ---
+# --- 10. 主循環 ---
 placeholder = st.empty()
 if analyze_btn:
     with placeholder.container(): perform_scan()
@@ -481,7 +457,7 @@ elif auto_monitor:
     while True:
         with placeholder.container(): perform_scan()
         wait = interval if is_market_open() else 60
-        st.caption(f"🔄 自動監控中... 下次更新時間: {(get_taiwan_time() + timedelta(minutes=wait)).strftime('%H:%M:%S')}")
+        st.caption(f"🔄 更新時間: {(get_taiwan_time() + timedelta(minutes=wait)).strftime('%H:%M:%S')}")
         time.sleep(wait * 60)
         st.rerun()
 else:
