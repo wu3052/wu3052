@@ -44,12 +44,12 @@ st.markdown("""
     
     .highlight-snipe { 
         background-color: #fff5f5; 
-        border: 2px solid #ff4b4b !important; 
+        border: 3px solid #ff4b4b !important; 
         animation: pulse-red 2s infinite; 
     }
     @keyframes pulse-red {
-        0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.4); }
-        70% { box-shadow: 0 0 0 10px rgba(255, 75, 75, 0); }
+        0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.6); }
+        70% { box-shadow: 0 0 0 15px rgba(255, 75, 75, 0); }
         100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
     }
     .risk-tag { font-size: 0.85em; padding: 2px 8px; border-radius: 4px; font-weight: bold; margin-left: 5px; }
@@ -150,30 +150,36 @@ def get_stock_info():
 def analyze_strategy(df, is_market=False):
     if df is None or len(df) < 200: return None
     
+    # 基本均線
     for ma in [5, 10, 20, 55, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
+    # 策略指標
     df["ma144_60min"] = df["close"].rolling(36).mean()
     df["ma55_60min"] = df["close"].rolling(14).mean()
     df["week_ma"] = df["close"].rolling(25).mean()
     df["is_weekly_bull"] = (df["close"] > df["week_ma"]) & (df["week_ma"] > df["week_ma"].shift(5))
 
+    # MACD
     exp1 = df['close'].ewm(span=12, adjust=False).mean()
     exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = exp1 - exp2
     df['signal_line'] = df['macd'].ewm(span=9, adjust=False).mean()
     df['hist'] = df['macd'] - df['signal_line']
     
+    # 乖離與量比
     df["bias_5"] = ((df["close"] - df["ma5"]) / df["ma5"]) * 100
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_ratio"] = df["est_volume"] / df["vol_ma5"].replace(0, np.nan)
     
+    # 關鍵轉折位
     df["dc_signal"] = (df["ma5"] < df["ma10"]) & (df["ma5"].shift(1) >= df["ma10"].shift(1))
     df["gc_signal"] = (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
     df["upward_key"] = df["close"].where(df["dc_signal"]).ffill()
     df["downward_key"] = df["close"].where(df["gc_signal"]).ffill()
     df["star_signal"] = (df["close"] > df["ma5"]) & (df["ma5"] > df["ma10"]) & (df["ma5"].shift(1) <= df["ma10"].shift(1))
 
+    # ATR 計算
     high_low = df['high'] - df['low']
     high_close = (df['high'] - df['close'].shift()).abs()
     low_close = (df['low'] - df['close'].shift()).abs()
@@ -186,23 +192,22 @@ def analyze_strategy(df, is_market=False):
     
     buy_pts, sell_pts = [], []
     
+    # 訊號判斷
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
     if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
-    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死亡交叉關鍵位")
 
-    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
-    if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
-    if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
-    if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
-    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
-
+    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA")
+    if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA")
+    if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA")
+    
+    # 評分系統
     score = 50
     if buy_pts: score += 15 * len(buy_pts)
     if sell_pts: score -= 20 * len(sell_pts)
     if row["vol_ratio"] > 1.8: score += 10
     if row["close"] > row["ma200"]: score += 5
-    if row["is_weekly_bull"]: score += 5
     
     if not is_market and st.session_state.market_score < 40:
         score -= 20
@@ -215,21 +220,24 @@ def analyze_strategy(df, is_market=False):
     if sell_pts: sig = "SELL"
     
     if not is_market and st.session_state.market_score < 40 and sig == "BUY":
-        sig = "HOLD (大盤空頭避險)"
-        df.at[last_idx, "warning"] = "⚠️ 大盤疲弱，暫緩開火 | " + df.at[last_idx, "warning"]
+        sig = "HOLD (大盤空頭)"
+        df.at[last_idx, "warning"] = "⚠️ 大盤疲弱暫緩開火 | " + df.at[last_idx, "warning"]
 
     df.at[last_idx, "sig_type"] = sig
     
-    risk_volatility = (row["atr"] / row["close"]) * 100
-    if risk_volatility < 1.5: pos_advice, risk_lv = "建議配置: 15~20% (穩健型)", "low"
-    elif risk_volatility < 3.0: pos_advice, risk_lv = "建議配置: 8~12% (標準型)", "mid"
-    else: pos_advice, risk_lv = "建議配置: 3~5% (高波動小心)", "high"
+    risk_volatility = (row["atr"] / row["close"]) * 100 if row["close"] != 0 else 0
+    if risk_volatility < 1.5:
+        pos_advice, risk_lv = "建議配置: 15~20% (穩健)", "low"
+    elif risk_volatility < 3.0:
+        pos_advice, risk_lv = "建議配置: 8~12% (標準)", "mid"
+    else:
+        pos_advice, risk_lv = "建議配置: 3~5% (高波動)", "high"
         
     df.at[last_idx, "pos_advice"] = pos_advice
     df.at[last_idx, "risk_lv"] = risk_lv
     
     ma_diff = (max(row["ma5"], row["ma10"], row["ma20"]) - min(row["ma5"], row["ma10"], row["ma20"])) / row["close"]
-    df.at[last_idx, "pattern"] = "💎 鑽石眼" if ma_diff < 0.015 else ("📐 黃金三角眼" if row["ma5"] > row["ma10"] > row["ma20"] else "一般盤整")
+    df.at[last_idx, "pattern"] = "💎 鑽石眼" if ma_diff < 0.015 else ("📐 三角眼" if row["ma5"] > row["ma10"] > row["ma20"] else "一般")
     
     return df
 
@@ -246,12 +254,6 @@ def plot_advanced_chart(df, title=""):
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
-    
-    stars = df_plot[df_plot["star_signal"]]
-    fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
     colors = ['#ff4b4b' if val >= 0 else '#28a745' for val in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
@@ -272,7 +274,7 @@ def sync_sheets():
             return ""
         st.session_state.search_codes = clean_col('snipe_list')
         st.session_state.inventory_codes = clean_col('inventory_list')
-        add_log("✅ 成功從 Google 表單同步數據")
+        add_log("✅ 成功同步雲端清單")
     except Exception as e:
         st.error(f"同步失敗: {e}")
 
@@ -320,87 +322,97 @@ def perform_scan():
         
         if st.session_state.notified_status.get("TAIEX") != cmd:
             send_discord_message(f"🌐 **大盤戰情變更**：{cmd}\n評分：{score}\n提醒：{tip}")
-            if score < 40:
-                send_discord_message("🚨 **戰術警示**：大盤分數過低，系統已自動進入「靜默模式」，將過濾所有個股買入訊號！")
             st.session_state.notified_status["TAIEX"] = cmd
 
         c1, c2 = st.columns([1, 2])
         with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
         with c2: st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
-        with st.expander("大盤走勢細節"): st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 指數"), use_container_width=True)
 
+    # 處理個股
     for sid in all_codes:
         df = get_stock_data(sid, fm_token)
         if df is None: continue
         df = analyze_strategy(df, is_market=False)
         last = df.iloc[-1]
+        prev = df.iloc[-2]
         name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
         is_inv, is_snipe = sid in inv_list, sid in snipe_list
         
-        # --- 改良版訊號等級與通知邏輯 ---
-        # 定義當前訊號等級 (類型_是否爆量)
-        current_sig_type = last["sig_type"]
-        is_boom = (current_sig_type == "BUY" and last["vol_ratio"] > 1.8)
-        sig_lvl = f"{current_sig_type}_{'BOOM' if is_boom else 'NOR'}"
+        # 1. & 2. 訊號變更邏輯與行情下跌例外處理
+        current_sig_lvl = f"{last['sig_type']}_{'BOOM' if (last['sig_type']=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
+        is_price_dropping = last['close'] < prev['close']
         
-        # 取得上次紀錄的狀態
-        last_notified_lvl = st.session_state.notified_status.get(sid, "NONE")
+        last_notified = st.session_state.notified_status.get(sid, "")
         
-        # 觸發通知條件：
-        # 1. 訊號等級變更 (例如 從 HOLD 變 BUY)
-        # 2. 或是出現當日行情下跌 (從原本的 BUY 等級訊號轉為 SELL)
-        should_send = False
+        # 判斷是否需要發送 Discord
+        should_notify = False
         reason = ""
         
-        if sig_lvl != last_notified_lvl:
-            msg_header = f"### {'📦 庫存' if is_inv else '🎯 狙擊'} 訊號變更：{sid} {name}"
-            
-            if is_inv and current_sig_type == "SELL":
-                should_send, reason = True, f"🩸 【庫存警報：行情反轉】賣點出現：{last['warning']}"
-            elif is_snipe and "BUY" in current_sig_type:
-                if is_boom:
-                    should_send, reason = True, f"⚡ 🔥【狙擊目標確認：爆量突破】🔥 \n原因: `{last['warning']}`"
-                else:
-                    should_send, reason = True, f"🏹 【狙擊買點出現】 \n原因: `{last['warning']}`"
-            elif current_sig_type == "SELL":
-                # 即使不是庫存，狙擊清單轉跌也通知，視為行情反轉
-                should_send, reason = True, f"📉 【趨勢轉弱通知】 \n原因: `{last['warning']}`"
+        if last_notified != current_sig_lvl:
+            # 訊號層級發生變化才通知
+            should_notify = True
+        elif is_price_dropping and "SELL" in last['sig_type']:
+            # 即使訊號沒變，但如果處於賣點且價格繼續跌，補發提醒
+            should_notify = True
+            reason = "⚠️ 行情持續轉弱 (下跌中)"
 
-            if should_send:
-                discord_msg = (f"{msg_header}\n等級: `{sig_lvl}`\n狀態: **{reason}**\n現價: `{last['close']:.2f}`\n部位指引: {last['pos_advice']}\n時間: {now.strftime('%H:%M:%S')}")
+        if should_notify:
+            msg_type = "📦 庫存" if is_inv else "🎯 狙擊"
+            is_boom = (last["sig_type"] == "BUY" and last["vol_ratio"] > 1.8)
+            
+            # 3. 顯眼標題定義
+            if is_boom:
+                header = f"🔥【狙擊目標確認：爆量突破】🔥\n🚀 標的：{sid} {name}"
+                reason = f"⚡ 爆量訊號觸發！量比：{last['vol_ratio']:.2f}x\n原因：{last['warning']}"
+            elif last["sig_type"] == "BUY":
+                header = f"🏹【買點出現：{sid} {name}】"
+                reason = f"進場參考：{last['warning']}"
+            elif last["sig_type"] == "SELL":
+                header = f"🩸【賣點警示：{sid} {name}】"
+                reason = f"出場原因：{last['warning']}"
+            else:
+                header = f"📊【狀態變更：{sid} {name}】"
+                reason = f"目前趨勢：{last['warning']}"
+
+            if "BUY" in last["sig_type"] or "SELL" in last["sig_type"]:
+                discord_msg = (f"{header}\n現價：`{last['close']:.2f}`\n評分：`{last['score']}`\n{reason}\n💰 {last['pos_advice']}")
                 send_discord_message(discord_msg)
-                add_log(f"{'📦' if is_inv else '🎯'} {sid} {name} -> 訊號等級變更為 {sig_lvl}")
-                # 更新狀態，防止重複提醒
-                st.session_state.notified_status[sid] = sig_lvl
+                add_log(f"{msg_type} {sid} {name} -> 訊號變更為 {last['sig_type']}")
+            
+            # 更新已通知狀態
+            st.session_state.notified_status[sid] = current_sig_lvl
         
         processed_stocks.append({
             "df": df, "last": last, "sid": sid, "name": name, 
-            "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"], "is_boom": is_boom
+            "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"]
         })
 
-    # --- 狙擊目標區 UI ---
-    st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
+    # --- 狙擊目標區 ---
+    st.subheader("🔥 狙擊目標監控 (按分數排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
     for item in snipe_targets:
-        last, sid, name, df, is_boom = item["last"], item["sid"], item["name"], item["df"], item["is_boom"]
+        last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
+        is_boom = ("BUY" in last["sig_type"] and last["vol_ratio"] > 1.8)
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
+        
+        # UI 上最顯眼的標示
+        boom_tag = '<span style="background:red; color:white; padding:2px 8px; border-radius:4px; font-size:0.9em;">🔥 狙擊目標確認</span>' if is_boom else ''
         
         st.markdown(f"""
         <div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left;">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div style="font-size:1.1em;"><b>🎯 {sid} {name} | 現價: {last['close']:.2f}</b></div>
+                <div style="font-size:1.1em;"><b>🎯 {sid} {name} {boom_tag} | 現價: {last['close']:.2f}</b></div>
                 <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {last['score']}</span></div>
             </div>
             <div style="font-size:0.9em; margin-top:8px; color:#555;">
                 <b>📍 {last['pos_advice']}</b> | 提醒: {last['warning']} | 預估量比: {last['vol_ratio']:.2f}x
-                { ' | <span style="color:#ff4b4b; font-weight:bold;">🔥 狙擊確認</span>' if is_boom else '' }
             </div>
         </div>
         """, unsafe_allow_html=True)
         with st.expander(f"查看 {sid} {name} 分析圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
-    # --- 庫存監控區 UI ---
+    # --- 庫存監控區 ---
     st.divider()
     st.subheader("📦 庫存持股監控")
     inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
@@ -435,6 +447,7 @@ def perform_scan():
             i_res = pd.DataFrame([{"代碼": i["sid"], "名稱": i["name"], "分數": i["score"], "提醒": i["warning"]} for i in inventory_targets])
             st.dataframe(i_res, hide_index=True, use_container_width=True)
 
+    # --- 戰情即時日誌 ---
     st.divider()
     st.write("### 📜 戰情即時日誌")
     log_content = "".join(st.session_state.event_log)
