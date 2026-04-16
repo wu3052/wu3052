@@ -29,7 +29,7 @@ st.markdown("""
         padding: 20px; 
         border-radius: 12px; 
         font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; 
-        height: 300px; 
+        height: 400px; 
         overflow-y: scroll; 
         border: 1px solid #334155;
         box-shadow: inset 0 2px 10px rgba(0,0,0,0.3);
@@ -37,10 +37,14 @@ st.markdown("""
     }
     .log-entry { 
         border-bottom: 1px solid #334155; 
-        padding: 5px 0; 
-        font-size: 0.95em;
+        padding: 8px 0; 
+        font-size: 0.9em;
     }
-    .log-time { color: #94a3b8; font-weight: bold; margin-right: 10px; }
+    .log-time { color: #38bdf8; font-weight: bold; margin-right: 10px; }
+    .log-tag { padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px; font-weight: bold; }
+    .tag-buy { background-color: #ef4444; color: white; }
+    .tag-sell { background-color: #22c55e; color: white; }
+    .tag-info { background-color: #64748b; color: white; }
     
     .highlight-snipe { 
         background-color: #fff5f5; 
@@ -63,6 +67,7 @@ BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 # --- 2. 初始化 Session State ---
 if 'notified_status' not in st.session_state: st.session_state.notified_status = {}
 if 'last_notified_price' not in st.session_state: st.session_state.last_notified_price = {}
+if 'notified_date' not in st.session_state: st.session_state.notified_date = {} # 新增：記錄通知日期
 if 'event_log' not in st.session_state: st.session_state.event_log = []
 if 'sid_map' not in st.session_state: st.session_state.sid_map = {}
 if 'search_codes' not in st.session_state: st.session_state.search_codes = ""
@@ -95,16 +100,25 @@ def send_discord_message(msg):
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
     if not webhook_url: return
     try:
-        # 增加訊息發送前的區隔處理（如果一次發送多條訊息，Discord Webhook 需要一點點延遲避免限速）
         requests.post(webhook_url, json={"content": msg}, timeout=10)
-        time.sleep(0.5) 
     except Exception: pass
 
-def add_log(msg):
+def add_log(sid, name, tag_type, msg, score=None, vol_ratio=None):
     ts = get_taiwan_time().strftime("%H:%M:%S")
-    log_html = f"<div class='log-entry'><span class='log-time'>[{ts}]</span> {msg}</div>"
+    tag_class = "tag-info"
+    if tag_type == "BUY": tag_class = "tag-buy"
+    elif tag_type == "SELL": tag_class = "tag-sell"
+    
+    score_html = f" | 評分: <b>{score}</b>" if score else ""
+    vol_html = f" | 量比: <b>{vol_ratio:.2f}x</b>" if vol_ratio else ""
+    
+    log_html = (f"<div class='log-entry'>"
+                f"<span class='log-time'>[{ts}]</span> "
+                f"<span class='log-tag {tag_class}'>{tag_type}</span> "
+                f"<b>{sid} {name}</b> -> {msg}{score_html}{vol_html}</div>")
+    
     st.session_state.event_log.insert(0, log_html)
-    if len(st.session_state.event_log) > 50: st.session_state.event_log.pop()
+    if len(st.session_state.event_log) > 100: st.session_state.event_log.pop()
 
 # --- 4. 數據獲取與預估成交量 ---
 @st.cache_data(ttl=300)
@@ -297,7 +311,7 @@ def sync_sheets():
             return ""
         st.session_state.search_codes = clean_col('snipe_list')
         st.session_state.inventory_codes = clean_col('inventory_list')
-        add_log("✅ 成功從 Google 表單同步數據")
+        add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
     except Exception as e:
         st.error(f"同步失敗: {e}")
 
@@ -320,6 +334,7 @@ with st.sidebar:
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan():
+    today_str = get_taiwan_time().strftime('%Y-%m-%d')
     now = get_taiwan_time()
     st.markdown(f"### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
     
@@ -344,18 +359,13 @@ def perform_scan():
         elif score >= 20: cmd, clz, tip = "📉 分批賣出", "sell-signal", "🛑 趨勢轉弱。"
         else: cmd, clz, tip = "💀 強力賣出", "sell-signal", "🚨 極高風險。"
         
-        if st.session_state.notified_status.get("TAIEX") != cmd:
-            market_msg = (
-                f"🌐 **【大盤戰情變更】**\n"
-                f"━━━━━━━━━━━━━━━\n"
-                f"**目前狀態：** `{cmd}`\n"
-                f"**戰略評分：** `{score}`\n"
-                f"**即時提醒：** `{tip}`"
-            )
-            send_discord_message(market_msg)
+        # 大盤通知邏輯 (當天變更才發)
+        if st.session_state.notified_status.get("TAIEX") != cmd or st.session_state.notified_date.get("TAIEX") != today_str:
+            send_discord_message(f"🌐 **【大盤戰情變更】**\n━━━━━━━━━━━━━━\n● 狀態：`{cmd}`\n● 指數：`{m_last['close']:.2f}`\n● 評分：`{score}`\n● 提醒：{tip}\n━━━━━━━━━━━━━━")
             if score < 40:
-                send_discord_message("🚨 **【戰術避險通知】**\n大盤分數過低，系統已過濾個股買入訊號！")
+                send_discord_message("🚨 **【戰術警示】**：大盤分數過低，系統進入「靜默模式」，將自動過濾個股買入訊號！")
             st.session_state.notified_status["TAIEX"] = cmd
+            st.session_state.notified_date["TAIEX"] = today_str
 
         c1, c2 = st.columns([1, 2])
         with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
@@ -371,56 +381,67 @@ def perform_scan():
         name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
         is_inv, is_snipe = sid in inv_list, sid in snipe_list
         
-        # 1. 定義訊號等級 (Signal Level)
-        sig_lvl = f"{last['sig_type']}_{'BOOM' if (last['sig_type']=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
+        # 1. 定義訊號等級
+        sig_type = last['sig_type']
+        sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
         
         # 2. 判斷是否需要通知
         old_sig = st.session_state.notified_status.get(sid)
+        old_date = st.session_state.notified_date.get(sid)
         old_price = st.session_state.last_notified_price.get(sid, last['close'])
+        
+        # 下跌觸發條件
         price_drop = (last['close'] - old_price) / old_price < -0.02 
         
         should_send = False
         reason = ""
         msg_header = ""
 
-        if old_sig != sig_lvl or price_drop:
-            if is_inv and last["sig_type"] == "SELL":
+        # 核心邏輯：日期不同 OR 訊號變更 OR 大幅下跌
+        if old_date != today_str or old_sig != sig_lvl or price_drop:
+            
+            if is_inv and sig_type == "SELL":
                 should_send = True
                 msg_header = f"🩸 **【庫存風險警示】**"
                 reason = f"賣點出現：{last['warning']}"
             
-            elif is_snipe and "BUY" in last["sig_type"]:
+            elif is_snipe and "BUY" in sig_type:
                 should_send = True
                 if last["vol_ratio"] > 1.8:
-                    msg_header = "🔥🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥🔥\n🚀 **爆量突破，動能全面點火！**"
+                    msg_header = "🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥\n🚀 **爆量突破，動能全面點火！**"
                     reason = f"⚡ 爆量訊號：{last['warning']}"
                 else:
                     msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
                     reason = f"趨勢轉強：{last['warning']}"
             
+            # 若是因為下跌觸發
             if price_drop and not should_send:
                 should_send = True
                 msg_header = f"⚠️ **【行情回檔通知】**"
-                reason = f"偵測到股價較上次通知下跌逾 2% (現價: {last['close']})"
+                reason = f"偵測到股價較上次通知下跌逾 2%"
 
-            # 3. 執行通知 (格式最佳化)
+            # 3. 執行通知與詳盡日誌
             if should_send:
-                discord_msg = (
-                    f"{msg_header}\n"
-                    f"━━━━━━━━━━━━━━━\n"
-                    f"**股票代號：** `{sid} {name}`\n"
-                    f"**目前現價：** `{last['close']:.2f}`\n"
-                    f"**訊號原因：** `{reason}`\n"
-                    f"**預估量比：** `{last['vol_ratio']:.2f}x`\n"
-                    f"**戰略指引：** `{last['pos_advice']}`\n"
-                    f"**提醒項目：** {last['warning']}\n"
-                    f"━━━━━━━━━━━━━━━"
-                )
+                # Discord 格式區隔化
+                discord_msg = (f"{msg_header}\n"
+                               f"━━━━━━━━━━━━━━\n"
+                               f"● **股票代號**：`{sid} {name}`\n"
+                               f"● **目前現價**：`{last['close']:.2f}`\n"
+                               f"● **訊號原因**：`{reason}`\n"
+                               f"● **預估量比**：`{last['vol_ratio']:.2f}x`\n"
+                               f"● **戰術評分**：`{last['score']}`\n"
+                               f"● **戰略指引**：`{last['pos_advice']}`\n"
+                               f"━━━━━━━━━━━━━━")
                 
                 send_discord_message(discord_msg)
-                add_log(f"{'📦' if is_inv else '🎯'} {sid} {name} -> 訊號變更為 {sig_lvl}")
                 
+                # 戰情日誌詳盡化
+                log_tag = "BUY" if "BUY" in sig_type else ("SELL" if "SELL" in sig_type else "INFO")
+                add_log(sid, name, log_tag, reason, last['score'], last['vol_ratio'])
+                
+                # 更新狀態
                 st.session_state.notified_status[sid] = sig_lvl
+                st.session_state.notified_date[sid] = today_str
                 st.session_state.last_notified_price[sid] = last['close']
         
         processed_stocks.append({
@@ -485,7 +506,7 @@ def perform_scan():
             i_res = pd.DataFrame([{"代碼": i["sid"], "名稱": i["name"], "分數": i["score"], "提醒": i["warning"]} for i in inventory_targets])
             st.dataframe(i_res, hide_index=True, use_container_width=True)
 
-    # --- 戰情即時日誌 (最下方) ---
+    # --- 戰情即時日誌 ---
     st.divider()
     st.write("### 📜 戰情即時日誌")
     log_content = "".join(st.session_state.event_log)
