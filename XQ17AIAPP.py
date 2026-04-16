@@ -95,7 +95,9 @@ def send_discord_message(msg):
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
     if not webhook_url: return
     try:
+        # 增加訊息發送前的區隔處理（如果一次發送多條訊息，Discord Webhook 需要一點點延遲避免限速）
         requests.post(webhook_url, json={"content": msg}, timeout=10)
+        time.sleep(0.5) 
     except Exception: pass
 
 def add_log(msg):
@@ -343,9 +345,16 @@ def perform_scan():
         else: cmd, clz, tip = "💀 強力賣出", "sell-signal", "🚨 極高風險。"
         
         if st.session_state.notified_status.get("TAIEX") != cmd:
-            send_discord_message(f"🌐 **大盤戰情變更**：{cmd}\n評分：{score}\n提醒：{tip}")
+            market_msg = (
+                f"🌐 **【大盤戰情變更】**\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"**目前狀態：** `{cmd}`\n"
+                f"**戰略評分：** `{score}`\n"
+                f"**即時提醒：** `{tip}`"
+            )
+            send_discord_message(market_msg)
             if score < 40:
-                send_discord_message("🚨 **戰術警示**：大盤分數過低，系統已自動進入「靜默模式」，將過濾所有個股買入訊號！")
+                send_discord_message("🚨 **【戰術避險通知】**\n大盤分數過低，系統已過濾個股買入訊號！")
             st.session_state.notified_status["TAIEX"] = cmd
 
         c1, c2 = st.columns([1, 2])
@@ -363,57 +372,54 @@ def perform_scan():
         is_inv, is_snipe = sid in inv_list, sid in snipe_list
         
         # 1. 定義訊號等級 (Signal Level)
-        # 用於判斷狀態是否改變
         sig_lvl = f"{last['sig_type']}_{'BOOM' if (last['sig_type']=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
         
-        # 2. 判斷是否需要通知 (條件：訊號變更 OR 價格大幅下跌)
+        # 2. 判斷是否需要通知
         old_sig = st.session_state.notified_status.get(sid)
         old_price = st.session_state.last_notified_price.get(sid, last['close'])
-        price_drop = (last['close'] - old_price) / old_price < -0.02 # 下跌超過 2%
+        price_drop = (last['close'] - old_price) / old_price < -0.02 
         
         should_send = False
         reason = ""
         msg_header = ""
 
-        # 訊號等級變更才進入
         if old_sig != sig_lvl or price_drop:
             if is_inv and last["sig_type"] == "SELL":
                 should_send = True
-                msg_header = f"🩸 **【庫存風險警示】** 🩸"
+                msg_header = f"🩸 **【庫存風險警示】**"
                 reason = f"賣點出現：{last['warning']}"
             
             elif is_snipe and "BUY" in last["sig_type"]:
                 should_send = True
                 if last["vol_ratio"] > 1.8:
-                    # 極顯眼標示
-                    msg_header = "🔥🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥🔥\n" + \
-                                 "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n" + \
-                                 "🚀 **爆量突破，動能全面點火！**"
+                    msg_header = "🔥🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥🔥\n🚀 **爆量突破，動能全面點火！**"
                     reason = f"⚡ 爆量訊號：{last['warning']}"
                 else:
-                    msg_header = "🏹 **【 買 點 訊 號 觸 發 】** 🏹"
+                    msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
                     reason = f"趨勢轉強：{last['warning']}"
             
-            # 若是因為下跌觸發
             if price_drop and not should_send:
                 should_send = True
-                msg_header = f"⚠️ **【行情回檔通知】** ⚠️"
+                msg_header = f"⚠️ **【行情回檔通知】**"
                 reason = f"偵測到股價較上次通知下跌逾 2% (現價: {last['close']})"
 
-            # 3. 執行通知
+            # 3. 執行通知 (格式最佳化)
             if should_send:
-                discord_msg = (f"{msg_header}\n"
-                               f"**股票代號：** `{sid} {name}`\n"
-                               f"**目前現價：** `{last['close']:.2f}`\n"
-                               f"**訊號原因：** `{reason}`\n"
-                               f"**預估量比：** `{last['vol_ratio']:.2f}x`\n"
-                               f"**戰略指引：** `{last['pos_advice']}`\n"
-                               f"**提醒項目：** {last['warning']}")
+                discord_msg = (
+                    f"{msg_header}\n"
+                    f"━━━━━━━━━━━━━━━\n"
+                    f"**股票代號：** `{sid} {name}`\n"
+                    f"**目前現價：** `{last['close']:.2f}`\n"
+                    f"**訊號原因：** `{reason}`\n"
+                    f"**預估量比：** `{last['vol_ratio']:.2f}x`\n"
+                    f"**戰略指引：** `{last['pos_advice']}`\n"
+                    f"**提醒項目：** {last['warning']}\n"
+                    f"━━━━━━━━━━━━━━━"
+                )
                 
                 send_discord_message(discord_msg)
                 add_log(f"{'📦' if is_inv else '🎯'} {sid} {name} -> 訊號變更為 {sig_lvl}")
                 
-                # 更新 Session State 以防重複
                 st.session_state.notified_status[sid] = sig_lvl
                 st.session_state.last_notified_price[sid] = last['close']
         
