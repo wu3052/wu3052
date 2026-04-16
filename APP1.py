@@ -340,10 +340,10 @@ with st.sidebar:
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     
     # 新增自動監控選項
-    auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (UptimeRobot 適用)", value=False)
+    auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (UptimeRobot 適用)", value=True)
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
     
-    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🟢 開盤中' if is_market_open() else '🔴 已收盤'}")
+    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan():
@@ -420,6 +420,7 @@ def perform_scan():
                     f"💡 形態解讀：{last['pattern_desc']}\n"
                     f"📍 `{last['pos_advice']}`\n"
                     f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
+                    f"⏰通知時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                     f"-----------------------------------------"
                 )
                 send_discord_message(discord_msg)
