@@ -59,12 +59,13 @@ st.markdown("""
 
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
-# 配置 AI
+# --- AI 配置 (修正 404 模型名稱問題) ---
 GOOGLE_KEY = st.secrets.get("GOOGLE_API_KEY")
 if GOOGLE_KEY:
     try:
         genai.configure(api_key=GOOGLE_KEY)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 修正：明確指定 models/ 完整路徑
+        model = genai.GenerativeModel('models/gemini-1.5-flash')
     except Exception as e:
         st.error(f"AI 配置失敗: {e}")
         model = None
@@ -181,7 +182,8 @@ def get_ai_sentiment(sid, name):
         
         return sentiment, ai_res + kw_msg
     except Exception as e:
-        return "N/A", f"連線或分析異常: {str(e)[:20]}"
+        # 強化防錯：若 AI 報錯 (如 404 或連線問題)，至少回傳關鍵字
+        return "N/A", f"AI暫時離線({str(e)[:15]}){kw_msg}"
 
 @st.cache_data(ttl=86400)
 def get_stock_info():
@@ -253,11 +255,11 @@ def analyze_strategy(df):
     if row["close"] > row["ma200"]: score += 5
     if row["is_weekly_bull"]: score += 5
     
-    # 大盤濾網
+    # 大盤濾網 (狙擊手隱蔽邏輯)
     if st.session_state.taiex_score < 40:
         score -= 30
     
-    # 資金控管
+    # 資金控管 (根據 ATR 波動率)
     risk_volatility = (row['atr'] / row['close']) * 100 if row['close'] > 0 else 0
     if risk_volatility > 4: position = "5% (高波動風險)"
     elif risk_volatility > 2: position = "10% (中等波動)"
