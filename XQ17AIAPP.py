@@ -82,9 +82,11 @@ def get_yf_ticker(sid):
     if sid in st.session_state.sid_map: return st.session_state.sid_map[sid]
     for suffix in [".TW", ".TWO"]:
         t = yf.Ticker(f"{sid}{suffix}")
-        if t.fast_info.get('previous_close') is not None:
-            st.session_state.sid_map[sid] = f"{sid}{suffix}"
-            return f"{sid}{suffix}"
+        try:
+            if t.fast_info.get('previous_close') is not None:
+                st.session_state.sid_map[sid] = f"{sid}{suffix}"
+                return f"{sid}{suffix}"
+        except: continue
     return f"{sid}.TW"
 
 def send_discord_message(msg):
@@ -100,23 +102,31 @@ def add_log(msg):
     st.session_state.event_log.insert(0, log_html)
     if len(st.session_state.event_log) > 50: st.session_state.event_log.pop()
 
-# 新增：AI 情緒分析與關鍵字監控
+# 新增：AI 情緒分析與關鍵字監控 (修正 Model Name)
 def analyze_sentiment_and_news(sid, name):
     api_key = st.secrets.get("GOOGLE_API_KEY")
     if not api_key: return "未配置 AI Key", "N/A"
     
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 使用更穩定的模型名稱
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        # 模擬擷取關鍵字與新聞情緒 (實際環境可對接 News API)
         keywords = ["缺貨", "漲價", "聯貸案", "營收新高", "毛利下滑"]
-        prompt = f"分析台灣股票 {sid} {name} 的市場情緒。重點監控關鍵字：{keywords}。請給出 1.情緒評分(0-100) 2.一句話摘要目前的市場熱度，並判斷是否進入『擦鞋童過熱階段』。"
+        prompt = (f"你是一位專業台股分析師。請分析台灣股票 {sid} {name} 的市場情緒。 "
+                  f"重點監控關鍵字：{keywords}。請簡短給出：1.情緒評分(0-100) "
+                  f"2.一句話摘要目前熱度，判斷是否進入『擦鞋童過熱階段』。")
         
         response = model.generate_content(prompt)
         return response.text, "AI 分析完成"
     except Exception as e:
-        return f"AI 獲取失敗: {str(e)}", "Error"
+        # 如果 2.0 失敗，嘗試回退到 1.5-flash
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(prompt)
+            return response.text, "AI 分析完成"
+        except:
+            return f"AI 獲取失敗 (請檢查 API Key 或版本限制): {str(e)}", "Error"
 
 # 新增：ATR 風險價值倉位計算
 def calculate_atr_position(df):
@@ -129,9 +139,9 @@ def calculate_atr_position(df):
     price = df['close'].iloc[-1]
     
     volatility = (atr / price) * 100
-    if volatility > 4: return "5% (高波動)"
-    elif volatility > 2: return "10% (中波動)"
-    else: return "15% (低波動趨勢穩)"
+    if volatility > 4: return "5% (高波動，嚴控部位)"
+    elif volatility > 2: return "10% (中波動，適中部位)"
+    else: return "15% (低波動，趨勢穩健)"
 
 # --- 4. 數據獲取與預估成交量 ---
 @st.cache_data(ttl=300)
@@ -321,7 +331,6 @@ def perform_scan():
     all_codes = sorted(list(set(snipe_list + inv_list)))
     
     stock_info = get_stock_info()
-    scan_results = []
     processed_stocks = []
 
     m_df = get_stock_data("TAIEX", fm_token)
