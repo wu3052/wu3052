@@ -428,9 +428,8 @@ def perform_scan():
                     f"💡 形態解讀：{last['pattern_desc']}\n"
                     f"📍 `{last['pos_advice']}`\n"
                     f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
-                    f"⏰ *通知時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
-                    
-                    f"-----------------------------------------"
+                    f"通知時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*"
+                    f"----------------------------------"
                 )
                 send_discord_message(discord_msg)
                 add_log(sid, name, "BUY" if "BUY" in sig_type else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
