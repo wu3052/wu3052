@@ -309,7 +309,8 @@ def plot_advanced_chart(df, title=""):
     stars = df_plot[df_plot["star_signal"]]
     fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    colors = ['#ff4b4b' if val >= 0 else '#28a745' for v in df_plot["hist"]]
+    # --- 修正此處的 v 與 val 變數名稱錯誤 ---
+    colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
     fig.update_layout(height=650, title=title, template="plotly_white", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
@@ -362,7 +363,7 @@ def perform_scan():
     stock_info = get_stock_info()
     processed_stocks = []
 
-    # --- 大盤分析區塊 (包含補回的K線圖) ---
+    # 大盤分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df, is_market=True)
@@ -379,7 +380,7 @@ def perform_scan():
         with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
         with c2: st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
         
-        # 補回大盤K線圖顯示
+        # 顯示大盤K線圖
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
