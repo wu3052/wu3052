@@ -210,38 +210,48 @@ def analyze_strategy(df, is_market=False):
     prev = df.iloc[-2]
     
     # --- 形態偵測邏輯更新 ---
-    # 計算短中期均線的最大離散度
     ma_list_short = [row["ma5"], row["ma10"], row["ma20"]]
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
     ma_list_full = [row["ma5"], row["ma10"], row["ma20"], row["ma60"], row["ma200"]]
     
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
-    diff_full = (max(ma_list_full) - min(ma_list_full)) / row["close"]
     
-    pattern_name = "一般盤整"
-    pattern_desc = ""
+    # 預設狀態解讀優化
+    pattern_name = "🔄 一般盤整"
+    pattern_desc = "目前處於區間震盪，均線未見明顯趨勢方向，建議觀望或等待突破。"
 
-    # 1. 鑽石眼 (Diamond Eye) - 最強訊號：四線或五線合一 + 長紅突破
+    # --- 做多型態 (正向) ---
     if diff_long < 0.02 and row["close"] > row["ma5"] and row["close"] > row["open"]:
         pattern_name = "💎 鑽石眼"
-        pattern_desc = "超級飆股現身訊號！極度籌碼壓縮後均線向上發散，市場進入瘋狂狀態，無塵埃飆升。"
-    
-    # 2. 鑽石坑 (Diamond Pit) - 跨越長線障礙
+        pattern_desc = "超級飆股現身！極度籌碼壓縮後均線向上發散，市場進入瘋狂狀態，無塵埃飆升。"
     elif row["close"] > max(ma_list_long) and prev["close"] <= max(ma_list_long):
         pattern_name = "🕳️ 鑽石坑"
         pattern_desc = "跨越長線柵欄的主升段確認！股價克服所有長期壓力，波段利潤啟動，宜勇敢加碼。"
-        
-    # 3. 黃金眼 (Golden Eye) - 強烈糾結後的爆發
     elif diff_short < 0.015 and row["close"] > row["ma5"] and row["close"] > row["open"]:
         pattern_name = "🟡 黃金眼"
         pattern_desc = "籌碼極度壓縮與共識！控盤者完成洗盤正式發動，所有均線將同步向上發散。"
-
-    # 4. 黃金三角眼 (Golden Triangle Eye) - 起漲一浪
     elif row["ma5"] > row["ma10"] and row["ma5"] > row["ma20"] and prev["ma5"] <= prev["ma10"]:
         pattern_name = "📐 黃金三角眼"
         pattern_desc = "多頭一浪啟動！形成堅實支撐三角區，標誌空頭盤整結束與新上漲慣性開始。"
-    
+    elif row["close"] > row["ma5"] and row["ma5"] > row["ma10"] and row["ma10"] > row["ma20"]:
+        pattern_name = "📈 多頭排列"
+        pattern_desc = "多頭趨勢運行中，均線呈發散向上態勢，適合順勢操作。"
+
+    # --- 做空型態 (反意) ---
+    elif row["close"] < min(ma_list_long) and prev["close"] >= min(ma_list_long):
+        pattern_name = "💀 斷頭台"
+        pattern_desc = "空頭爆發警告！股價一次跌破多條支撐均線，籌碼全面鬆動，風險極高。"
+    elif diff_short < 0.015 and row["close"] < row["ma5"] and row["close"] < row["open"]:
+        pattern_name = "🌑 烏雲眼"
+        pattern_desc = "高檔盤整轉弱！糾結的均線開始向下開口，顯示獲利了結壓力沉重，恐有急殺。"
+    elif row["ma5"] < row["ma10"] and row["ma5"] < row["ma20"] and prev["ma5"] >= prev["ma10"]:
+        pattern_name = "🔻 死亡三角"
+        pattern_desc = "空頭慣性啟動！短線均線反轉向下，形成上方沉重套牢壓力，暫避風頭。"
+    elif row["close"] < row["ma5"] and row["ma5"] < row["ma10"] and row["ma10"] < row["ma20"]:
+        pattern_name = "📉 空頭排列"
+        pattern_desc = "典型的下跌通道，均線層層壓制，切勿盲目接刀。"
+
     df.at[last_idx, "pattern"] = pattern_name
     df.at[last_idx, "pattern_desc"] = pattern_desc
 
@@ -266,14 +276,12 @@ def analyze_strategy(df, is_market=False):
     if row["close"] > row["ma200"]: score += 5
     if row["is_weekly_bull"]: score += 5
     
-    # 大盤濾鏡
     if not is_market and st.session_state.market_score < 40:
         score -= 20
     
     df.at[last_idx, "score"] = max(0, min(100, score))
     df.at[last_idx, "warning"] = " | ".join(buy_pts + sell_pts) if (buy_pts or sell_pts) else "趨勢穩定中"
     
-    # 最終訊號判定
     sig = "HOLD"
     if buy_pts: sig = "BUY"
     if sell_pts: sig = "SELL"
@@ -283,7 +291,6 @@ def analyze_strategy(df, is_market=False):
 
     df.at[last_idx, "sig_type"] = sig
     
-    # 資金控管計算
     risk_volatility = (row["atr"] / row["close"]) * 100
     if risk_volatility < 1.5:
         pos_advice, risk_lv = "建議配置: 15~20% (穩健型)", "low"
@@ -423,7 +430,7 @@ def perform_scan():
         msg_header = ""
 
         if old_date != today_str or old_sig != sig_lvl or price_drop:
-            if is_inv and sig_type == "SELL":
+            if is_inv and "SELL" in sig_type:
                 should_send = True
                 msg_header = f"🩸 **【庫存風險警示】**"
                 reason = f"賣點出現：{last['warning']}"
@@ -500,7 +507,8 @@ def perform_scan():
                 <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康評分: {last['score']}</span></div>
             </div>
             <div style="font-size:0.9em; margin-top:8px; color:#555;">
-                <b>🛡️ 風險狀態: {last['pos_advice']}</b> | 提醒: {last['warning']} | 5MA乖離: {last['bias_5']:.2f}%
+                <b>🛡️ 風險狀態: {last['pos_advice']}</b> | 提醒: {last['warning']} | 5MA乖離: {last['bias_5']:.2f}%<br>
+                <b>💡 形態解讀：</b>{item['pattern_desc']}
             </div>
         </div>
         """, unsafe_allow_html=True)
