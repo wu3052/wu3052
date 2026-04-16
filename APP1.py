@@ -410,6 +410,7 @@ def perform_scan():
 
             if should_send:
                 discord_msg = (
+                    f"-----------------------------------------\n"
                     f"{msg_header}\n"
                     f"-----------------------------------------\n"
                     f"股價代碼 : `{sid} {name}`\n"
