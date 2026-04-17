@@ -400,29 +400,47 @@ def perform_scan():
     now = get_taiwan_time()
     
     # ---------------------------------------------------------
-    # 【置頂大盤分析區】
+    # 【置頂大盤儀表板 - 模擬附圖佈局】
     # ---------------------------------------------------------
-    st.markdown("### 🏛️ 加權指數 (TAIEX) 戰情")
-    with st.container():
-        m_df = get_stock_data("TAIEX", fm_token)
-        if m_df is not None:
-            m_df = analyze_strategy(m_df, is_market=True)
-            m_last = m_df.iloc[-1]
-            st.session_state.market_score = m_last["score"]
-            score = m_last["score"]
-            if score >= 80: cmd, clz, tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強。"
-            elif score >= 60: cmd, clz, tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中。"
-            elif score >= 40: cmd, clz, tip = "Neutral 觀望", "neutral-signal", "🌪 盤勢震盪中。"
-            elif score >= 20: cmd, clz, tip = "📉 分批賣出", "sell-signal", "🛑 趨勢轉弱。"
-            else: cmd, clz, tip = "💀 強力賣出", "sell-signal", "🚨 極高風險。"
-            
-            c1, c2 = st.columns([1, 2])
-            with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
-            with c2: st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
-            with st.expander("📊 查看加權指數詳細分析圖表"):
-                st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
+    st.markdown("### 🌐 台股加權指數 (TAIEX)")
     
+    m_df = get_stock_data("TAIEX", fm_token)
+    if m_df is not None:
+        m_df = analyze_strategy(m_df, is_market=True)
+        m_last = m_df.iloc[-1]
+        m_prev = m_df.iloc[-2]
+        diff = m_last['close'] - m_prev['close']
+        st.session_state.market_score = m_last["score"]
+        
+        # 定義指令與提示內容
+        score = m_last["score"]
+        if score >= 80: cmd, tip = "🚀 強力買進", "🔥 市場動能極強。"
+        elif score >= 60: cmd, tip = "📈 分批買進", "⚖️ 穩定上漲中。"
+        elif score >= 40: cmd, tip = "Neutral 觀望", "🌪 盤勢震盪中。"
+        elif score >= 20: cmd, tip = "📉 分批賣出", "🛑 趨勢轉弱。"
+        else: cmd, tip = "💀 強力賣出", "🚨 極高風險。"
+
+        # 第一列：左側指數，右側指揮官指令
+        row1_col1, row1_col2 = st.columns([1, 2])
+        with row1_col1:
+            st.write("加權指數")
+            st.markdown(f"<div class='market-value'>{m_last['close']:,.2f}</div>", unsafe_allow_html=True)
+            diff_class = "diff-down" if diff < 0 else "diff-up"
+            diff_symbol = "↓" if diff < 0 else "↑"
+            st.markdown(f"<span class='market-diff {diff_class}'>{diff_symbol} {abs(diff):.2f}</span>", unsafe_allow_html=True)
+        
+        with row1_col2:
+            st.markdown(f"<div class='commander-box'>指揮官指令：{cmd} (評分: {score})</div>", unsafe_allow_html=True)
+
+        # 第二列：大盤風險提示
+        st.markdown(f"<p style='margin-top:20px; font-size:1.1em;'><b>大盤風險提示：</b> {tip}</p>", unsafe_allow_html=True)
+
+        # 第三列：展開式大盤 K 線圖
+        with st.expander("📂 查看大盤詳細走勢", expanded=True):
+            st.plotly_chart(plot_advanced_chart(m_df, "大盤 TAIEX 指數走勢"), use_container_width=True)
+
     st.divider()
+    # 接下來接原本的 [📡 掃描時間] 與 [狙擊目標監控]...
     st.markdown(f"#### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
     
     snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
