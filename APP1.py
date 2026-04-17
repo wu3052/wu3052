@@ -431,7 +431,7 @@ def perform_scan():
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
     # 處理個股 (平行化抓取優化雲端效能)
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
         for future in future_to_sid:
             sid = future_to_sid[future]
