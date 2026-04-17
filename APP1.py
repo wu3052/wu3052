@@ -241,6 +241,7 @@ def analyze_strategy(df, is_market=False):
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['atr'] = tr.rolling(14).mean()
     
+    df["is_first_breakout"] = False
     last_idx = df.index[-1]
     row = df.iloc[-1]
     prev = df.iloc[-2]
@@ -490,17 +491,32 @@ def perform_scan():
                 should_send = False
                 msg_header = ""
 
+# --- 判斷是否需要發送通知 ---
                 if old_date != today_str or old_sig != sig_lvl or price_drop:
+                    
+                    # 1. 庫存股賣出警示 (優先級最高)
                     if is_inv and sig_type == "SELL":
                         should_send = True
                         msg_header = f"🩸 **【庫存風險警示】**"
-                    elif is_snipe and "BUY" in sig_type:
+                    
+                    # 2. 狙擊名單買入訊號
+                    elif is_snipe and ("BUY" in sig_type or last["is_first_breakout"]):
                         should_send = True
-                        msg_header = "🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥\n🚀 **爆量突破，動能全面點火！**" if last["vol_ratio"] > 1.8 else "🏹 **【 買 點 訊 號 觸 發 】**"
+                        # 優先判斷是否為「噴發第一根」
+                        if last.get("is_first_breakout"):
+                            msg_header = "🚀🚀 **【 噴 發 第 一 根 確 認 】** 🚀🚀\n**均線糾結慣性改變，請立即追蹤！**"
+                        # 其次判斷是否爆量
+                        elif last["vol_ratio"] > 1.8:
+                            msg_header = "🔥🔥 **【 狙 擊 目 標 爆 量 】** 🔥🔥\n🚀 **動能全面點火，準備開火！**"
+                        else:
+                            msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
+                    
+                    # 3. 行情回檔通知 (當價格跌幅超過 2% 時)
                     elif price_drop:
                         should_send = True
                         msg_header = f"⚠️ **【行情回檔通知】**"
 
+                    # 執行發送 Discord
                     if should_send:
                         discord_msg = (
                             f"-----------------------------------------\n"
@@ -517,7 +533,9 @@ def perform_scan():
                             f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
                         )
                         send_discord_message(discord_msg)
-                        add_log(sid, name, "BUY" if "BUY" in sig_type else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
+                        add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
+                        
+                        # 更新狀態防止重複通知
                         st.session_state.notified_status[sid] = sig_lvl
                         st.session_state.notified_date[sid] = today_str
                         st.session_state.last_notified_price[sid] = last['close']
