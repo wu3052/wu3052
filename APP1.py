@@ -10,7 +10,7 @@ import time
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. 頁面配置與進階 CSS (完全保留) ---
+# --- 1. 頁面配置與進階 CSS ---
 st.set_page_config(layout="wide", page_title="股票狙擊手 Pro Max V2", page_icon="🏹")
 
 st.markdown("""
@@ -79,21 +79,17 @@ def get_taiwan_time():
 
 def is_market_open():
     now = get_taiwan_time()
-    # 台灣開盤時間：週一至週五 09:00 ~ 13:35
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:35", "%H:%M").time()
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
 
 def get_yf_ticker(sid):
-    """優化 yfinance 股票代碼對應速度，減少雲端超時"""
     if sid == "TAIEX": return "^TWII"
     if sid in st.session_state.sid_map: return st.session_state.sid_map[sid]
     
-    # 邏輯優化：優先嘗試 .TW (上市)，失敗再嘗試 .TWO (上櫃)
     for suffix in [".TW", ".TWO"]:
         ticker = f"{sid}{suffix}"
         try:
-            # 使用快取檢查，避免頻繁請求 API
             t = yf.Ticker(ticker)
             info = t.fast_info
             if info.get('lastPrice') is not None:
@@ -126,10 +122,8 @@ def add_log(sid, name, tag_type, msg, score=None, vol_ratio=None):
     st.session_state.event_log.insert(0, log_html)
     if len(st.session_state.event_log) > 100: st.session_state.event_log.pop()
 
-# --- 4. 數據獲取與預估成交量 (修正 yfinance 即時性與 TTL 權衡) ---
-
+# --- 4. 數據獲取與預估成交量 ---
 def calculate_est_volume(current_vol):
-    """修正預估成交量邏輯：考量開盤爆量衰減與搓合時間"""
     now = get_taiwan_time()
     current_minutes = now.hour * 60 + now.minute
     start_minutes = 9 * 60  # 09:00
@@ -139,23 +133,19 @@ def calculate_est_volume(current_vol):
     if current_minutes >= end_minutes: return current_vol
     
     passed = current_minutes - start_minutes
-
-    # --- 新增這行：開盤前 5 分鐘數據波動大，不進行預估 ---
     if passed < 5: return current_vol 
     
-    # 台灣股市總交易時間 270 分鐘
     est = current_vol * (270 / passed)
     return est
 
-@st.cache_data(ttl=45 if is_market_open() else 3600) # 盤中快取縮短至45秒，盤後1小時
+@st.cache_data(ttl=45 if is_market_open() else 3600)
 def get_stock_data(sid, token):
     try:
-        # 1. 抓取 FinMind 歷史資料
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockPrice", "data_id": sid,
             "start_date": (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
             "token": token
-        }, timeout=15).json() # 增加 timeout 防止雲端卡死
+        }, timeout=15).json()
         
         data = res.get("data", [])
         if not data: return None
@@ -165,15 +155,12 @@ def get_stock_data(sid, token):
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values("date").reset_index(drop=True)
 
-        # 2. 盤中即時資料覆蓋 (修正 yfinance 限制與下載速度)
         if is_market_open() or sid == "TAIEX":
             ticker_str = get_yf_ticker(sid)
-            # 使用 period="2d" 並限制下載 interval 以加速回應
             yt = yf.download(ticker_str, period="2d", interval="1m", progress=False, timeout=10)
             
             if not yt.empty:
                 last_price = float(yt['Close'].iloc[-1])
-                # 計算今日累計量 (排除昨日數據)
                 today_start = get_taiwan_time().replace(hour=9, minute=0, second=0, microsecond=0)
                 today_yt = yt[yt.index >= today_start.strftime('%Y-%m-%d %H:%M:%S')]
                 
@@ -182,11 +169,9 @@ def get_stock_data(sid, token):
                     day_high = float(today_yt['High'].max())
                     day_low = float(today_yt['Low'].min())
                     
-                    # 更新或追加今日 K 線
                     if df.iloc[-1]['date'].date() == get_taiwan_time().date():
                         idx = df.index[-1]
                     else:
-                        # 如果 FinMind 還沒更新今天，手動加一行
                         new_row = df.iloc[-1].copy()
                         new_row['date'] = pd.Timestamp(get_taiwan_time().date())
                         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
@@ -217,7 +202,7 @@ def get_stock_info():
         return df
     except: return pd.DataFrame()
 
-# --- 5. 核心策略分析 (完整保留形態文字) ---
+# --- 5. 核心策略分析 ---
 def analyze_strategy(df, is_market=False):
     if df is None or len(df) < 180: return None
     
@@ -225,7 +210,7 @@ def analyze_strategy(df, is_market=False):
     for ma in [5, 10, 20, 55, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
-    # 策略指標 (完全保留用戶要求的模擬邏輯)
+    # 策略指標
     df["ma144_60min"] = df["close"].rolling(36).mean()
     df["ma55_60min"] = df["close"].rolling(14).mean()
     df["week_ma"] = df["close"].rolling(25).mean()
@@ -237,6 +222,7 @@ def analyze_strategy(df, is_market=False):
     df['macd'] = exp1 - exp2
     df['signal_line'] = df['macd'].ewm(span=9, adjust=False).mean()
     df['hist'] = df['macd'] - df['signal_line']
+    df = df.ffill().bfill()
     
     # 乖離與量比
     df["bias_5"] = ((df["close"] - df["ma5"]) / df["ma5"]) * 100
@@ -261,14 +247,14 @@ def analyze_strategy(df, is_market=False):
     row = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # --- 形態偵測邏輯 (完全還原原始描述內容) ---
+    # --- 形態偵測邏輯 ---
     ma_list_short = [row["ma5"], row["ma10"], row["ma20"]]
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
     pattern_name = "一般盤整"
-    pattern_desc = "目前處於無明顯趨勢的整理區間。建議耐心等待均線糾結後的方向突破，不宜過度頻繁交易。"
+    pattern_desc = "目前處於無明顯趨勢的整理區間。建議耐心等待均線糾結後的方向突破。"
 
     if diff_long < 0.02 and row["close"] > row["ma5"] and row["close"] > row["open"]:
         pattern_name = "💎 鑽石眼"
@@ -281,17 +267,27 @@ def analyze_strategy(df, is_market=False):
         pattern_desc = "均線將同步向上發散，「三均線整齊排列」，「底部翻多」的最強訊號。"
     elif row["ma5"] > row["ma10"] and row["ma5"] > row["ma20"] and prev["ma5"] <= prev["ma10"]:
         pattern_name = "📐 黃金三角眼"
-        pattern_desc = "多頭一浪啟動！形成堅實支撐三角區，標誌空頭盤整結束與新上漲慣性開始，「試單進場點」。"
+        pattern_desc = "多頭一浪啟動！形成堅實支撐三角區，標誌空頭盤整結束，「試單進場點」。"
     
     df.at[last_idx, "pattern"] = pattern_name
     df.at[last_idx, "pattern_desc"] = pattern_desc
 
-    # --- 買賣點判斷邏輯 (依照 User Correction：5MA 優先) ---
+    # --- 買賣點判斷邏輯 ---
     buy_pts, sell_pts = [], []
-    if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
-    if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
-    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
-    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
+    
+    # [新增] 1日不創新低邏輯
+    is_no_new_low = row["low"] >= prev["low"]
+    if is_no_new_low:
+        buy_pts.append("底部位階支撐(1日不創新低)")
+
+    if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: 
+        buy_pts.append("站上5MA(買點)")
+    if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: 
+        buy_pts.append("站上60分144MA(買點)")
+    if row["star_signal"]: 
+        buy_pts.append("站上發動點(觀察買點)")
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: 
+        buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
 
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
@@ -299,9 +295,12 @@ def analyze_strategy(df, is_market=False):
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
+    # --- 評分邏輯 ---
     score = 50
     if buy_pts: score += 15 * len(buy_pts)
     if sell_pts: score -= 20 * len(sell_pts)
+    if is_no_new_low: score += 5  # [新增] 不創新低加分項
+    
     if row["vol_ratio"] > 1.8: score += 10
     if row["close"] > row["ma200"]: score += 5
     if row["is_weekly_bull"]: score += 5
@@ -430,7 +429,7 @@ def perform_scan():
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-    # 處理個股 (平行化抓取優化雲端效能)
+    # 處理個股
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
         for future in future_to_sid:
@@ -493,7 +492,7 @@ def perform_scan():
             except Exception as e:
                 print(f"Error processing {sid}: {e}")
 
-    # --- 顯示區 (完全還原 Dashboard Box 與動畫效果) ---
+    # --- 顯示區 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
     for item in snipe_targets:
