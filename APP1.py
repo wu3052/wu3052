@@ -11,7 +11,7 @@ import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 
 # --- 1. 頁面配置與進階 CSS ---
-st.set_page_config(layout="wide", page_title="股票狙擊手 Pro Max V2", page_icon="🏹")
+st.set_page_config(layout="wide", page_title="股票狙擊手 Pro Max V3", page_icon="🏹")
 
 st.markdown("""
 <style>
@@ -78,8 +78,8 @@ def get_taiwan_time():
     return datetime.utcnow() + timedelta(hours=8)
 
 def is_market_open():
-    """判斷是否為台灣股市交易時間 (週一至五 09:00~13:30)"""
     now = get_taiwan_time()
+    # 修改為精確開盤區間 9:00 ~ 13:30
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:30", "%H:%M").time()
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
@@ -100,10 +100,9 @@ def get_yf_ticker(sid):
     return f"{sid}.TW"
 
 def send_discord_message(msg):
-    # 檢查手動停止按鈕
+    # 加入手動停止判斷
     if st.session_state.get("stop_discord", False):
         return
-    
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
     if not webhook_url: return
     try:
@@ -295,7 +294,9 @@ def analyze_strategy(df, is_market=False):
     # --- 買賣點判斷邏輯 ---
     buy_pts, sell_pts = [], []
     
-    # 買進點判斷
+    # 買點邏輯
+    is_no_new_low = row["low"] >= prev["low"]
+    
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: 
         buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: 
@@ -305,27 +306,29 @@ def analyze_strategy(df, is_market=False):
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: 
         buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
 
-    # 賣出點判斷與位階監測 (修正需求 3)
+    # 賣點邏輯與位階監測修正 (需求3)
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
-    # 位階描述邏輯修正
-    if sell_pts:
-        # 賣出時偵測頭部
-        if row["close"] <= prev["close"]:
-            sell_pts.append("頭部位階跌破(1日不創新高)")
-    else:
-        # 僅在非賣出訊號時顯示底部位階
-        if row["low"] >= prev["low"]:
-            buy_pts.append("底部位階支撐(1日不創新低)")
+    # 判斷是否顯示頭部跌破
+    is_break_head = False
+    if sell_pts and row["close"] <= prev["close"]:
+        sell_pts.append("頭部位階跌破(1日不創新高)")
+        is_break_head = True
+
+    # 只有非賣點時才顯示支撐
+    if not sell_pts and is_no_new_low:
+        buy_pts.append("底部位階支撐(1日不創新低)")
 
     # --- 評分邏輯 ---
     score = 50
-    if buy_pts: score += 15 * len([p for p in buy_pts if "買" in p])
-    if sell_pts: score -= 20 * len([p for p in sell_pts if "賣" in p])
+    if buy_pts: score += 15 * len(buy_pts)
+    if sell_pts: score -= 20 * len(sell_pts)
+    if is_no_new_low and not sell_pts: score += 5  
+    if is_break_head: score -= 10
     
     if row["vol_ratio"] > 1.8: score += 10
     if row["close"] > row["ma200"]: score += 5
@@ -376,17 +379,15 @@ def plot_advanced_chart(df, title=""):
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-    # 修正需求 4: 放置在噴發 K 棒下方
+    # 修正噴發標註位置與樣式 (需求4)
     if "is_first_breakout" in df_plot.columns:
         breakouts = df_plot[df_plot["is_first_breakout"] == True]
         if not breakouts.empty:
             fig.add_trace(go.Scatter(
                 x=breakouts["date"], 
-                y=breakouts["low"] * 0.97, # 下移
-                mode="markers+text",
-                marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"),
-                text="🚀噴發第一根",
-                textposition="bottom center",
+                y=breakouts["low"] * 0.95, # 放置在 K 棒下方
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=18, color="#ff4b4b"),
                 name="噴發第一根"
             ), row=1, col=1)
 
@@ -433,6 +434,10 @@ if not st.session_state.first_sync_done:
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
     fm_token = st.text_input("FinMind Token", value=st.secrets.get("FINMIND_TOKEN", ""), type="password")
+    
+    # 需求1: 加入手動停止按鈕
+    st.session_state.stop_discord = st.toggle("🛑 停止傳送 Discord 訊息", value=False)
+    
     if st.button("🔄 手動同步雲端清單"):
         sync_sheets()
         st.rerun()
@@ -440,17 +445,14 @@ with st.sidebar:
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     
-    # 修正需求 1 & 2
-    auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (09:00~13:30)", value=True)
-    stop_discord = st.toggle("🚫 手動停止傳送 Discord 訊息", value=False)
-    st.session_state.stop_discord = stop_discord
-
+    # 需求2: 說明自動啟閉邏輯
+    auto_monitor = st.checkbox("🔄 開啟盤中自動監控", value=True)
+    if auto_monitor:
+        st.caption("ℹ️ 已設定於台股開盤時間(09:00~13:30)自動執行")
+        
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
     
-    status_text = "🔴開盤中" if is_market_open() else "🟢非開盤期間"
-    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {status_text}")
-    if stop_discord:
-        st.warning("⚠️ Discord 通知目前已手動關閉")
+    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan():
@@ -554,11 +556,18 @@ def perform_scan():
                 print(f"Error processing {sid}: {e}")
 
     # --- 顯示區 ---
-    st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
-    snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
+    st.subheader("🔥 狙擊目標監控 (需求5: 按分數強弱排序)")
+    
+    # 過濾出符合標註條件的股票並依分數排序
+    snipe_targets = sorted(
+        [s for s in processed_stocks if s["is_snipe"]], 
+        key=lambda x: x["score"], 
+        reverse=True
+    )
+    
     for item in snipe_targets:
         last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
-        is_boom = ("BUY" in last["sig_type"] and last["vol_ratio"] > 1.8)
+        is_boom = ("BUY" in last["sig_type"] and last["vol_ratio"] > 1.8) or last.get("is_first_breakout")
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         st.markdown(f"""
         <div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left;">
@@ -601,7 +610,7 @@ def perform_scan():
     log_content = "".join(st.session_state.event_log)
     st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
 
-# --- 10. 主循環邏輯 ---
+# --- 10. 主循環邏輯 (需求2: 自動啟閉控制) ---
 placeholder = st.empty()
 
 if analyze_btn:
@@ -613,9 +622,8 @@ elif auto_monitor:
         time.sleep(interval * 60)
         st.rerun()
     else:
-        # 非開盤時間顯示最後掃描數據，但不自動重整
+        # 非開盤時間執行一次後停止自動倒數
         with placeholder.container(): perform_scan()
-        st.warning(f"🌙 目前非開盤時間 (週一至五 09:00~13:30)，自動重整已暫停，以保護 API 配額。")
+        st.warning("🌙 目前非開盤時間 (台股 09:00~13:30)，自動監控已進入休眠模式。")
 else:
-    # 未開啟自動監控，僅在初次載入執行
     with placeholder.container(): perform_scan()
