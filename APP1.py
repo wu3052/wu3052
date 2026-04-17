@@ -84,14 +84,15 @@ def is_market_open():
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
 
 def get_yf_ticker(sid):
+    if sid == "TAIEX": return "^TWII"
     if sid in st.session_state.sid_map: return st.session_state.sid_map[sid]
+    
     for suffix in [".TW", ".TWO"]:
-        t = yf.Ticker(f"{sid}{suffix}")
-        try:
-            if t.fast_info.get('previous_close') is not None:
-                st.session_state.sid_map[sid] = f"{sid}{suffix}"
-                return f"{sid}{suffix}"
-        except: continue
+        ticker = f"{sid}{suffix}"
+        test = yf.download(ticker, period="1d", progress=False)
+        if not test.empty:
+            st.session_state.sid_map[sid] = ticker
+            return ticker
     return f"{sid}.TW"
 
 def send_discord_message(msg):
@@ -118,10 +119,11 @@ def add_log(sid, name, tag_type, msg, score=None, vol_ratio=None):
     st.session_state.event_log.insert(0, log_html)
     if len(st.session_state.event_log) > 100: st.session_state.event_log.pop()
 
-# --- 4. 數據獲取與預估成交量 ---
-@st.cache_data(ttl=300)
+# --- 4. 數據獲取與預估成交量 (修正緩存與即時性) ---
+@st.cache_data(ttl=60)
 def get_stock_data(sid, token):
     try:
+        # 1. 抓取 FinMind 歷史資料
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockPrice", "data_id": sid,
             "start_date": (datetime.now() - timedelta(days=600)).strftime("%Y-%m-%d"),
@@ -135,24 +137,37 @@ def get_stock_data(sid, token):
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values("date").reset_index(drop=True)
 
-        if is_market_open() and sid != "TAIEX":
+        # 2. 盤中即時資料覆蓋
+        if is_market_open():
             ticker_str = get_yf_ticker(sid)
-            yt = yf.download(ticker_str, period="1d", interval="5m", progress=False)
+            # 使用 period="2d" 確保能抓到正在跳動的今日數據
+            yt = yf.download(ticker_str, period="2d", interval="1m", progress=False)
+            
             if not yt.empty:
-                last_price = yt['Close'].iloc[-1]
-                day_vol = yt['Volume'].sum()
+                last_price = float(yt['Close'].iloc[-1])
+                # 取得今日累計成交量 (yfinance 1d 模式)
+                day_yt = yf.download(ticker_str, period="1d", progress=False)
+                day_vol = int(day_yt['Volume'].iloc[-1]) if not day_yt.empty else df.iloc[-1]['volume']
+                
+                # 更新最後一列
                 df.loc[df.index[-1], 'close'] = last_price
                 df.loc[df.index[-1], 'high'] = max(df.loc[df.index[-1], 'high'], yt['High'].max())
                 df.loc[df.index[-1], 'low'] = min(df.loc[df.index[-1], 'low'], yt['Low'].min())
                 df.loc[df.index[-1], 'volume'] = day_vol
+                
+                # 計算預估量 (9:00 ~ 13:30 共 270 分鐘)
                 now = get_taiwan_time()
                 passed = max(1, (now.hour - 9) * 60 + now.minute)
                 passed = min(passed, 270)
                 df.loc[df.index[-1], 'est_volume'] = day_vol * (270 / passed)
-            else: df['est_volume'] = df['volume']
-        else: df['est_volume'] = df['volume']
+            else:
+                df['est_volume'] = df['volume']
+        else:
+            df['est_volume'] = df['volume']
         return df
-    except: return None
+    except Exception as e:
+        print(f"Error fetching {sid}: {e}")
+        return None
 
 @st.cache_data(ttl=86400)
 def get_stock_info():
@@ -339,7 +354,6 @@ with st.sidebar:
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     
-    # 新增自動監控選項
     auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (UptimeRobot 適用)", value=True)
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
     
@@ -482,24 +496,19 @@ def perform_scan():
     log_content = "".join(st.session_state.event_log)
     st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
 
-# --- 10. 主循環邏輯 (UptimeRobot 優化版) ---
+# --- 10. 主循環邏輯 ---
 placeholder = st.empty()
 
-# 判斷行為
 if analyze_btn:
-    # 手動按鈕優先執行一次
     with placeholder.container(): perform_scan()
 elif auto_monitor:
-    # 檢查是否在開盤期間
     if is_market_open():
         with placeholder.container(): perform_scan()
         st.caption(f"🔄 自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
         time.sleep(interval * 60)
         st.rerun()
     else:
-        # 非開盤期間，執行一次後停止循環，顯示目前為靜態手動模式
         with placeholder.container(): perform_scan()
         st.warning("🌙 目前非開盤時間，自動監控已暫停，僅保留手動掃描功能。")
 else:
-    # 初始加載
     with placeholder.container(): perform_scan()
