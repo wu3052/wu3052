@@ -126,16 +126,14 @@ def add_log(sid, name, tag_type, msg, score=None, vol_ratio=None):
 def calculate_est_volume(current_vol):
     now = get_taiwan_time()
     current_minutes = now.hour * 60 + now.minute
-    start_minutes = 9 * 60  # 09:00
-    end_minutes = 13 * 60 + 30  # 13:30
-    
-    if current_minutes <= start_minutes: return current_vol
-    if current_minutes >= end_minutes: return current_vol
+    start_minutes = 9 * 60
     
     passed = current_minutes - start_minutes
-    if passed < 5: return current_vol 
+    if passed <= 5: return current_vol * 3  # 開盤前5分鐘先給一個保守倍數
+    if passed >= 270: return current_vol
     
-    est = current_vol * (270 / passed)
+    # 加入平滑邏輯，避免開盤過度樂觀
+    est = current_vol * (270 / (passed + 10)) 
     return est
 
 @st.cache_data(ttl=45 if is_market_open() else 3600)
@@ -247,22 +245,33 @@ def analyze_strategy(df, is_market=False):
     row = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # --- 形態偵測邏輯 ---
+# --- 形態偵測邏輯 ---
     ma_list_short = [row["ma5"], row["ma10"], row["ma20"]]
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
+    ma5_up = row["ma5"] > prev["ma5"]
+    # 判斷昨天是否還在糾結（例如糾結度 < 3%）
+    was_tangling = (max([prev["ma5"], prev["ma10"], prev["ma20"]]) - min([prev["ma5"], prev["ma10"], prev["ma20"]])) / prev["close"] < 0.03
+
+    # 定義「噴發第一根」：昨天糾結 + 今天帶量突破 + 5MA轉上揚
+    is_first_breakout = was_tangling and row["close"] > max(ma_list_short) and ma5_up and row["vol_ratio"] > 1.2
+    df.at[last_idx, "is_first_breakout"] = is_first_breakout
+
     pattern_name = "一般盤整"
     pattern_desc = "目前處於無明顯趨勢的整理區間。建議耐心等待均線糾結後的方向突破。"
 
-    if diff_long < 0.02 and row["close"] > row["ma5"] and row["close"] > row["open"]:
+    if is_first_breakout:
+        pattern_name = "🚀 噴發第一根"
+        pattern_desc = "均線糾結後首次帶量突破，慣性徹底改變，極具爆發力的進場點。"
+    elif diff_long < 0.02 and row["close"] > row["ma5"] and ma5_up:
         pattern_name = "💎 鑽石眼"
-        pattern_desc = "「四線或五線合一」是「超級飆股」的訊號，股價將展開「無壓力」的飆升。"
+        pattern_desc = "「四線或五線合一」且 5MA 轉強，是「超級飆股」噴發前的訊號。"
     elif row["close"] > max(ma_list_long) and prev["close"] <= max(ma_list_long):
         pattern_name = "🕳️ 鑽石坑"
         pattern_desc = "成功克服了市場的所有長期壓力，是「主升段」的開始，「勇敢加碼」。"
-    elif diff_short < 0.015 and row["close"] > row["ma5"] and row["close"] > row["open"]:
+    elif diff_short < 0.015 and row["close"] > row["ma5"] and ma5_up and row["close"] > row["open"]:
         pattern_name = "🟡 黃金眼"
         pattern_desc = "均線將同步向上發散，「三均線整齊排列」，「底部翻多」的最強訊號。"
     elif row["ma5"] > row["ma10"] and row["ma5"] > row["ma20"] and prev["ma5"] <= prev["ma10"]:
@@ -333,33 +342,61 @@ def analyze_strategy(df, is_market=False):
     
     return df
 
-# --- 6. 視覺化模組 ---
 def plot_advanced_chart(df, title=""):
     df_plot = df.tail(100).copy()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
+    # 1. 繪製 K 線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
+    # 2. 繪製各條均線
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
             fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
+    # 3. 繪製關鍵位線 (虛線)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
+    # 4. [新增] 標示噴發第一根 (🚀 火箭)
+    if "is_first_breakout" in df_plot.columns:
+        breakouts = df_plot[df_plot["is_first_breakout"] == True]
+        if not breakouts.empty:
+            fig.add_trace(go.Scatter(
+                x=breakouts["date"], 
+                y=breakouts["low"] * 0.96, # 稍微調低一點避免擋到 K 線
+                mode="markers+text",
+                marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"),
+                text="🚀",
+                textposition="bottom center",
+                name="噴發第一根"
+            ), row=1, col=1)
+
+    # 5. 標示原有發動點 (⭐ 星星)
     stars = df_plot[df_plot["star_signal"]]
-    fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
+    if not stars.empty:
+        fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
+    # 6. 繪製下方 MACD 柱狀圖
     colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
-    fig.update_layout(height=650, title=title, template="plotly_white", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
+    # 7. 圖表樣式配置
+    fig.update_layout(
+        height=650, 
+        title=title, 
+        template="plotly_white", 
+        xaxis_rangeslider_visible=False, 
+        margin=dict(l=10, r=10, t=50, b=10),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    
     return fig
-
+    
 # --- 7. Google 表單同步 ---
 def sync_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
