@@ -78,7 +78,6 @@ def get_taiwan_time():
 
 def is_market_open():
     now = get_taiwan_time()
-    # 台灣開盤時間：週一至週五 09:00 ~ 13:35
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:35", "%H:%M").time()
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
@@ -234,17 +233,20 @@ def analyze_strategy(df, is_market=False):
 
     # --- 買賣點判斷邏輯 ---
     buy_pts, sell_pts = [], []
+    # 買點定義
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
     if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
 
+    # 賣點定義
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
+    # 評分系統
     score = 50
     if buy_pts: score += 15 * len(buy_pts)
     if sell_pts: score -= 20 * len(sell_pts)
@@ -286,8 +288,14 @@ def plot_advanced_chart(df, title=""):
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
     fig.add_trace(go.Candlestick(
-        x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
-        name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
+        x=df_plot["date"], 
+        open=df_plot["open"], 
+        high=df_plot["high"], 
+        low=df_plot["low"], 
+        close=df_plot["close"], 
+        name="K線",
+        increasing_line_color='#ff4b4b',
+        decreasing_line_color='#28a745'
     ), row=1, col=1)
     
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
@@ -301,6 +309,7 @@ def plot_advanced_chart(df, title=""):
     stars = df_plot[df_plot["star_signal"]]
     fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
+    # --- 修正此處的 v 與 val 變數名稱錯誤 ---
     colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
@@ -338,12 +347,8 @@ with st.sidebar:
     st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
-    
-    # 新增自動監控選項
-    auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (UptimeRobot 適用)", value=True)
+    auto_monitor = st.checkbox("🔄 開啟自動監控")
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
-    
-    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan():
@@ -374,6 +379,8 @@ def perform_scan():
         c1, c2 = st.columns([1, 2])
         with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
         with c2: st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
+        
+        # 顯示大盤K線圖
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
@@ -397,6 +404,7 @@ def perform_scan():
         should_send = False
         msg_header = ""
 
+        # 判斷是否需要發送 Discord
         if old_date != today_str or old_sig != sig_lvl or price_drop:
             if is_inv and sig_type == "SELL":
                 should_send = True
@@ -410,9 +418,9 @@ def perform_scan():
 
             if should_send:
                 discord_msg = (
-                    f"-----------------------------------------\n"
+                    f"―――――――――――――――――――――\n"
                     f"{msg_header}\n"
-                    f"-----------------------------------------\n"
+                    f"―――――――――――――――――――――\n"
                     f"股價代碼 : `{sid} {name}`\n"
                     f"現價 : `{last['close']:.2f}`\n"
                     f"技術型態 : `{last['pattern']}`\n"
@@ -482,26 +490,19 @@ def perform_scan():
     log_content = "".join(st.session_state.event_log)
     st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
 
-# --- 10. 主循環邏輯 (UptimeRobot 優化版) ---
+# --- 10. 主循環 ---
 placeholder = st.empty()
-
-# 判斷行為
 if analyze_btn:
-    # 手動按鈕優先執行一次
     with placeholder.container(): perform_scan()
 elif auto_monitor:
-    # 檢查是否在開盤期間
-    if is_market_open():
+    while True:
         with placeholder.container(): perform_scan()
-        st.caption(f"🔄 自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
-        time.sleep(interval * 60)
+        wait = interval if is_market_open() else 60
+        st.caption(f"🔄 自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=wait)).strftime('%H:%M:%S')}")
+        time.sleep(wait * 60)
         st.rerun()
-    else:
-        # 非開盤期間，執行一次後停止循環，顯示目前為靜態手動模式
-        with placeholder.container(): perform_scan()
-        st.warning("🌙 目前非開盤時間，自動監控已暫停，僅保留手動掃描功能。")
 else:
-    # 初始加載
     with placeholder.container(): perform_scan()
+
 
 
