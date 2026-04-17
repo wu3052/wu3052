@@ -129,14 +129,13 @@ def calculate_est_volume(current_vol):
     start_minutes = 9 * 60
     
     passed = current_minutes - start_minutes
-    if passed <= 5: return current_vol * 3  # 開盤前5分鐘先給一個保守倍數
+    if passed <= 5: return current_vol * 3  
     if passed >= 270: return current_vol
     
-    # 加入平滑邏輯，避免開盤過度樂觀
     est = current_vol * (270 / (passed + 10)) 
     return est
 
-@st.cache_data(ttl=45 if is_market_open() else 3600)
+@st.cache_data(ttl=30 if is_market_open() else 3600)
 def get_stock_data(sid, token):
     try:
         res = requests.get(BASE_URL, params={
@@ -246,17 +245,15 @@ def analyze_strategy(df, is_market=False):
     row = df.iloc[-1]
     prev = df.iloc[-2]
     
-# --- 形態偵測邏輯 ---
+    # --- 形態偵測邏輯 ---
     ma_list_short = [row["ma5"], row["ma10"], row["ma20"]]
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
     ma5_up = row["ma5"] > prev["ma5"]
-    # 判斷昨天是否還在糾結（例如糾結度 < 3%）
     was_tangling = (max([prev["ma5"], prev["ma10"], prev["ma20"]]) - min([prev["ma5"], prev["ma10"], prev["ma20"]])) / prev["close"] < 0.03
 
-    # 定義「噴發第一根」：昨天糾結 + 今天帶量突破 + 5MA轉上揚
     is_first_breakout = was_tangling and row["close"] > max(ma_list_short) and ma5_up and row["vol_ratio"] > 1.2
     df.at[last_idx, "is_first_breakout"] = is_first_breakout
 
@@ -285,7 +282,7 @@ def analyze_strategy(df, is_market=False):
     # --- 買賣點判斷邏輯 ---
     buy_pts, sell_pts = [], []
     
-    # [新增] 1日不創新低邏輯
+    # 1日不創新低邏輯
     is_no_new_low = row["low"] >= prev["low"]
     if is_no_new_low:
         buy_pts.append("底部位階支撐(1日不創新低)")
@@ -309,7 +306,7 @@ def analyze_strategy(df, is_market=False):
     score = 50
     if buy_pts: score += 15 * len(buy_pts)
     if sell_pts: score -= 20 * len(sell_pts)
-    if is_no_new_low: score += 5  # [新增] 不創新低加分項
+    if is_no_new_low: score += 5  
     
     if row["vol_ratio"] > 1.8: score += 10
     if row["close"] > row["ma200"]: score += 5
@@ -347,29 +344,25 @@ def plot_advanced_chart(df, title=""):
     df_plot = df.tail(100).copy()
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # 1. 繪製 K 線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
-    # 2. 繪製各條均線
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
             fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
-    # 3. 繪製關鍵位線 (虛線)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-    # 4. [新增] 標示噴發第一根 (🚀 火箭)
     if "is_first_breakout" in df_plot.columns:
         breakouts = df_plot[df_plot["is_first_breakout"] == True]
         if not breakouts.empty:
             fig.add_trace(go.Scatter(
                 x=breakouts["date"], 
-                y=breakouts["low"] * 0.96, # 稍微調低一點避免擋到 K 線
+                y=breakouts["low"] * 0.96,
                 mode="markers+text",
                 marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"),
                 text="🚀",
@@ -377,16 +370,13 @@ def plot_advanced_chart(df, title=""):
                 name="噴發第一根"
             ), row=1, col=1)
 
-    # 5. 標示原有發動點 (⭐ 星星)
     stars = df_plot[df_plot["star_signal"]]
     if not stars.empty:
         fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    # 6. 繪製下方 MACD 柱狀圖
     colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
     fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
-    # 7. 圖表樣式配置
     fig.update_layout(
         height=650, 
         title=title, 
@@ -491,32 +481,22 @@ def perform_scan():
                 should_send = False
                 msg_header = ""
 
-# --- 判斷是否需要發送通知 ---
                 if old_date != today_str or old_sig != sig_lvl or price_drop:
-                    
-                    # 1. 庫存股賣出警示 (優先級最高)
                     if is_inv and sig_type == "SELL":
                         should_send = True
                         msg_header = f"🩸 **【庫存風險警示】**"
-                    
-                    # 2. 狙擊名單買入訊號
                     elif is_snipe and ("BUY" in sig_type or last["is_first_breakout"]):
                         should_send = True
-                        # 優先判斷是否為「噴發第一根」
                         if last.get("is_first_breakout"):
                             msg_header = "🚀🚀 **【 噴 發 第 一 根 確 認 】** 🚀🚀\n**均線糾結慣性改變，請立即追蹤！**"
-                        # 其次判斷是否爆量
                         elif last["vol_ratio"] > 1.8:
                             msg_header = "🔥🔥 **【 狙 擊 目 標 爆 量 】** 🔥🔥\n🚀 **動能全面點火，準備開火！**"
                         else:
                             msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
-                    
-                    # 3. 行情回檔通知 (當價格跌幅超過 2% 時)
                     elif price_drop:
                         should_send = True
                         msg_header = f"⚠️ **【行情回檔通知】**"
 
-                    # 執行發送 Discord
                     if should_send:
                         discord_msg = (
                             f"-----------------------------------------\n"
@@ -535,7 +515,6 @@ def perform_scan():
                         send_discord_message(discord_msg)
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
                         
-                        # 更新狀態防止重複通知
                         st.session_state.notified_status[sid] = sig_lvl
                         st.session_state.notified_date[sid] = today_str
                         st.session_state.last_notified_price[sid] = last['close']
