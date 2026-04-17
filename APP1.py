@@ -287,14 +287,9 @@ def analyze_strategy(df, is_market=False):
     df.at[last_idx, "pattern"] = pattern_name
     df.at[last_idx, "pattern_desc"] = pattern_desc
 
-    # --- 買賣點判斷邏輯 (修正版) ---
+    # --- 買賣點判斷邏輯 ---
     buy_pts, sell_pts = [], []
     
-    # 修正: 底部位階支撐，須滿足不破昨低且今日收盤高於昨日收盤
-    is_no_new_low = (row["low"] >= prev["low"]) and (row["close"] > prev["close"])
-    if is_no_new_low:
-        buy_pts.append("底部位階支撐(1日不創新低)")
-
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: 
         buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: 
@@ -304,14 +299,21 @@ def analyze_strategy(df, is_market=False):
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: 
         buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
 
+    # 1日不創新低邏輯 (改進: 找出近期K棒最低價為標準,且K線今日收盤價>昨日收盤價)
+    recent_min = df["low"].tail(20).min()
+    is_no_new_low = False
+    if row["close"] > prev["close"] and row["low"] <= recent_min * 1.05:
+        buy_pts.append("底部位階支撐(1日不創新低)")
+        is_no_new_low = True
+
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
-    # 修正: 如果出現賣出訊號，且K線今日收盤價<昨日收盤價，則顯示頭部位階跌破
-    if len(sell_pts) > 0 and row["close"] < prev["close"]:
+    # 1日不創新高邏輯 (賣出訊號觸發時且今日收盤價 < 昨日收盤價)
+    if sell_pts and row["close"] < prev["close"]:
         sell_pts.append("頭部位階跌破(1日不創新高)")
 
     # --- 評分邏輯 ---
@@ -432,12 +434,16 @@ with st.sidebar:
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     
-    # 修改2: 開啟盤中自動監控，預設狀態自動跟隨是否為開盤時間
-    auto_monitor = st.checkbox("🔄 開啟盤中自動監控", value=is_market_open(), help="開盤期間會自動啟動，收盤期間會自動關閉。")
+    # 手動停止傳送訊息按鈕
+    enable_discord_notify = st.checkbox("🔔 啟用 Discord 訊息推送", value=True, help="取消勾選即可暫停所有 Discord 推播通知")
     
-    # 修改1: 加入手動停止傳送訊息按鈕，非開盤期間預設自動勾選(停止傳送)
-    stop_discord = st.checkbox("🔕 停止傳送 Discord 訊息", value=not is_market_open(), help="勾選後將暫停所有 Discord 推播。非開盤期間會自動勾選避免干擾。")
-    
+    # 自動監控狀態判斷
+    auto_monitor = is_market_open()
+    if auto_monitor:
+        st.success("🔄 自動監控：開盤期間已自動啟動")
+    else:
+        st.warning("⏸️ 自動監控：收盤期間已自動關閉")
+        
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
     
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
@@ -514,50 +520,52 @@ def perform_scan():
                         should_send = True
                         msg_header = f"⚠️ **【行情回檔通知】**"
 
-                    # 判斷是否手動關閉了 Discord 推播
-                    if stop_discord:
-                        should_send = False
-
                     if should_send:
-                        discord_msg = (
-                            f"-----------------------------------------\n"
-                            f"{msg_header}\n"
-                            f"-----------------------------------------\n"
-                            f"股價代碼 : `{sid} {name}`\n"
-                            f"現價 : `{last['close']:.2f}`\n"
-                            f"技術型態 : `{last['pattern']}`\n"
-                            f"戰鬥評分 : `{last['score']}`\n"
-                            f"提醒 : `{last['warning']}`\n"
-                            f"💡 形態解讀：{last['pattern_desc']}\n"
-                            f"📍 `{last['pos_advice']}`\n"
-                            f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
-                            f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
-                        )
-                        send_discord_message(discord_msg)
+                        if enable_discord_notify:
+                            discord_msg = (
+                                f"-----------------------------------------\n"
+                                f"{msg_header}\n"
+                                f"-----------------------------------------\n"
+                                f"股價代碼 : `{sid} {name}`\n"
+                                f"現價 : `{last['close']:.2f}`\n"
+                                f"技術型態 : `{last['pattern']}`\n"
+                                f"戰鬥評分 : `{last['score']}`\n"
+                                f"提醒 : `{last['warning']}`\n"
+                                f"💡 形態解讀：{last['pattern_desc']}\n"
+                                f"📍 `{last['pos_advice']}`\n"
+                                f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
+                                f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                            )
+                            send_discord_message(discord_msg)
+                            
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
                         
                         st.session_state.notified_status[sid] = sig_lvl
                         st.session_state.notified_date[sid] = today_str
                         st.session_state.last_notified_price[sid] = last['close']
                 
-                # 計算排序優先權 (修改4)
-                sort_pri = 1
-                if last.get("is_first_breakout"): sort_pri = 4
-                elif "BUY" in sig_type and last["vol_ratio"] > 1.8: sort_pri = 3
-                elif "BUY" in sig_type: sort_pri = 2
-                elif "SELL" in sig_type: sort_pri = 0
+                # 計算排序權重 (priority: 3 > 2 > 1 > 0)
+                is_boom = ("BUY" in sig_type and last["vol_ratio"] > 1.8)
+                priority = 0
+                if last.get("is_first_breakout"):
+                    priority = 3
+                elif is_boom:
+                    priority = 2
+                elif "BUY" in sig_type:
+                    priority = 1
 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
-                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"], "sort_pri": sort_pri
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"],
+                    "priority": priority
                 })
             except Exception as e:
                 print(f"Error processing {sid}: {e}")
 
     # --- 顯示區 ---
-    st.subheader("🔥 狙擊目標監控 (依觸發強度與評分排序)")
-    # 依照 sort_pri (優先度) 與 score (分數) 進行雙重排序
-    snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: (x["sort_pri"], x["score"]), reverse=True)
+    st.subheader("🔥 狙擊目標監控 (依噴發強度排序)")
+    # 依優先權(噴發/爆量/買點)及分數進行排序
+    snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: (x["priority"], x["score"]), reverse=True)
     for item in snipe_targets:
         last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
         is_boom = ("BUY" in last["sig_type"] and last["vol_ratio"] > 1.8)
@@ -578,8 +586,8 @@ def perform_scan():
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
     st.divider()
-    st.subheader("📦 庫存持股監控 (依風險狀態與評分排序)")
-    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: (x["sort_pri"], x["score"]), reverse=True)
+    st.subheader("📦 庫存持股監控 (依強度排序)")
+    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: (x["priority"], x["score"]), reverse=True)
     for item in inventory_targets:
         last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
@@ -609,13 +617,10 @@ placeholder = st.empty()
 if analyze_btn:
     with placeholder.container(): perform_scan()
 elif auto_monitor:
-    if is_market_open():
-        with placeholder.container(): perform_scan()
-        st.caption(f"🔄 自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
-        time.sleep(interval * 60)
-        st.rerun()
-    else:
-        with placeholder.container(): perform_scan()
-        st.warning("🌙 目前非開盤時間，自動監控已自動暫停，僅保留手動掃描功能。")
+    with placeholder.container(): perform_scan()
+    st.caption(f"🔄 自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
+    time.sleep(interval * 60)
+    st.rerun()
 else:
     with placeholder.container(): perform_scan()
+    st.warning("🌙 目前非開盤時間，自動監控已關閉，僅保留手動掃描功能。")
