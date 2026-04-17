@@ -23,14 +23,25 @@ st.markdown("""
     .neutral-signal { background-color: #6c757d; color: white; border-left: 8px solid #343a40; }
     .dashboard-box { background: #ffffff; padding: 20px; border-radius: 15px; border: 1px solid #e0e0e0; text-align: center; height: 100%; transition: 0.3s; }
     
-    /* 置頂大盤容器樣式 */
-    .market-header {
-        background: #ffffff;
-        padding: 15px;
+    /* 大盤戰情室專用樣式 */
+    .market-value { font-size: 42px; font-weight: 800; color: #1e293b; margin-bottom: 5px; line-height: 1; }
+    .market-diff { font-size: 18px; font-weight: 600; padding: 4px 12px; border-radius: 8px; display: inline-block; }
+    .diff-down { background-color: #fff1f0; color: #cf1322; }
+    .diff-up { background-color: #f6ffed; color: #389e0d; }
+    
+    .commander-box {
+        background: #ff4d4f;
+        color: white;
+        padding: 30px;
         border-radius: 15px;
-        border: 2px solid #e0e0e0;
-        margin-bottom: 25px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 26px;
+        font-weight: bold;
+        box-shadow: 0 4px 15px rgba(255, 77, 79, 0.4);
+        text-align: center;
+        height: 100%;
     }
 
     /* 戰情日誌風格 */
@@ -440,7 +451,6 @@ def perform_scan():
             st.plotly_chart(plot_advanced_chart(m_df, "大盤 TAIEX 指數走勢"), use_container_width=True)
 
     st.divider()
-    # 接下來接原本的 [📡 掃描時間] 與 [狙擊目標監控]...
     st.markdown(f"#### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
     
     snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
