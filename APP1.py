@@ -251,10 +251,18 @@ def analyze_strategy(df, is_market=False):
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
+    # 核心噴發判斷 (昨日 3% 糾結)
     ma5_up = row["ma5"] > prev["ma5"]
-    was_tangling = (max([prev["ma5"], prev["ma10"], prev["ma20"]]) - min([prev["ma5"], prev["ma10"], prev["ma20"]])) / prev["close"] < 0.04
+    max_ma_prev = max([prev["ma5"], prev["ma10"], prev["ma20"]])
+    min_ma_prev = min([prev["ma5"], prev["ma10"], prev["ma20"]])
+    was_tangling = (max_ma_prev - min_ma_prev) / prev["close"] < 0.03
 
-    is_first_breakout = was_tangling and row["close"] > max(ma_list_short) and ma5_up and row["vol_ratio"] > 1.2
+    is_first_breakout = (
+        was_tangling and 
+        row["close"] > max_ma_prev and 
+        row["vol_ratio"] > 1.2 and 
+        ma5_up
+    )
     df.at[last_idx, "is_first_breakout"] = is_first_breakout
 
     pattern_name = "一般盤整"
