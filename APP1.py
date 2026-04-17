@@ -252,7 +252,7 @@ def analyze_strategy(df, is_market=False):
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
     ma5_up = row["ma5"] > prev["ma5"]
-    was_tangling = (max([prev["ma5"], prev["ma10"], prev["ma20"]]) - min([prev["ma5"], prev["ma10"], prev["ma20"]])) / prev["close"] < 0.03
+    was_tangling = (max([prev["ma5"], prev["ma10"], prev["ma20"]]) - min([prev["ma5"], prev["ma10"], prev["ma20"]])) / prev["close"] < 0.05
 
     is_first_breakout = was_tangling and row["close"] > max(ma_list_short) and ma5_up and row["vol_ratio"] > 1.2
     df.at[last_idx, "is_first_breakout"] = is_first_breakout
