@@ -11,7 +11,7 @@ import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor
 
 # --- 1. 頁面配置與進階 CSS ---
-st.set_page_config(layout="wide", page_title="股票狙擊手 Pro Max V2", page_icon="🏹")
+st.set_page_config(layout="wide", page_title="股票狙擊手 Pro Max V2.1", page_icon="🏹")
 
 st.markdown("""
 <style>
@@ -79,8 +79,9 @@ def get_taiwan_time():
 
 def is_market_open():
     now = get_taiwan_time()
+    # 台灣股市開盤時間：週一至週五 09:00 - 13:30
     start_time = datetime.strptime("09:00", "%H:%M").time()
-    end_time = datetime.strptime("13:35", "%H:%M").time()
+    end_time = datetime.strptime("13:30", "%H:%M").time()
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
 
 def get_yf_ticker(sid):
@@ -99,6 +100,10 @@ def get_yf_ticker(sid):
     return f"{sid}.TW"
 
 def send_discord_message(msg):
+    # 檢查手動按鈕是否允許傳送
+    if not st.session_state.get("enable_discord", True):
+        return
+    
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
     if not webhook_url: return
     try:
@@ -251,7 +256,6 @@ def analyze_strategy(df, is_market=False):
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
-    # 核心噴發判斷 (昨日 3% 糾結)
     ma5_up = row["ma5"] > prev["ma5"]
     max_ma_prev = max([prev["ma5"], prev["ma10"], prev["ma20"]])
     min_ma_prev = min([prev["ma5"], prev["ma10"], prev["ma20"]])
@@ -290,13 +294,15 @@ def analyze_strategy(df, is_market=False):
     # --- 買賣點判斷邏輯 ---
     buy_pts, sell_pts = [], []
     
-    # 1日不創新低邏輯
+    # 位階提示判斷
     is_no_new_low = row["low"] >= prev["low"]
-    if is_no_new_low:
-        buy_pts.append("底部位階支撐(1日不創新低)")
+    is_no_new_high = row["high"] <= prev["high"]
 
+    # 買點判斷
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: 
         buy_pts.append("站上5MA(買點)")
+        if is_no_new_low: buy_pts.append("底部位階支撐(1日不創新低)")
+        
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: 
         buy_pts.append("站上60分144MA(買點)")
     if row["star_signal"]: 
@@ -304,7 +310,11 @@ def analyze_strategy(df, is_market=False):
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: 
         buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
 
-    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
+    # 賣點判斷
+    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: 
+        sell_pts.append("跌破5MA(注意賣點)")
+        if is_no_new_high: sell_pts.append("頭部位階跌破(1日不創新高)")
+        
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
@@ -421,14 +431,21 @@ if not st.session_state.first_sync_done:
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
     fm_token = st.text_input("FinMind Token", value=st.secrets.get("FINMIND_TOKEN", ""), type="password")
+    
+    # 功能控制
+    st.divider()
+    st.subheader("⚙️ 訊號與監控設定")
+    st.session_state.enable_discord = st.toggle("🔔 開啟 Discord 訊息傳送", value=True, help="關閉後系統將不再發送任何通知至 Discord")
+    auto_monitor = st.checkbox("🔄 開啟盤中自動監控", value=True, help="勾選後在開盤期間(9:00~13:30)會自動循環更新")
+    
     if st.button("🔄 手動同步雲端清單"):
         sync_sheets()
         st.rerun()
+    
     st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     
-    auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (UptimeRobot 適用)", value=True)
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
     
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
@@ -585,16 +602,22 @@ def perform_scan():
 # --- 10. 主循環邏輯 ---
 placeholder = st.empty()
 
+# 根據按鈕或自動監控邏輯執行
 if analyze_btn:
     with placeholder.container(): perform_scan()
 elif auto_monitor:
+    # 判斷是否在開盤時間內
     if is_market_open():
         with placeholder.container(): perform_scan()
-        st.caption(f"🔄 自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
+        st.caption(f"🔄 盤中自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
         time.sleep(interval * 60)
         st.rerun()
     else:
-        with placeholder.container(): perform_scan()
-        st.warning("🌙 目前非開盤時間，自動監控已暫停，僅保留手動掃描功能。")
+        # 非開盤時間只在第一次載入或按下按鈕時執行，不進行循環 rerun
+        if 'last_after_market_scan' not in st.session_state or st.session_state.last_after_market_scan != get_taiwan_time().date():
+            with placeholder.container(): perform_scan()
+            st.session_state.last_after_market_scan = get_taiwan_time().date()
+        st.warning("🌙 目前非開盤時間 (09:00~13:30)，自動監控已關閉。您可以手動按下「執行即時掃描」或等待開盤。")
 else:
+    # 若沒有開啟自動監控，預設顯示上次結果或執行一次
     with placeholder.container(): perform_scan()
