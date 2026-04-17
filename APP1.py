@@ -99,10 +99,6 @@ def get_yf_ticker(sid):
     return f"{sid}.TW"
 
 def send_discord_message(msg):
-    # 如果使用者勾選了暫停傳送，則直接返回
-    if st.session_state.get("mute_notifications", False):
-        return
-    
     webhook_url = st.secrets.get("DISCORD_WEBHOOK_URL")
     if not webhook_url: return
     try:
@@ -255,7 +251,7 @@ def analyze_strategy(df, is_market=False):
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
-    # 核心噴發判斷 (昨日 0.03 糾結)
+    # 核心噴發判斷 (昨日 3% 糾結)
     ma5_up = row["ma5"] > prev["ma5"]
     max_ma_prev = max([prev["ma5"], prev["ma10"], prev["ma20"]])
     min_ma_prev = min([prev["ma5"], prev["ma10"], prev["ma20"]])
@@ -430,12 +426,8 @@ with st.sidebar:
         st.rerun()
     st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
-    
-    st.divider()
-    # 新增暫停傳送開關
-    st.session_state.mute_notifications = st.toggle("🚫 暫停所有訊息傳送 (Discord)", value=False)
-    
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
+    
     auto_monitor = st.checkbox("🔄 開啟盤中自動監控 (UptimeRobot 適用)", value=True)
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
     
@@ -528,10 +520,7 @@ def perform_scan():
                             f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
                             f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
                         )
-                        # 調用發送函數（內部已處理 mute 邏輯）
                         send_discord_message(discord_msg)
-                        
-                        # 日誌照樣寫入，不受按鈕影響，方便離線觀察
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
                         
                         st.session_state.notified_status[sid] = sig_lvl
@@ -609,4 +598,3 @@ elif auto_monitor:
         st.warning("🌙 目前非開盤時間，自動監控已暫停，僅保留手動掃描功能。")
 else:
     with placeholder.container(): perform_scan()
-
