@@ -8,8 +8,9 @@ from plotly.subplots import make_subplots
 import re
 import time
 import yfinance as yf
+from concurrent.futures import ThreadPoolExecutor
 
-# --- 1. 頁面配置與進階 CSS ---
+# --- 1. 頁面配置與進階 CSS (完全保留) ---
 st.set_page_config(layout="wide", page_title="股票狙擊手 Pro Max V2", page_icon="🏹")
 
 st.markdown("""
@@ -84,15 +85,21 @@ def is_market_open():
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
 
 def get_yf_ticker(sid):
+    """優化 yfinance 股票代碼對應速度，減少雲端超時"""
     if sid == "TAIEX": return "^TWII"
     if sid in st.session_state.sid_map: return st.session_state.sid_map[sid]
     
+    # 邏輯優化：優先嘗試 .TW (上市)，失敗再嘗試 .TWO (上櫃)
     for suffix in [".TW", ".TWO"]:
         ticker = f"{sid}{suffix}"
-        test = yf.download(ticker, period="1d", progress=False)
-        if not test.empty:
-            st.session_state.sid_map[sid] = ticker
-            return ticker
+        try:
+            # 使用快取檢查，避免頻繁請求 API
+            t = yf.Ticker(ticker)
+            info = t.fast_info
+            if info.get('lastPrice') is not None:
+                st.session_state.sid_map[sid] = ticker
+                return ticker
+        except: continue
     return f"{sid}.TW"
 
 def send_discord_message(msg):
@@ -108,8 +115,8 @@ def add_log(sid, name, tag_type, msg, score=None, vol_ratio=None):
     if tag_type == "BUY": tag_class = "tag-buy"
     elif tag_type == "SELL": tag_class = "tag-sell"
     
-    score_html = f" | 評分: <b>{score}</b>" if score else ""
-    vol_html = f" | 量比: <b>{vol_ratio:.2f}x</b>" if vol_ratio else ""
+    score_html = f" | 評分: <b>{score}</b>" if score is not None else ""
+    vol_html = f" | 量比: <b>{vol_ratio:.2f}x</b>" if vol_ratio is not None else ""
     
     log_html = (f"<div class='log-entry'>"
                 f"<span class='log-time'>[{ts}]</span> "
@@ -119,16 +126,37 @@ def add_log(sid, name, tag_type, msg, score=None, vol_ratio=None):
     st.session_state.event_log.insert(0, log_html)
     if len(st.session_state.event_log) > 100: st.session_state.event_log.pop()
 
-# --- 4. 數據獲取與預估成交量 (修正緩存與即時性) ---
-@st.cache_data(ttl=60)
+# --- 4. 數據獲取與預估成交量 (修正 yfinance 即時性與 TTL 權衡) ---
+
+def calculate_est_volume(current_vol):
+    """修正預估成交量邏輯：考量開盤爆量衰減與搓合時間"""
+    now = get_taiwan_time()
+    current_minutes = now.hour * 60 + now.minute
+    start_minutes = 9 * 60  # 09:00
+    end_minutes = 13 * 60 + 30  # 13:30
+    
+    if current_minutes <= start_minutes: return current_vol
+    if current_minutes >= end_minutes: return current_vol
+    
+    passed = current_minutes - start_minutes
+
+    # --- 新增這行：開盤前 5 分鐘數據波動大，不進行預估 ---
+    if passed < 5: return current_vol 
+    
+    # 台灣股市總交易時間 270 分鐘
+    est = current_vol * (270 / passed)
+    return est
+
+@st.cache_data(ttl=45 if is_market_open() else 3600) # 盤中快取縮短至45秒，盤後1小時
 def get_stock_data(sid, token):
     try:
         # 1. 抓取 FinMind 歷史資料
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockPrice", "data_id": sid,
-            "start_date": (datetime.now() - timedelta(days=600)).strftime("%Y-%m-%d"),
+            "start_date": (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
             "token": token
-        }, timeout=10).json()
+        }, timeout=15).json() # 增加 timeout 防止雲端卡死
+        
         data = res.get("data", [])
         if not data: return None
         df = pd.DataFrame(data)
@@ -137,29 +165,40 @@ def get_stock_data(sid, token):
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values("date").reset_index(drop=True)
 
-        # 2. 盤中即時資料覆蓋
-        if is_market_open():
+        # 2. 盤中即時資料覆蓋 (修正 yfinance 限制與下載速度)
+        if is_market_open() or sid == "TAIEX":
             ticker_str = get_yf_ticker(sid)
-            # 使用 period="2d" 確保能抓到正在跳動的今日數據
-            yt = yf.download(ticker_str, period="2d", interval="1m", progress=False)
+            # 使用 period="2d" 並限制下載 interval 以加速回應
+            yt = yf.download(ticker_str, period="2d", interval="1m", progress=False, timeout=10)
             
             if not yt.empty:
                 last_price = float(yt['Close'].iloc[-1])
-                # 取得今日累計成交量 (yfinance 1d 模式)
-                day_yt = yf.download(ticker_str, period="1d", progress=False)
-                day_vol = int(day_yt['Volume'].iloc[-1]) if not day_yt.empty else df.iloc[-1]['volume']
+                # 計算今日累計量 (排除昨日數據)
+                today_start = get_taiwan_time().replace(hour=9, minute=0, second=0, microsecond=0)
+                today_yt = yt[yt.index >= today_start.strftime('%Y-%m-%d %H:%M:%S')]
                 
-                # 更新最後一列
-                df.loc[df.index[-1], 'close'] = last_price
-                df.loc[df.index[-1], 'high'] = max(df.loc[df.index[-1], 'high'], yt['High'].max())
-                df.loc[df.index[-1], 'low'] = min(df.loc[df.index[-1], 'low'], yt['Low'].min())
-                df.loc[df.index[-1], 'volume'] = day_vol
-                
-                # 計算預估量 (9:00 ~ 13:30 共 270 分鐘)
-                now = get_taiwan_time()
-                passed = max(1, (now.hour - 9) * 60 + now.minute)
-                passed = min(passed, 270)
-                df.loc[df.index[-1], 'est_volume'] = day_vol * (270 / passed)
+                if not today_yt.empty:
+                    day_vol = int(today_yt['Volume'].sum())
+                    day_high = float(today_yt['High'].max())
+                    day_low = float(today_yt['Low'].min())
+                    
+                    # 更新或追加今日 K 線
+                    if df.iloc[-1]['date'].date() == get_taiwan_time().date():
+                        idx = df.index[-1]
+                    else:
+                        # 如果 FinMind 還沒更新今天，手動加一行
+                        new_row = df.iloc[-1].copy()
+                        new_row['date'] = pd.Timestamp(get_taiwan_time().date())
+                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                        idx = df.index[-1]
+                        
+                    df.at[idx, 'close'] = last_price
+                    df.at[idx, 'high'] = day_high
+                    df.at[idx, 'low'] = day_low
+                    df.at[idx, 'volume'] = day_vol
+                    df.at[idx, 'est_volume'] = calculate_est_volume(day_vol)
+                else:
+                    df['est_volume'] = df['volume']
             else:
                 df['est_volume'] = df['volume']
         else:
@@ -172,21 +211,21 @@ def get_stock_data(sid, token):
 @st.cache_data(ttl=86400)
 def get_stock_info():
     try:
-        res = requests.get(BASE_URL, params={"dataset": "TaiwanStockInfo"}, timeout=10)
+        res = requests.get(BASE_URL, params={"dataset": "TaiwanStockInfo"}, timeout=15)
         df = pd.DataFrame(res.json()["data"])
         df.columns = [c.lower() for c in df.columns]
         return df
     except: return pd.DataFrame()
 
-# --- 5. 核心策略分析 ---
+# --- 5. 核心策略分析 (完整保留形態文字) ---
 def analyze_strategy(df, is_market=False):
-    if df is None or len(df) < 200: return None
+    if df is None or len(df) < 180: return None
     
     # 基本均線
     for ma in [5, 10, 20, 55, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
-    # 策略指標
+    # 策略指標 (完全保留用戶要求的模擬邏輯)
     df["ma144_60min"] = df["close"].rolling(36).mean()
     df["ma55_60min"] = df["close"].rolling(14).mean()
     df["week_ma"] = df["close"].rolling(25).mean()
@@ -222,7 +261,7 @@ def analyze_strategy(df, is_market=False):
     row = df.iloc[-1]
     prev = df.iloc[-2]
     
-    # --- 形態偵測邏輯 ---
+    # --- 形態偵測邏輯 (完全還原原始描述內容) ---
     ma_list_short = [row["ma5"], row["ma10"], row["ma20"]]
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
@@ -247,7 +286,7 @@ def analyze_strategy(df, is_market=False):
     df.at[last_idx, "pattern"] = pattern_name
     df.at[last_idx, "pattern_desc"] = pattern_desc
 
-    # --- 買賣點判斷邏輯 ---
+    # --- 買賣點判斷邏輯 (依照 User Correction：5MA 優先) ---
     buy_pts, sell_pts = [], []
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
@@ -391,64 +430,70 @@ def perform_scan():
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-    # 處理個股
-    for sid in all_codes:
-        df = get_stock_data(sid, fm_token)
-        if df is None: continue
-        df = analyze_strategy(df, is_market=False)
-        last = df.iloc[-1]
-        name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
-        is_inv, is_snipe = sid in inv_list, sid in snipe_list
-        
-        sig_type = last['sig_type']
-        sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
-        
-        old_sig = st.session_state.notified_status.get(sid)
-        old_date = st.session_state.notified_date.get(sid)
-        old_price = st.session_state.last_notified_price.get(sid, last['close'])
-        price_drop = (last['close'] - old_price) / old_price < -0.02 
-        
-        should_send = False
-        msg_header = ""
+    # 處理個股 (平行化抓取優化雲端效能)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
+        for future in future_to_sid:
+            sid = future_to_sid[future]
+            try:
+                df = future.result()
+                if df is None: continue
+                df = analyze_strategy(df, is_market=False)
+                last = df.iloc[-1]
+                name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
+                is_inv, is_snipe = sid in inv_list, sid in snipe_list
+                
+                sig_type = last['sig_type']
+                sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
+                
+                old_sig = st.session_state.notified_status.get(sid)
+                old_date = st.session_state.notified_date.get(sid)
+                old_price = st.session_state.last_notified_price.get(sid, last['close'])
+                price_drop = (last['close'] - old_price) / old_price < -0.02 
+                
+                should_send = False
+                msg_header = ""
 
-        if old_date != today_str or old_sig != sig_lvl or price_drop:
-            if is_inv and sig_type == "SELL":
-                should_send = True
-                msg_header = f"🩸 **【庫存風險警示】**"
-            elif is_snipe and "BUY" in sig_type:
-                should_send = True
-                msg_header = "🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥\n🚀 **爆量突破，動能全面點火！**" if last["vol_ratio"] > 1.8 else "🏹 **【 買 點 訊 號 觸 發 】**"
-            elif price_drop:
-                should_send = True
-                msg_header = f"⚠️ **【行情回檔通知】**"
+                if old_date != today_str or old_sig != sig_lvl or price_drop:
+                    if is_inv and sig_type == "SELL":
+                        should_send = True
+                        msg_header = f"🩸 **【庫存風險警示】**"
+                    elif is_snipe and "BUY" in sig_type:
+                        should_send = True
+                        msg_header = "🔥🔥 **【 狙 擊 目 標 確 認 】** 🔥🔥\n🚀 **爆量突破，動能全面點火！**" if last["vol_ratio"] > 1.8 else "🏹 **【 買 點 訊 號 觸 發 】**"
+                    elif price_drop:
+                        should_send = True
+                        msg_header = f"⚠️ **【行情回檔通知】**"
 
-            if should_send:
-                discord_msg = (
-                    f"-----------------------------------------\n"
-                    f"{msg_header}\n"
-                    f"-----------------------------------------\n"
-                    f"股價代碼 : `{sid} {name}`\n"
-                    f"現價 : `{last['close']:.2f}`\n"
-                    f"技術型態 : `{last['pattern']}`\n"
-                    f"戰鬥評分 : `{last['score']}`\n"
-                    f"提醒 : `{last['warning']}`\n"
-                    f"💡 形態解讀：{last['pattern_desc']}\n"
-                    f"📍 `{last['pos_advice']}`\n"
-                    f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
-                    f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
-                send_discord_message(discord_msg)
-                add_log(sid, name, "BUY" if "BUY" in sig_type else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
-                st.session_state.notified_status[sid] = sig_lvl
-                st.session_state.notified_date[sid] = today_str
-                st.session_state.last_notified_price[sid] = last['close']
-        
-        processed_stocks.append({
-            "df": df, "last": last, "sid": sid, "name": name, 
-            "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
-        })
+                    if should_send:
+                        discord_msg = (
+                            f"-----------------------------------------\n"
+                            f"{msg_header}\n"
+                            f"-----------------------------------------\n"
+                            f"股價代碼 : `{sid} {name}`\n"
+                            f"現價 : `{last['close']:.2f}`\n"
+                            f"技術型態 : `{last['pattern']}`\n"
+                            f"戰鬥評分 : `{last['score']}`\n"
+                            f"提醒 : `{last['warning']}`\n"
+                            f"💡 形態解讀：{last['pattern_desc']}\n"
+                            f"📍 `{last['pos_advice']}`\n"
+                            f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
+                            f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        send_discord_message(discord_msg)
+                        add_log(sid, name, "BUY" if "BUY" in sig_type else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
+                        st.session_state.notified_status[sid] = sig_lvl
+                        st.session_state.notified_date[sid] = today_str
+                        st.session_state.last_notified_price[sid] = last['close']
+                
+                processed_stocks.append({
+                    "df": df, "last": last, "sid": sid, "name": name, 
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
+                })
+            except Exception as e:
+                print(f"Error processing {sid}: {e}")
 
-    # --- 顯示區 ---
+    # --- 顯示區 (完全還原 Dashboard Box 與動畫效果) ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
     for item in snipe_targets:
