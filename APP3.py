@@ -487,10 +487,12 @@ def perform_scan(manual_trigger=False):  # <--- 已加入 manual_trigger 參數
                 price_drop = (last['close'] - old_price) / old_price < -0.02 
                 
                 # --- 判定觸發 ---
-                if old_date != today_str or old_sig != sig_lvl or price_drop:
+# --- 判定觸發 (加入 manual_trigger 確保手動掃描必進入判斷) ---
+                if manual_trigger or old_date != today_str or old_sig != sig_lvl or price_drop:
                     should_send = False
                     msg_header = ""
 
+                    # 1. 判斷是否符合發送門檻 (買入或賣出訊號)
                     if is_inv and sig_type == "SELL":
                         should_send = True
                         msg_header = f"🩸 **【庫存風險警示】**"
@@ -505,21 +507,27 @@ def perform_scan(manual_trigger=False):  # <--- 已加入 manual_trigger 參數
                         else:
                             msg_header = "🏹 **【 買點訊號觸發 】**\n訊號已達標，準備執行交易計畫。"
 
+                    # 2. 執行發送與狀態更新
                     if should_send:
-                        # 核心修正：不論開關有無開啟，都先記錄與更新狀態，避免重複推送
+                        # 只有在「非手動強制掃描」的情況下，才更新狀態標記
+                        # 這樣可以避免手動掃描完後，盤中自動監控反而因為狀態已被更新而不推送
+                        if not manual_trigger:
+                            st.session_state.notified_status[sid] = sig_lvl
+                            st.session_state.notified_date[sid] = today_str
+                            st.session_state.last_notified_price[sid] = last['close']
+                        
+                        # 不論如何都記錄到日誌
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
-                        st.session_state.notified_status[sid] = sig_lvl
-                        st.session_state.notified_date[sid] = today_str
-                        st.session_state.last_notified_price[sid] = last['close']
 
-                        # 核心修正：判斷 Discord 發送權限
+                        # 判斷 Discord 發送權限
                         is_discord_on = st.session_state.get("enable_discord", False)
                         market_is_open = is_market_open()
                         
+                        # 手動點擊或開盤期間，且開關開啟才發送
                         if is_discord_on and (manual_trigger or market_is_open):
                             discord_msg = (
                                 f"-----------------------------------------\n"
-                                f"{msg_header}\n"
+                                f"{msg_header} {'(手動掃描)' if manual_trigger else ''}\n"
                                 f"-----------------------------------------\n"
                                 f"股價代碼 : `{sid} {name}`\n"
                                 f"現價 : `{last['close']:.2f}`\n"
