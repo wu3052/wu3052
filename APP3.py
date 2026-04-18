@@ -424,15 +424,16 @@ with st.sidebar:
     st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
-    
+
+    analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
     st.info("💡 盤中自動監控：週一至週五 09:00~13:35。")
     auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
-    analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
+    
     
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
-# --- 9. 執行掃描邏輯 (修正 1: 確保大盤資訊不消失) ---
-def perform_scan():
+# --- 9. 執行掃描邏輯 ---
+def perform_scan(manual_trigger=False):  # <--- 已加入 manual_trigger 參數
     today_str = get_taiwan_time().strftime('%Y-%m-%d')
     now = get_taiwan_time()
     st.markdown(f"### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -444,7 +445,7 @@ def perform_scan():
     stock_info = get_stock_info()
     processed_stocks = []
 
-    # 1. 優先渲染大盤分析 (解決問題 1)
+    # 1. 優先渲染大盤分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df, is_market=True)
@@ -484,10 +485,7 @@ def perform_scan():
                 old_price = st.session_state.last_notified_price.get(sid, last['close'])
                 price_drop = (last['close'] - old_price) / old_price < -0.02 
                 
-                should_send = False
-                msg_header = ""
-
-# 判斷是否要發送 Discord 訊息 (邏輯拆解修正版)
+                # --- 判定觸發 ---
                 if old_date != today_str or old_sig != sig_lvl or price_drop:
                     should_send = False
                     msg_header = ""
@@ -497,28 +495,27 @@ def perform_scan():
                         msg_header = f"🩸 **【庫存風險警示】**"
                     elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
-                    if last.get("is_first_breakout"):
-                        msg_header = "🚀 **【 噴發第一根確認 】**\n均線糾結慣性改變，請立即追蹤！"
-                    elif "量縮回踩" in last['pattern']:
-                        msg_header = "📉 **【 強勢股回踩買點 】**\n縮量測支撐，留意低吸機會。"
-                    elif last["vol_ratio"] > 1.8:
-                        # 這裡建議把倍數帶入，更直觀
-                        msg_header = f"🔥 **【 狙擊目標爆量 】**\n動能達 {last['vol_ratio']}x 全面點火，準備開火！"
-                    else:
-                        msg_header = "🏹 **【 買點訊號觸發 】**\n訊號已達標，準備執行交易計畫。"
+                        if last.get("is_first_breakout"):
+                            msg_header = "🚀 **【 噴發第一根確認 】**\n均線糾結慣性改變，請立即追蹤！"
+                        elif "量縮回踩" in last['pattern']:
+                            msg_header = "📉 **【 強勢股回踩買點 】**\n縮量測支撐，留意低吸機會。"
+                        elif last["vol_ratio"] > 1.8:
+                            msg_header = f"🔥 **【 狙擊目標爆量 】**\n動能達 {last['vol_ratio']:.2f}x 全面點火，準備開火！"
+                        else:
+                            msg_header = "🏹 **【 買點訊號觸發 】**\n訊號已達標，準備執行交易計畫。"
 
                     if should_send:
-                        # --- 核心修正 1：不論開關有無開啟，都先記錄到 App 介面的日誌 ---
+                        # 核心修正：不論開關有無開啟，都先記錄與更新狀態，避免重複推送
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
-                        
-                        # --- 核心修正 2：更新通知狀態 (這行必須在 if enable_discord 之外) ---
-                        # 這樣下次循環就不會因為「沒更新狀態」而重複進入這個判斷區塊
                         st.session_state.notified_status[sid] = sig_lvl
                         st.session_state.notified_date[sid] = today_str
                         st.session_state.last_notified_price[sid] = last['close']
 
-                        # --- 核心修正 3：加入「Discord 開關」與「開盤時間」的雙重檢查 ---
-                        if st.session_state.get("enable_discord", False) and is_market_open():
+                        # 核心修正：判斷 Discord 發送權限
+                        is_discord_on = st.session_state.get("enable_discord", False)
+                        market_is_open = is_market_open()
+                        
+                        if is_discord_on and (manual_trigger or market_is_open):
                             discord_msg = (
                                 f"-----------------------------------------\n"
                                 f"{msg_header}\n"
@@ -537,11 +534,11 @@ def perform_scan():
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
-                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], 
+                    "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
             except Exception as e:
                 print(f"Error processing {sid}: {e}")
-
     # 3. 顯示區
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
@@ -594,15 +591,23 @@ def perform_scan():
 placeholder = st.empty()
 
 if analyze_btn:
-    with placeholder.container(): perform_scan()
+    # 手動點擊：強行執行，傳入 True 以無視開盤限制
+    with placeholder.container(): 
+        perform_scan(manual_trigger=True)
 elif auto_monitor:
+    # 全自動模式
     if is_market_open():
-        with placeholder.container(): perform_scan()
+        with placeholder.container(): 
+            perform_scan(manual_trigger=False)
         st.caption(f"🔄 盤中自動監控中... 下次更新: {(get_taiwan_time() + timedelta(minutes=interval)).strftime('%H:%M:%S')}")
         time.sleep(interval * 60)
         st.rerun()
     else:
-        with placeholder.container(): perform_scan()
+        # 非開盤時間：靜默掃描，更新 UI 但不推訊息
+        with placeholder.container(): 
+            perform_scan(manual_trigger=False)
         st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:35)，自動監控已進入休眠。")
 else:
-    with placeholder.container(): perform_scan()
+    # 未開啟自動，也沒按按鈕：執行靜默掃描以保持畫面資訊
+    with placeholder.container(): 
+        perform_scan(manual_trigger=False)
