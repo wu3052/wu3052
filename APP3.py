@@ -258,11 +258,11 @@ def analyze_strategy(df, is_market=False):
     
     # 盤勢基礎判定
     if row["ma5"] > row["ma10"] > row["ma20"] and row["close"] > row["ma5"]:
-        market_phase = "上漲盤 (多頭)"
+        market_phase = "📈上漲盤 (多頭)"
     elif row["ma5"] < row["ma10"] < row["ma20"] and row["close"] < row["ma5"]:
-        market_phase = "下跌盤 (空頭)"
+        market_phase = "📉下跌盤 (空頭)"
     else:
-        market_phase = "盤整盤 (橫盤)"
+        market_phase = "🍽️盤整盤 (橫盤)"
     df.at[last_idx, "market_phase"] = market_phase
 
     # 核心噴發判斷
@@ -302,7 +302,7 @@ def analyze_strategy(df, is_market=False):
         is_near_ma5 = 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015
         if is_vol_shrink and is_near_ma5:
             is_retrace = True
-            pattern_name = "📉 量縮回踩 5MA"
+            pattern_name = "📍量縮回踩 5MA"
             pattern_desc = "多頭趨勢中的健康回檔，量縮代表籌碼穩定，回踩均線是錯過噴發後的「第二次買點」。"
 
     df.at[last_idx, "pattern"] = pattern_name
@@ -497,14 +497,15 @@ def perform_scan():
                         msg_header = f"🩸 **【庫存風險警示】**"
                     elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
-                        if last.get("is_first_breakout"):
-                            msg_header = "🚀🚀 **【 噴 發 第 一 根 確 認 】** 🚀🚀"
-                        elif "量縮回踩" in last['pattern']:
-                            msg_header = "📉 **【 強 勢 股 回 踩 買 點 】**"
-                        elif last["vol_ratio"] > 1.8:
-                            msg_header = "🔥🔥 **【 狙 擊 目 標 爆 量 】** 🔥🔥"
-                        else:
-                            msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
+                    if last.get("is_first_breakout"):
+                        msg_header = "🚀 **【 噴發第一根確認 】**\n均線糾結慣性改變，請立即追蹤！"
+                    elif "量縮回踩" in last['pattern']:
+                        msg_header = "📉 **【 強勢股回踩買點 】**\n縮量測支撐，留意低吸機會。"
+                    elif last["vol_ratio"] > 1.8:
+                        # 這裡建議把倍數帶入，更直觀
+                        msg_header = f"🔥 **【 狙擊目標爆量 】**\n動能達 {last['vol_ratio']}x 全面點火，準備開火！"
+                    else:
+                        msg_header = "🏹 **【 買點訊號觸發 】**"\n符合系統預設進入點，請檢視技術面。"
 
                     if should_send:
                         # --- 核心修正 1：不論開關有無開啟，都先記錄到 App 介面的日誌 ---
