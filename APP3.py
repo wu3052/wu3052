@@ -487,12 +487,15 @@ def perform_scan():
                 should_send = False
                 msg_header = ""
 
-                # 判斷是否要發送 Discord 訊息 (包含修正後的 Discord 開關檢查)
+# 判斷是否要發送 Discord 訊息 (邏輯拆解修正版)
                 if old_date != today_str or old_sig != sig_lvl or price_drop:
+                    should_send = False
+                    msg_header = ""
+
                     if is_inv and sig_type == "SELL":
                         should_send = True
                         msg_header = f"🩸 **【庫存風險警示】**"
-                    elif is_snipe and ("BUY" in sig_type or last["is_first_breakout"]):
+                    elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
                         if last.get("is_first_breakout"):
                             msg_header = "🚀🚀 **【 噴 發 第 一 根 確 認 】** 🚀🚀"
@@ -503,27 +506,33 @@ def perform_scan():
                         else:
                             msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
 
-                    if should_send and st.session_state.enable_discord:
-                        discord_msg = (
-                            f"-----------------------------------------\n"
-                            f"{msg_header}\n"
-                            f"-----------------------------------------\n"
-                            f"股價代碼 : `{sid} {name}`\n"
-                            f"現價 : `{last['close']:.2f}`\n"
-                            f"技術型態 : `{last['pattern']}`\n"
-                            f"戰鬥評分 : `{last['score']}`\n"
-                            f"提醒 : `{last['warning']}`\n"
-                            f"💡 形態解讀：{last['pattern_desc']}\n"
-                            f"📍 `{last['pos_advice']}`\n"
-                            f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
-                            f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
-                        )
-                        send_discord_message(discord_msg)
+                    if should_send:
+                        # --- 核心修正 1：不論開關有無開啟，都先記錄到 App 介面的日誌 ---
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
                         
+                        # --- 核心修正 2：更新通知狀態 (這行必須在 if enable_discord 之外) ---
+                        # 這樣下次循環就不會因為「沒更新狀態」而重複進入這個判斷區塊
                         st.session_state.notified_status[sid] = sig_lvl
                         st.session_state.notified_date[sid] = today_str
                         st.session_state.last_notified_price[sid] = last['close']
+
+                        # --- 核心修正 3：加入「Discord 開關」與「開盤時間」的雙重檢查 ---
+                        if st.session_state.get("enable_discord", False) and is_market_open():
+                            discord_msg = (
+                                f"-----------------------------------------\n"
+                                f"{msg_header}\n"
+                                f"-----------------------------------------\n"
+                                f"股價代碼 : `{sid} {name}`\n"
+                                f"現價 : `{last['close']:.2f}`\n"
+                                f"技術型態 : `{last['pattern']}`\n"
+                                f"戰鬥評分 : `{last['score']}`\n"
+                                f"提醒 : `{last['warning']}`\n"
+                                f"💡 形態解讀：{last['pattern_desc']}\n"
+                                f"📍 `{last['pos_advice']}`\n"
+                                f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
+                                f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                            )
+                            send_discord_message(discord_msg)
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
