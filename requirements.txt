@@ -5,3 +5,5 @@ requests
 plotly
 yfinance
 google-generativeai
+gspread
+oauth2client
