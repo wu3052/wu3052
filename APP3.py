@@ -314,14 +314,14 @@ def analyze_strategy(df, is_market=False):
     is_price_up = row["close"] > prev["close"]
     is_price_down = row["close"] < prev["close"]
 
-    if is_price_up and row["low"] >= recent_low: buy_pts.append("底部位階支撐(1日不創新低)")
+    if is_price_up and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
     if is_retrace: buy_pts.append("量縮回踩5MA(買點)")
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
     if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
 
-    if is_price_down and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(1日不創新高)")
+    if is_price_down and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
