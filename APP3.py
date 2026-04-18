@@ -487,53 +487,43 @@ def perform_scan():
                 should_send = False
                 msg_header = ""
 
-# --- 修改後的發送邏輯區塊 (位於 perform_scan 內) ---
+                # 判斷是否要發送 Discord 訊息 (包含修正後的 Discord 開關檢查)
+                if old_date != today_str or old_sig != sig_lvl or price_drop:
+                    if is_inv and sig_type == "SELL":
+                        should_send = True
+                        msg_header = f"🩸 **【庫存風險警示】**"
+                    elif is_snipe and ("BUY" in sig_type or last["is_first_breakout"]):
+                        should_send = True
+                        if last.get("is_first_breakout"):
+                            msg_header = "🚀🚀 **【 噴 發 第 一 根 確 認 】** 🚀🚀"
+                        elif "量縮回踩" in last['pattern']:
+                            msg_header = "📉 **【 強 勢 股 回 踩 買 點 】**"
+                        elif last["vol_ratio"] > 1.8:
+                            msg_header = "🔥🔥 **【 狙 擊 目 標 爆 量 】** 🔥🔥"
+                        else:
+                            msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
 
-# 1. 只有在「開啟 Discord 開關」且「盤中時間」且「訊息尚未發送過」時才組合訊息
-can_send_discord = st.session_state.get("enable_discord", True) and is_market_open()
-
-if old_date != today_str or old_sig != sig_lvl or price_drop:
-    if is_inv and sig_type == "SELL":
-        should_send = True
-        msg_header = f"🩸 **【庫存風險警示】**"
-    elif is_snipe and ("BUY" in sig_type or last["is_first_breakout"]):
-        should_send = True
-        if last.get("is_first_breakout"):
-            msg_header = "🚀🚀 **【 噴 發 第 一 根 確 認 】** 🚀🚀"
-        elif "量縮回踩" in last['pattern']:
-            msg_header = "📉 **【 強 勢 股 回 踩 買 點 】**"
-        elif last["vol_ratio"] > 1.8:
-            msg_header = "🔥🔥 **【 狙 擊 目 標 爆 量 】** 🔥🔥"
-        else:
-            msg_header = "🏹 **【 買 點 訊 號 觸 發 】**"
-
-    # 關鍵修正：在這裡加入 double check
-    if should_send:
-        # 無論開關如何，戰情日誌(App介面)都要記錄
-        add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
-        
-        # 只有符合自動發送條件才推播到 Discord
-        if can_send_discord:
-            discord_msg = (
-                f"-----------------------------------------\n"
-                f"{msg_header}\n"
-                f"-----------------------------------------\n"
-                f"股價代碼 : `{sid} {name}`\n"
-                f"現價 : `{last['close']:.2f}`\n"
-                f"技術型態 : `{last['pattern']}`\n"
-                f"戰鬥評分 : `{last['score']}`\n"
-                f"提醒 : `{last['warning']}`\n"
-                f"💡 形態解讀：{last['pattern_desc']}\n"
-                f"📍 `{last['pos_advice']}`\n"
-                f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
-                f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-            send_discord_message(discord_msg)
-        
-        # 更新狀態以防止重複觸發
-        st.session_state.notified_status[sid] = sig_lvl
-        st.session_state.notified_date[sid] = today_str
-        st.session_state.last_notified_price[sid] = last['close']
+                    if should_send and st.session_state.enable_discord:
+                        discord_msg = (
+                            f"-----------------------------------------\n"
+                            f"{msg_header}\n"
+                            f"-----------------------------------------\n"
+                            f"股價代碼 : `{sid} {name}`\n"
+                            f"現價 : `{last['close']:.2f}`\n"
+                            f"技術型態 : `{last['pattern']}`\n"
+                            f"戰鬥評分 : `{last['score']}`\n"
+                            f"提醒 : `{last['warning']}`\n"
+                            f"💡 形態解讀：{last['pattern_desc']}\n"
+                            f"📍 `{last['pos_advice']}`\n"
+                            f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
+                            f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        send_discord_message(discord_msg)
+                        add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
+                        
+                        st.session_state.notified_status[sid] = sig_lvl
+                        st.session_state.notified_date[sid] = today_str
+                        st.session_state.last_notified_price[sid] = last['close']
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
