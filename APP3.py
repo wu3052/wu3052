@@ -615,7 +615,7 @@ elif auto_monitor:
         # 非開盤時間：靜默掃描，更新 UI 但不推訊息
         with placeholder.container(): 
             perform_scan(manual_trigger=False)
-        st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:35)，自動監控已進入休眠。")
+        st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:30)，自動監控已進入休眠。")
 else:
     # 未開啟自動，也沒按按鈕：執行靜默掃描以保持畫面資訊
     with placeholder.container(): 
