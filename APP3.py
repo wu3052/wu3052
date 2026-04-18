@@ -505,7 +505,7 @@ def perform_scan():
                         # 這裡建議把倍數帶入，更直觀
                         msg_header = f"🔥 **【 狙擊目標爆量 】**\n動能達 {last['vol_ratio']}x 全面點火，準備開火！"
                     else:
-                        msg_header = "🏹 **【 買點訊號觸發 】**"\n符合系統預設進入點，請檢視技術面。"
+                        msg_header = "🏹 **【 買點訊號觸發 】**\n訊號已達標，準備執行交易計畫。"
 
                     if should_send:
                         # --- 核心修正 1：不論開關有無開啟，都先記錄到 App 介面的日誌 ---
