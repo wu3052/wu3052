@@ -425,9 +425,10 @@ with st.sidebar:
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
 
+    auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
     analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
     st.info("💡 盤中自動監控：週一至週五 09:00~13:35。")
-    auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
+
     
     
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
