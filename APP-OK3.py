@@ -450,7 +450,7 @@ def plot_advanced_chart(df, title=""):
             mode="markers+text", 
             marker=dict(
                 symbol="triangle-up", 
-                size=20, 
+                size=15, 
                 color="#ff4b4b"  # 這裡只保留顏色，刪除了 line 的設定
             ), 
             text="🚀", 
@@ -463,7 +463,7 @@ def plot_advanced_chart(df, title=""):
     if "star_signal" in df_plot.columns:
         stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
         if not stars.empty:
-            fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=15, color="#FFD700"), name="發動點"), row=1, col=1)
     
     # 5. 副圖：MACD
     if "hist" in df_plot.columns:
