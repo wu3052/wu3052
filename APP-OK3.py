@@ -572,7 +572,7 @@ def perform_scan(manual_trigger=False):
                         if last.get("is_first_breakout"):
                             msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 🚀🚀🚀"
                         elif "量縮回踩" in last['pattern']:
-                            msg_header = "🟢🟢🟢 【 回踩支撐：低吸機會 】 🟢🟢🟢"
+                            msg_header = "🔴🔴🔴 【 回踩支撐：低吸機會 】 🔴🔴🔴"
                         elif last["vol_ratio"] > 1.8:
                             msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 🔥🔥🔥"
                         else:
