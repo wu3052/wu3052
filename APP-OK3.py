@@ -420,6 +420,8 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     else: advice = "建議配置: 3~5% (高波動小心)"
     df.at[last_idx, "pos_advice"] = advice
 
+    df.at[last_idx, "is_first_breakout"] = bool(is_first_breakout)
+    
     return df
 
 
@@ -442,10 +444,22 @@ def plot_advanced_chart(df, title=""):
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
+# 5. 噴發標記 (🚀) 
     if "is_first_breakout" in df_plot.columns:
-        breakouts = df_plot[df_plot["is_first_breakout"] == True]
+        # 強制轉換格式，避免 NaN 導致判斷失效
+        breakout_mask = df_plot["is_first_breakout"].astype(bool).fillna(False)
+        breakouts = df_plot[breakout_mask] 
+        
         if not breakouts.empty:
-            fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發第一根"), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=breakouts["date"], 
+                y=breakouts["low"] * 0.96, 
+                mode="markers+text", 
+                marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), 
+                text="🚀", 
+                textposition="bottom center", 
+                name="噴發第一根"
+            ), row=1, col=1)
 
     if "star_signal" in df_plot.columns:
         stars = df_plot[df_plot["star_signal"]]
