@@ -297,11 +297,27 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     df['hl_range'] = (df['high'] - df['low']) / df['close']
     df['vcp_check'] = df['hl_range'].rolling(5).mean() < df['hl_range'].rolling(20).mean() * 0.7
 
-    # --- 全表噴發點向量化判定 (確保圖表 🚀 顯示) ---
+# --- 全表噴發點過濾判定 (確保 5 天內不重複出現 🚀) ---
     max_ma_3_prev = df[["ma5", "ma10", "ma20"]].max(axis=1).shift(1)
     min_ma_3_prev = df[["ma5", "ma10", "ma20"]].min(axis=1).shift(1)
     df["was_tangling"] = (max_ma_3_prev - min_ma_3_prev) / df["close"].shift(1) < 0.035
-    df["is_first_breakout"] = (df["was_tangling"]) & (df["close"] > max_ma_3_prev) & (df["vol_ratio"] > 1.2) & (df["ma5"] > df["ma5"].shift(1))
+    
+    # 1. 先計算原始的訊號 (raw_signals)
+    raw_signals = (df["was_tangling"]) & (df["close"] > max_ma_3_prev) & (df["vol_ratio"] > 1.2) & (df["ma5"] > df["ma5"].shift(1))
+    
+    # 2. 建立一個乾淨的欄位來存過濾後的結果
+    filtered_signals = raw_signals.copy()
+    
+    # 3. 執行冷卻時間過濾 (Cool-down logic)
+    # 如果 5 天內已經出現過火箭，就把當前的訊號強制設為 False
+    for i in range(1, len(df)):
+        if filtered_signals.iloc[i]:
+            # 檢查前 5 天內 (i-5 到 i-1) 是否有任何 True
+            if filtered_signals.iloc[max(0, i-5):i].any():
+                filtered_signals.iloc[i] = False
+    
+    # 4. 將過濾後的結果存回 DataFrame
+    df["is_first_breakout"] = filtered_signals
 
     # --- 取得最新資料行 ---
     last_idx = df.index[-1]
@@ -442,25 +458,22 @@ def plot_advanced_chart(df, title=""):
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-# 3. 🚀 噴發標記 (取消白邊版)
+# 3. 🚀 噴發標記 (過濾後版本)
     breakouts = df_plot[df_plot["is_first_breakout"] == True]
     if not breakouts.empty:
-        latest_breakout = breakouts.tail(2) 
-        
         fig.add_trace(go.Scatter(
-            x=latest_breakout["date"], 
-            y=latest_breakout["low"] * 0.96, 
+            x=breakouts["date"], 
+            y=breakouts["low"] * 0.95, 
             mode="markers+text", 
             marker=dict(
                 symbol="triangle-up", 
-                size=15, 
-                color="#ff4b4b"  # 這裡只保留顏色，刪除了 line 的設定
+                size=20, 
+                color="#ff4b4b" 
             ), 
             text="🚀", 
             textposition="bottom center", 
-            name="最新噴發點"
+            name="噴發第一根"
         ), row=1, col=1)
-    # ---------------------------------------------------------
 
     # 4. ⭐ 發動點
     if "star_signal" in df_plot.columns:
