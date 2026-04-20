@@ -622,7 +622,7 @@ def perform_scan(manual_trigger=False):
                                 f"📍 **策略：** {last['pos_advice']}",
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動強制)' if manual_trigger else ''}",
-                                f"🔗 [玩股圖表](https://www.wantgoo.com/stock/{sid}) | [即時新聞](https://tw.stock.yahoo.com/quote/{sid}.TW/news)"
+                                f"🔗 [查看玩股網技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)"
                             ]
                             send_discord_message("\n".join(msg_lines))
                 
