@@ -437,7 +437,9 @@ def plot_advanced_chart(df, title=""):
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
-            fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
 # 3. 🚀 噴發標記 (取消白邊版)
     breakouts = df_plot[df_plot["is_first_breakout"] == True]
@@ -446,11 +448,11 @@ def plot_advanced_chart(df, title=""):
         
         fig.add_trace(go.Scatter(
             x=latest_breakout["date"], 
-            y=latest_breakout["low"] * 0.9, 
+            y=latest_breakout["low"] * 0.96, 
             mode="markers+text", 
             marker=dict(
                 symbol="triangle-up", 
-                size=12, 
+                size=15, 
                 color="#ff4b4b"  # 這裡只保留顏色，刪除了 line 的設定
             ), 
             text="🚀", 
