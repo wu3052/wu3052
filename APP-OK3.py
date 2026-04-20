@@ -255,10 +255,10 @@ def get_chip_details(sid, token):
         return pd.DataFrame(), pd.DataFrame()
 
 # --- 5. 核心策略分析 ---
-def analyze_strategy(df, sid=None, token=None, is_market=False):
+def analyze_strategy(df, is_market=False):
     if df is None or len(df) < 180: return None
     
-    # --- 1. 基礎指標與均線計算 ---
+    # --- 1. 基礎指標與均線 (保留原內容) ---
     for ma in [5, 10, 20, 55, 60, 200]:
         df[f"ma{ma}"] = df["close"].rolling(ma).mean()
     
@@ -267,7 +267,7 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     df["week_ma"] = df["close"].rolling(25).mean()
     df["is_weekly_bull"] = (df["close"] > df["week_ma"]) & (df["week_ma"] > df["week_ma"].shift(5))
 
-    # MACD 計算
+    # MACD
     exp1 = df['close'].ewm(span=12, adjust=False).mean()
     exp2 = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = exp1 - exp2
@@ -293,16 +293,14 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     low_close = (df['low'] - df['close'].shift()).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     df['atr'] = tr.rolling(14).mean()
-
-    # VCP 特徵計算
+    
+    # --- 2. 新增形態特徵計算 (不干擾舊邏輯) ---
     df['hl_range'] = (df['high'] - df['low']) / df['close']
     df['vcp_check'] = df['hl_range'].rolling(5).mean() < df['hl_range'].rolling(20).mean() * 0.7
-
+    
+    # --- 3. 形態偵測與盤勢判定 (保留所有經典內容) ---
+    df["is_first_breakout"] = False
     last_idx = df.index[-1]
-
-    # --- 3. 形態偵測與評分系統初始化 ---
-    score = 50
-    buy_pts, sell_pts = [], []
     row = df.iloc[-1]
     prev = df.iloc[-2]
     
@@ -310,15 +308,7 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
     diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
-    ma5_up = row["ma5"] > prev["ma5"]
     
-    # 糾結判定
-    max_ma_prev = max([prev["ma5"], prev["ma10"], prev["ma20"]])
-    min_ma_prev = min([prev["ma5"], prev["ma10"], prev["ma20"]])
-    was_tangling = (max_ma_prev - min_ma_prev) / prev["close"] < 0.03
-    is_first_breakout = (was_tangling and row["close"] > max_ma_prev and row["vol_ratio"] > 1.2 and ma5_up)
-
-    # 盤勢基礎判定
     if row["ma5"] > row["ma10"] > row["ma20"] and row["close"] > row["ma5"]:
         market_phase = "📈上漲盤 (多頭)"
     elif row["ma5"] < row["ma10"] < row["ma20"] and row["close"] < row["ma5"]:
@@ -327,173 +317,149 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         market_phase = "🍽️盤整盤 (橫盤)"
     df.at[last_idx, "market_phase"] = market_phase
 
-    # --- 5. 形態強度層級判定 ---
-    pattern_name = market_phase
-    pattern_desc = f"目前處於{market_phase}階段。"
+    # 核心噴發判斷
+    ma5_up = row["ma5"] > prev["ma5"]
+    max_ma_prev = max([prev["ma5"], prev["ma10"], prev["ma20"]])
+    min_ma_prev = min([prev["ma5"], prev["ma10"], prev["ma20"]])
+    was_tangling = (max_ma_prev - min_ma_prev) / prev["close"] < 0.03
 
-    is_long_red = (row["close"] > row["open"]) and ((row["close"] - row["open"]) / row["open"] > 0.03)
-    is_vcp = row["vcp_check"]
-    is_gap_up = row["open"] > prev["high"] * 1.005
+    is_first_breakout = (was_tangling and row["close"] > max_ma_prev and row["vol_ratio"] > 1.2 and ma5_up)
+    df.at[last_idx, "is_first_breakout"] = is_first_breakout
+
+    # 形態細部解釋 (保留經典判定)
+    pattern_name = market_phase
+    pattern_desc = f"目前處於{market_phase}階段。建議根據均線支撐與壓力進行操作。"
 
     if is_first_breakout:
-        score += 35
         pattern_name = "🚀 噴發第一根"
-        pattern_desc = "SSS 級判定！均線糾結後首次帶量突破，能量完全釋放，行情起點。"
-        buy_pts.append("噴發訊號")
+        pattern_desc = "均線糾結後首次帶量突破，慣性徹底改變，極具爆發力的進場點。"
     elif diff_long < 0.02 and row["close"] > row["ma5"] and ma5_up:
-        score += 30
         pattern_name = "💎 鑽石眼"
-        pattern_desc = "SS 級判定！五線合一超級共振，週期成本達成一致，發動令已下。"
-        buy_pts.append("鑽石眼強勢點")
+        pattern_desc = "「四線或五線合一」且 5MA 轉強，是「超級飆股」噴發前的訊號。"
     elif row["close"] > max(ma_list_long) and prev["close"] <= max(ma_list_long):
-        score += 25
         pattern_name = "🕳️ 鑽石坑"
-        pattern_desc = "S 級判定！克服所有長期壓力，進入主升段無壓力區。"
-        buy_pts.append("主升段啟動")
+        pattern_desc = "成功克服了市場的所有長期壓力，是「主升段」的開始，「勇敢加碼」。"
     elif diff_short < 0.015 and row["close"] > row["ma5"] and ma5_up and row["close"] > row["open"]:
-        score += 20
         pattern_name = "🟡 黃金眼"
-        pattern_desc = "A 級判定！均線整齊排列，底部反轉確認。"
-        buy_pts.append("黃金眼排列")
+        pattern_desc = "均線將同步向上發發散，「三均線整齊排列」，「底部翻多」的最強訊號。"
     elif row["ma5"] > row["ma10"] and row["ma5"] > row["ma20"] and prev["ma5"] <= prev["ma10"]:
-        score += 15
         pattern_name = "📐 黃金三角眼"
-        pattern_desc = "B 級判定！多頭雛形醞釀，適合分批試單。"
-        buy_pts.append("多頭一浪啟動")
-    elif is_long_red and row["vol_ratio"] > 1.8:
-        score += 15
+        pattern_desc = "多頭一浪啟動！形成堅實支撐三角區，標誌空頭盤整結束，「試單進場點」。"
+    
+    # 量縮回踩邏輯 (保留)
+    is_retrace = False
+    if market_phase == "📈上漲盤 (多頭)":
+        is_vol_shrink = row["volume"] < row["vol_ma5"]
+        is_near_ma5 = 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015
+        if is_vol_shrink and is_near_ma5:
+            is_retrace = True
+            pattern_name = "📍量縮回踩 5MA"
+            pattern_desc = "多頭趨勢中的健康回檔，量縮代表籌碼穩定，回踩均線是「第二次買點」。"
+
+    # --- 4. 融合新形態判斷 (長紅、缺口、VCP) ---
+    is_vcp = row["vcp_check"]
+    is_gap_up = row["open"] > prev["high"] * 1.005
+    is_long_red = (row["close"] > row["open"]) and ((row["close"] - row["open"]) / row["open"] > 0.03)
+
+    # 如果符合新形態，在 pattern_name 後面加上標籤，不覆蓋原本的
+    if is_vcp and is_first_breakout:
+        pattern_name = "🔋 VCP + " + pattern_name
+        pattern_desc = "籌碼高度壓縮後的帶量噴發，可靠度極高！"
+    elif is_long_red and row["vol_ratio"] > 1.8 and not is_first_breakout:
         pattern_name = "🧱 實體長紅突破"
         pattern_desc = "強力買盤介入，實體紅棒穿透壓力區，配合量能噴發。"
-        buy_pts.append("實體長紅")
 
-    # --- 6. 買賣點彙整偵測 ---
+    df.at[last_idx, "pattern"] = pattern_name
+    df.at[last_idx, "pattern_desc"] = pattern_desc
+
+    # --- 5. 買賣點與評分 (保留並增加權重) ---
+    buy_pts, sell_pts = [], []
     recent_low = df["low"].tail(3).min()
-    is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
+    is_price_up = row["close"] > prev["close"]
+    is_price_down = row["close"] < prev["close"]
 
-    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
+    if is_price_up and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
     if is_retrace: buy_pts.append("量縮回踩5MA(買點)")
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
     if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
-    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死亡交叉關鍵位(上漲買入)")
+    
+    # 增加新形態到買點清單
     if is_gap_up: buy_pts.append("🚀多方跳空缺口")
     if is_vcp: buy_pts.append("🔋籌碼壓縮(VCP)")
 
-    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
+    if is_price_down and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
-    # --- 7. 最終評分與結果存入 ---
-    if buy_pts: score += 12 * len(set(buy_pts))
-    if sell_pts: score -= 20 * len(set(sell_pts))
+    # --- 評分邏輯 (微調權重) ---
+    score = 50
+    if buy_pts: score += 12 * len(buy_pts) # 稍微降低基數避免爆表
+    if sell_pts: score -= 20 * len(sell_pts)
     if row["vol_ratio"] > 1.8: score += 10
-    if is_gap_up: score += 10
-    if is_vcp: score += 5
+    if is_gap_up: score += 10  # 額外加分
+    if is_vcp: score += 5      # 額外加分
     if row["close"] > row["ma200"]: score += 5
     if row["is_weekly_bull"]: score += 5
+    if not is_market and st.session_state.market_score < 40: score -= 20
     
-    if not is_market and hasattr(st.session_state, 'market_score') and st.session_state.market_score < 40:
-        score -= 20
-
-    if is_vcp and ("噴發" in pattern_name or "眼" in pattern_name):
-        pattern_name = "🔋 VCP + " + pattern_name
-
     df.at[last_idx, "score"] = max(0, min(100, score))
-    df.at[last_idx, "pattern"] = pattern_name
-    df.at[last_idx, "pattern_desc"] = pattern_desc
-    df.at[last_idx, "warning"] = " | ".join(buy_pts + sell_pts) if (buy_pts or sell_pts) else "趨勢穩定"
+    df.at[last_idx, "warning"] = " | ".join(buy_pts + sell_pts) if (buy_pts or sell_pts) else "趨勢穩定中"
     
     sig = "HOLD"
     if buy_pts: sig = "BUY"
     if sell_pts: sig = "SELL"
-    if not is_market and hasattr(st.session_state, 'market_score') and st.session_state.market_score < 40 and sig == "BUY":
+    if not is_market and st.session_state.market_score < 40 and sig == "BUY":
         sig = "HOLD (大盤空頭避險)"
         df.at[last_idx, "warning"] = "⚠️ 大盤疲弱，暫緩開火 | " + df.at[last_idx, "warning"]
+
     df.at[last_idx, "sig_type"] = sig
-
-    risk_vol = (row["atr"] / row["close"]) * 100
-    if risk_vol < 1.5: advice = "建議配置: 15~20% (穩健型)"
-    elif risk_vol < 3.0: advice = "建議配置: 8~12% (標準型)"
-    else: advice = "建議配置: 3~5% (高波動小心)"
-    df.at[last_idx, "pos_advice"] = advice
-
-    df.at[last_idx, "is_first_breakout"] = bool(is_first_breakout)
+    
+    # 資金控管建議
+    risk_volatility = (row["atr"] / row["close"]) * 100
+    if risk_volatility < 1.5: pos_advice = "建議配置: 15~20% (穩健型)"
+    elif risk_volatility < 3.0: pos_advice = "建議配置: 8~12% (標準型)"
+    else: pos_advice = "建議配置: 3~5% (高波動小心)"
+    df.at[last_idx, "pos_advice"] = pos_advice
     
     return df
 
-
 def plot_advanced_chart(df, title=""):
-    if df is None or df.empty: return go.Figure()
-    
-    # 1. 取得最近 100 根並確保資料乾淨
     df_plot = df.tail(100).copy()
-    
-    # 【關鍵修正：強制修復資料欄位】
-    # 如果 analyze_strategy 沒傳進來，我們直接在這裡現場重新標記
-    if "is_first_breakout" not in df_plot.columns:
-        df_plot["is_first_breakout"] = False
-    
-    # 強制填補空值並轉成布林型態，避免 Plotly 無法讀取
-    df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
-    
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # 2. 主圖：K線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
-    # 3. 均線 (安全讀取)
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
             fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
-    # 4. 關鍵位 (使用 .get 避免沒欄位崩潰)
-    if "upward_key" in df_plot.columns:
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
-    if "downward_key" in df_plot.columns:
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-    # 5. 噴發標記 (🚀) --- 修正重點 ---
-    # 我們改用更寬鬆的過濾條件，只要是 True 或是 1 都要畫出來
-    breakouts = df_plot[df_plot["is_first_breakout"] == True]
-    
-    if not breakouts.empty:
-        fig.add_trace(go.Scatter(
-            x=breakouts["date"], 
-            y=breakouts["low"] * 0.97, # 稍微調低一點，避免跟 K 線重疊
-            mode="markers+text", 
-            marker=dict(symbol="triangle-up", size=18, color="#ff4b4b"), # 加大尺寸
-            text="🚀", 
-            textposition="bottom center", 
-            name="噴發點"
-        ), row=1, col=1)
+    if "is_first_breakout" in df_plot.columns:
+        breakouts = df_plot[df_plot["is_first_breakout"] == True]
+        if not breakouts.empty:
+            fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發第一根"), row=1, col=1)
 
-    # 6. 發動點 (⭐)
-    if "star_signal" in df_plot.columns:
-        df_plot["star_signal"] = df_plot["star_signal"].fillna(False).astype(bool)
-        stars = df_plot[df_plot["star_signal"] == True]
-        if not stars.empty:
-            fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
+    stars = df_plot[df_plot["star_signal"]]
+    if not stars.empty:
+        fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    # 7. MACD
-    if "hist" in df_plot.columns:
-        hist_values = df_plot["hist"].fillna(0)
-        colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in hist_values]
-        fig.add_trace(go.Bar(x=df_plot["date"], y=hist_values, name="MACD", marker_color=colors), row=2, col=1)
+    colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
+    fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
-    fig.update_layout(
-        height=650, title=title, template="plotly_white", 
-        xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10), 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    
+    fig.update_layout(height=650, title=title, template="plotly_white", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
+    
     
     
 # --- 7. Google 表單同步 ---
