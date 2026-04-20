@@ -570,13 +570,13 @@ def perform_scan(manual_trigger=False):
                     elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
                         if last.get("is_first_breakout"):
-                            msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 🚀🚀🚀"\n均線糾結慣性改變，請立即追蹤！"
+                            msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 🚀🚀🚀\n均線糾結慣性改變，請立即追蹤！"
                         elif "量縮回踩" in last['pattern']:
-                            msg_header = "🔴🔴🔴 【 回踩支撐：低吸機會 】 🔴🔴🔴"\n縮量測支撐，留意低吸機會。"
+                            msg_header = "🔴🔴🔴 【 回踩支撐：低吸機會 】 🔴🔴🔴\n縮量測支撐，留意低吸機會。"
                         elif last["vol_ratio"] > 1.8:
-                            msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 🔥🔥🔥"\n動能達 {last['vol_ratio']:.2f}x 全面點火，準備開火！"
+                            msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 🔥🔥🔥\n動能達 {last['vol_ratio']:.2f}x 全面點火，準備開火！"
                         else:
-                            msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯"\n訊號已達標，準備執行交易計畫。"
+                            msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯\n訊號已達標，準備執行交易計畫。"
 
                     if should_send:
                         # 計算交易建議價位
