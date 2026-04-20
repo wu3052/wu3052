@@ -427,40 +427,49 @@ def plot_advanced_chart(df, title=""):
     
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # 主圖：K線
+    # 1. 主圖：K線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
-    # 均線族
+    # 2. 均線族
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
             fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
-    # 關鍵位
-    if "upward_key" in df_plot.columns:
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
-    if "downward_key" in df_plot.columns:
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
-    
-    # 🚀 噴發標記 (從全表讀取符合條件的點)
-    breakouts = df_plot[df_plot["is_first_breakout"]]
+    # ---------------------------------------------------------
+    # 3. 🚀 噴發標記 (只顯示最新的一根)
+    # ---------------------------------------------------------
+    breakouts = df_plot[df_plot["is_first_breakout"] == True]
     if not breakouts.empty:
+        # 只抓取最後一個符合條件的時間點 (tail(1))
+        latest_breakout = breakouts.tail(3) 
+        
         fig.add_trace(go.Scatter(
-            x=breakouts["date"], y=breakouts["low"] * 0.95, 
-            mode="markers+text", marker=dict(symbol="triangle-up", size=18, color="#ff4b4b", line=dict(width=2, color="white")), 
-            text="🚀", textposition="bottom center", name="噴發第一根"
+            x=latest_breakout["date"], 
+            y=latest_breakout["low"] * 0.95, 
+            mode="markers+text", 
+            marker=dict(
+                symbol="triangle-up", 
+                size=20, 
+                color="#ff4b4b", 
+                line=dict(width=2, color="white")
+            ), 
+            text="🚀", 
+            textposition="bottom center", 
+            name="最新噴發點"
         ), row=1, col=1)
+    # ---------------------------------------------------------
 
-    # ⭐ 發動點
+    # 4. ⭐ 發動點
     if "star_signal" in df_plot.columns:
         stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
         if not stars.empty:
             fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    # 副圖：MACD
+    # 5. 副圖：MACD
     if "hist" in df_plot.columns:
         colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
         fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
