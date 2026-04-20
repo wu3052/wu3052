@@ -572,24 +572,17 @@ def perform_scan(manual_trigger=False):
                         if last.get("is_first_breakout"):
                             msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 🚀🚀🚀"
                         elif "量縮回踩" in last['pattern']:
-                            msg_header = "🟢🟢🟢 【 回踩支撐：低吸機會 】 🟢🟢🟢"
+                            msg_header = "🔴🔴🔴 【 回踩支撐：低吸機會 】 🔴🔴🔴"
                         elif last["vol_ratio"] > 1.8:
                             msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 🔥🔥🔥"
                         else:
                             msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯"
 
-                    if should_send:
-                        # 判定評級 (SSS, SS, S, A, B)
-                        score = last['score']
-                        if score >= 95: rank = "SSS"
-                        elif score >= 85: rank = "SS"
-                        elif score >= 75: rank = "S"
-                        elif score >= 65: rank = "A"
-                        else: rank = "B"
+
 
                         # 特別提醒判斷 (多方跳空 / VCP)
                         special_alerts = []
-                        if last['close'] > df.iloc[-2]['high']: special_alerts.append("✨ 多方跳空缺口")
+                        if last['close'] > df.iloc[-2]['high']: special_alerts.append("🚀 多方跳空缺口")
                         if "VCP" in last['pattern'] or "壓縮" in last['pattern_desc']: special_alerts.append("💎 籌碼壓縮 VCP")
                         
                         special_note = f"💡 **核心關鍵：** `{' | '.join(special_alerts)}`" if special_alerts else ""
@@ -615,9 +608,8 @@ def perform_scan(manual_trigger=False):
                                 f"{msg_header}",
                                 f"{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"📝 **解讀：** {last['pattern_desc']}",
-                                f"⚠️ **提醒：** {last['warning']}",
                                 f"━━━━━━━━━━━━━━━━━━━━",
-                                f"📈 **標的：** `{sid} {name}`  【**{rank}**】",
+                                f"📈 **標的：** `{sid} {name}`",
                                 f"💰 **現價：** `{last['close']:.2f}`",
                                 f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
                                 f"🛡️ **戰鬥評分：** `{last['score']} / 100`",
@@ -626,6 +618,7 @@ def perform_scan(manual_trigger=False):
                                 f"❌ **硬性停損：** `{stop_loss:.2f}`",
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"🔍 **型態：** {last['pattern']}",
+                                f"⚠️ **提醒：** {last['warning']}",
                                 f"📍 **策略：** {last['pos_advice']}",
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動強制)' if manual_trigger else ''}",
