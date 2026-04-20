@@ -273,9 +273,8 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     df['macd'] = exp1 - exp2
     df['signal_line'] = df['macd'].ewm(span=9, adjust=False).mean()
     df['hist'] = df['macd'] - df['signal_line']
-    df = df.ffill().bfill()
     
-    # 乖離與量比
+    # 乖離與量比 (使用預估成交量)
     df["bias_5"] = ((df["close"] - df["ma5"]) / df["ma5"]) * 100
     df["vol_ma5"] = df["volume"].rolling(5).mean()
     df["vol_ratio"] = df["est_volume"] / df["vol_ma5"].replace(0, np.nan)
@@ -298,26 +297,19 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     df['hl_range'] = (df['high'] - df['low']) / df['close']
     df['vcp_check'] = df['hl_range'].rolling(5).mean() < df['hl_range'].rolling(20).mean() * 0.7
 
-    last_idx = df.index[-1]
+    # --- 全表噴發點向量化判定 (確保圖表 🚀 顯示) ---
+    max_ma_3_prev = df[["ma5", "ma10", "ma20"]].max(axis=1).shift(1)
+    min_ma_3_prev = df[["ma5", "ma10", "ma20"]].min(axis=1).shift(1)
+    df["was_tangling"] = (max_ma_3_prev - min_ma_3_prev) / df["close"].shift(1) < 0.035
+    df["is_first_breakout"] = (df["was_tangling"]) & (df["close"] > max_ma_3_prev) & (df["vol_ratio"] > 1.2) & (df["ma5"] > df["ma5"].shift(1))
 
-    # --- 3. 形態偵測與評分系統初始化 ---
-    score = 50
-    buy_pts, sell_pts = [], []
+    # --- 取得最新資料行 ---
+    last_idx = df.index[-1]
     row = df.iloc[-1]
     prev = df.iloc[-2]
+    score = 50
+    buy_pts, sell_pts = [], []
     
-    ma_list_short = [row["ma5"], row["ma10"], row["ma20"]]
-    ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
-    diff_short = (max(ma_list_short) - min(ma_list_short)) / row["close"]
-    diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
-    ma5_up = row["ma5"] > prev["ma5"]
-    
-    # 糾結判定
-    max_ma_prev = max([prev["ma5"], prev["ma10"], prev["ma20"]])
-    min_ma_prev = min([prev["ma5"], prev["ma10"], prev["ma20"]])
-    was_tangling = (max_ma_prev - min_ma_prev) / prev["close"] < 0.03
-    is_first_breakout = (was_tangling and row["close"] > max_ma_prev and row["vol_ratio"] > 1.2 and ma5_up)
-
     # 盤勢基礎判定
     if row["ma5"] > row["ma10"] > row["ma20"] and row["close"] > row["ma5"]:
         market_phase = "📈上漲盤 (多頭)"
@@ -327,20 +319,22 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         market_phase = "🍽️盤整盤 (橫盤)"
     df.at[last_idx, "market_phase"] = market_phase
 
-    # --- 5. 形態強度層級判定 ---
+    # --- 形態強度層級判定 ---
     pattern_name = market_phase
     pattern_desc = f"目前處於{market_phase}階段。"
-
+    ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
+    diff_short = (max([row["ma5"], row["ma10"], row["ma20"]]) - min([row["ma5"], row["ma10"], row["ma20"]])) / row["close"]
+    diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
+    
     is_long_red = (row["close"] > row["open"]) and ((row["close"] - row["open"]) / row["open"] > 0.03)
-    is_vcp = row["vcp_check"]
     is_gap_up = row["open"] > prev["high"] * 1.005
 
-    if is_first_breakout:
+    if row["is_first_breakout"]:
         score += 35
         pattern_name = "🚀 噴發第一根"
         pattern_desc = "SSS 級判定！均線糾結後首次帶量突破，能量完全釋放，行情起點。"
         buy_pts.append("噴發訊號")
-    elif diff_long < 0.02 and row["close"] > row["ma5"] and ma5_up:
+    elif diff_long < 0.02 and row["close"] > row["ma5"] and row["ma5"] > prev["ma5"]:
         score += 30
         pattern_name = "💎 鑽石眼"
         pattern_desc = "SS 級判定！五線合一超級共振，週期成本達成一致，發動令已下。"
@@ -350,7 +344,7 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         pattern_name = "🕳️ 鑽石坑"
         pattern_desc = "S 級判定！克服所有長期壓力，進入主升段無壓力區。"
         buy_pts.append("主升段啟動")
-    elif diff_short < 0.015 and row["close"] > row["ma5"] and ma5_up and row["close"] > row["open"]:
+    elif diff_short < 0.015 and row["close"] > row["ma5"] and row["ma5"] > prev["ma5"] and row["close"] > row["open"]:
         score += 20
         pattern_name = "🟡 黃金眼"
         pattern_desc = "A 級判定！均線整齊排列，底部反轉確認。"
@@ -366,7 +360,7 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         pattern_desc = "強力買盤介入，實體紅棒穿透壓力區，配合量能噴發。"
         buy_pts.append("實體長紅")
 
-    # --- 6. 買賣點彙整偵測 ---
+    # --- 買賣點彙整偵測 ---
     recent_low = df["low"].tail(3).min()
     is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
 
@@ -377,7 +371,7 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
     if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
     if is_gap_up: buy_pts.append("🚀多方跳空缺口")
-    if is_vcp: buy_pts.append("🔋籌碼壓縮(VCP)")
+    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
 
     if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
@@ -386,19 +380,20 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
     if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
-    # --- 7. 最終評分與結果存入 ---
+    # --- 最終評分與結果存入 ---
     if buy_pts: score += 12 * len(set(buy_pts))
     if sell_pts: score -= 20 * len(set(sell_pts))
     if row["vol_ratio"] > 1.8: score += 10
     if is_gap_up: score += 10
-    if is_vcp: score += 5
+    if row["vcp_check"]: score += 5
     if row["close"] > row["ma200"]: score += 5
     if row["is_weekly_bull"]: score += 5
     
+    # 大盤風控邏輯
     if not is_market and hasattr(st.session_state, 'market_score') and st.session_state.market_score < 40:
         score -= 20
 
-    if is_vcp and ("噴發" in pattern_name or "眼" in pattern_name):
+    if row["vcp_check"] and ("噴發" in pattern_name or "眼" in pattern_name):
         pattern_name = "🔋 VCP + " + pattern_name
 
     df.at[last_idx, "score"] = max(0, min(100, score))
@@ -422,45 +417,58 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
 
     return df
 
-
 def plot_advanced_chart(df, title=""):
     if df is None or df.empty: return go.Figure()
     df_plot = df.tail(100).copy()
-    df_plot = df_plot.fillna(0) 
+    
+    # 確保關鍵標記欄位正確
+    if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
+    df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
+    
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
+    # 主圖：K線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
+    # 均線族
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
             fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
-    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
+    # 關鍵位
+    if "upward_key" in df_plot.columns:
+        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
+    if "downward_key" in df_plot.columns:
+        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-    if "is_first_breakout" in df_plot.columns:
-        breakouts = df_plot[df_plot["is_first_breakout"] == True]
-        if not breakouts.empty:
-            fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發第一根"), row=1, col=1)
+    # 🚀 噴發標記 (從全表讀取符合條件的點)
+    breakouts = df_plot[df_plot["is_first_breakout"]]
+    if not breakouts.empty:
+        fig.add_trace(go.Scatter(
+            x=breakouts["date"], y=breakouts["low"] * 0.95, 
+            mode="markers+text", marker=dict(symbol="triangle-up", size=18, color="#ff4b4b", line=dict(width=2, color="white")), 
+            text="🚀", textposition="bottom center", name="噴發第一根"
+        ), row=1, col=1)
 
+    # ⭐ 發動點
     if "star_signal" in df_plot.columns:
-        stars = df_plot[df_plot["star_signal"]]
+        stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
         if not stars.empty:
             fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
-    fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
+    # 副圖：MACD
+    if "hist" in df_plot.columns:
+        colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
+        fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
     fig.update_layout(
-        height=650, title=title, template="plotly_white", 
-        xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10), 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        height=650, title=title, template="plotly_white", xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=50, b=10), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    
     return fig
     
     
