@@ -579,20 +579,24 @@ def perform_scan(manual_trigger=False):
                             msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯"
 
                     if should_send:
-                        # 判定評級 (SSS, SS, S, A, B)
+                        # --- 判定級數 (基於解讀評分判定) ---
                         score = last['score']
-                        if score >= 95: rank = "SSS"
-                        elif score >= 85: rank = "SS"
-                        elif score >= 75: rank = "S"
-                        elif score >= 65: rank = "A"
-                        else: rank = "B"
+                        if score >= 95: rank = "SSS (極致爆發)"
+                        elif score >= 85: rank = "SS (強勢攻擊)"
+                        elif score >= 75: rank = "S (優質趨勢)"
+                        elif score >= 65: rank = "A (多頭成形)"
+                        else: rank = "B (轉強觀察)"
 
-                        # 特別提醒判斷 (多方跳空 / VCP)
+                        # --- 特別提醒偵測 ---
                         special_alerts = []
-                        if last['close'] > df.iloc[-2]['high']: special_alerts.append("✨ 多方跳空缺口")
-                        if "VCP" in last['pattern'] or "壓縮" in last['pattern_desc']: special_alerts.append("💎 籌碼壓縮 VCP")
+                        # 1. 偵測跳空 (現價大於昨日最高價)
+                        if last['close'] > df.iloc[-2]['high'] * 1.005: 
+                            special_alerts.append("✨ 多方跳空缺口")
+                        # 2. 偵測 VCP (從型態文字搜尋)
+                        if "VCP" in last['pattern'] or "壓縮" in last['pattern'] or "收斂" in last['pattern_desc']:
+                            special_alerts.append("💎 籌碼壓縮 VCP")
                         
-                        special_note = f"💡 **核心關鍵：** `{' | '.join(special_alerts)}`" if special_alerts else ""
+                        alert_text = f"💡 **特別提醒：** `{' | '.join(special_alerts)}`" if special_alerts else "◈ 趨勢穩定追蹤中"
 
                         # 計算建議價位
                         buy_range_low = last['close'] * 0.995
@@ -610,29 +614,30 @@ def perform_scan(manual_trigger=False):
                         market_is_open = is_market_open()
                         
                         if is_discord_on and (manual_trigger or market_is_open):
-                            # 構建 Discord 訊息
-                            msg_lines = [
-                                f"【**{rank}**】"
-                                f"{msg_header}",
-                                f"{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
-                                f"━━━━━━━━━━━━━━━━━━━━",
-                                f"📈 **標的：** `{sid} {name}`,
-                                f"💰 **現價：** `{last['close']:.2f}`",
-                                f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
-                                f"🛡️ **戰鬥評分：** `{last['score']} / 100`",
-                                f"━━━━━━━━━━━━━━━━━━━━",
-                                f"✅ **建議買點：** `{buy_range_low:.2f} ~ {buy_range_high:.2f}`",
-                                f"❌ **硬性停損：** `{stop_loss:.2f}`",
-                                f"━━━━━━━━━━━━━━━━━━━━",
-                                f"🔍 **型態：** {last['pattern']}",
-                                f"📝 **解讀：** {last['pattern_desc']}",
-                                f"⚠️ **提醒：** {last['warning']}",
-                                f"📍 **策略：** {last['pos_advice']}",
-                                f"━━━━━━━━━━━━━━━━━━━━",
-                                f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動強制)' if manual_trigger else ''}",
+                            # 構建獨立 Discord 訊息內容
+                            discord_msg = (
+                                f"{msg_header}\n"
+                                f"🏆 **戰鬥級數：** `{rank}`\n"
+                                f"{alert_text}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📈 **標的：** `{sid} {name}`\n"
+                                f"💰 **現價：** `{last['close']:.2f}`\n"
+                                f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`\n"
+                                f"🛡️ **戰鬥評分：** `{last['score']} / 100`\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"✅ **建議買點：** `{buy_range_low:.2f} ~ {buy_range_high:.2f}`\n"
+                                f"❌ **硬性停損：** `{stop_loss:.2f}` (跌破出場)\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🔍 **型態：** {last['pattern']}\n"
+                                f"📝 **解讀：** {last['pattern_desc']}\n"
+                                f"⚠️ **提醒：** {last['warning']}\n"
+                                f"📍 **策略：** {last['pos_advice']}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動強制)' if manual_trigger else ''}\n"
                                 f"🔗 [查看 TradingView](https://tw.tradingview.com/chart/?symbol=TWSE:{sid})"
-                            ]
-                            send_discord_message("\n".join(msg_lines))
+                            )
+                            # 獨立發送
+                            send_discord_message(discord_msg)
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
