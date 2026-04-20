@@ -439,13 +439,10 @@ def plot_advanced_chart(df, title=""):
         if f"ma{ma}" in df_plot.columns:
             fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
-    # ---------------------------------------------------------
-    # 3. 🚀 噴發標記 (只顯示最新的一根)
-    # ---------------------------------------------------------
+# 3. 🚀 噴發標記 (取消白邊版)
     breakouts = df_plot[df_plot["is_first_breakout"] == True]
     if not breakouts.empty:
-        # 只抓取最後一個符合條件的時間點 (tail(1))
-        latest_breakout = breakouts.tail(3) 
+        latest_breakout = breakouts.tail(2) 
         
         fig.add_trace(go.Scatter(
             x=latest_breakout["date"], 
@@ -454,8 +451,7 @@ def plot_advanced_chart(df, title=""):
             marker=dict(
                 symbol="triangle-up", 
                 size=20, 
-                color="#ff4b4b", 
-                line=dict(width=2, color="white")
+                color="#ff4b4b"  # 這裡只保留顏色，刪除了 line 的設定
             ), 
             text="🚀", 
             textposition="bottom center", 
