@@ -463,11 +463,11 @@ def plot_advanced_chart(df, title=""):
     if not breakouts.empty:
         fig.add_trace(go.Scatter(
             x=breakouts["date"], 
-            y=breakouts["low"] * 0.95, 
+            y=breakouts["low"] * 0.96, 
             mode="markers+text", 
             marker=dict(
                 symbol="triangle-up", 
-                size=20, 
+                size=15, 
                 color="#ff4b4b" 
             ), 
             text="🚀", 
