@@ -507,7 +507,7 @@ with st.sidebar:
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
-def perform_scan(manual_trigger=False):
+def perform_scan(manual_trigger=False):  # <--- 已加入 manual_trigger 參數
     today_str = get_taiwan_time().strftime('%Y-%m-%d')
     now = get_taiwan_time()
     st.markdown(f"### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -519,6 +519,7 @@ def perform_scan(manual_trigger=False):
     stock_info = get_stock_info()
     processed_stocks = []
 
+    # 1. 優先渲染大盤分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df, is_market=True)
@@ -537,35 +538,34 @@ def perform_scan(manual_trigger=False):
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
+    # 2. 處理個股
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
-        
-        for future in as_completed(future_to_sid):
+        for future in future_to_sid:
             sid = future_to_sid[future]
             try:
                 df = future.result()
                 if df is None: continue
-                
-                df = analyze_strategy(df, sid=sid, token=fm_token, is_market=False)
+                df = analyze_strategy(df, is_market=False)
                 last = df.iloc[-1]
                 name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
                 is_inv, is_snipe = sid in inv_list, sid in snipe_list
                 
-                sig_type = last.get('sig_type', 'HOLD')
-                sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last.get('vol_ratio', 0)>1.8) else 'NOR'}"
+                sig_type = last['sig_type']
+                sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
                 
-                current_price = f"{float(last['close']):.2f}" if 'close' in last else "---"
-                vol_ratio_val = f"{float(last['vol_ratio']):.2f}" if 'vol_ratio' in last else "1.00"
-
                 old_sig = st.session_state.notified_status.get(sid)
                 old_date = st.session_state.notified_date.get(sid)
                 old_price = st.session_state.last_notified_price.get(sid, last['close'])
                 price_drop = (last['close'] - old_price) / old_price < -0.02 
                 
+                # --- 判定觸發 ---
+# --- 判定觸發 (加入 manual_trigger 確保手動掃描必進入判斷) ---
                 if manual_trigger or old_date != today_str or old_sig != sig_lvl or price_drop:
                     should_send = False
                     msg_header = ""
 
+                    # 1. 判斷是否符合發送門檻 (買入或賣出訊號)
                     if is_inv and sig_type == "SELL":
                         should_send = True
                         msg_header = f"🩸 **【庫存風險警示】**"
@@ -576,49 +576,51 @@ def perform_scan(manual_trigger=False):
                         elif "量縮回踩" in last['pattern']:
                             msg_header = "📉 **【 強勢股回踩買點 】**\n縮量測支撐，留意低吸機會。"
                         elif last["vol_ratio"] > 1.8:
-                            msg_header = f"🔥 **【 狙擊目標爆量 】**\n動能達 {vol_ratio_val}x 全面點火，準備開火！"
+                            msg_header = f"🔥 **【 狙擊目標爆量 】**\n動能達 {last['vol_ratio']:.2f}x 全面點火，準備開火！"
                         else:
                             msg_header = "🏹 **【 買點訊號觸發 】**\n訊號已達標，準備執行交易計畫。"
 
+                    # 2. 執行發送與狀態更新
                     if should_send:
+                        # 只有在「非手動強制掃描」的情況下，才更新狀態標記
+                        # 這樣可以避免手動掃描完後，盤中自動監控反而因為狀態已被更新而不推送
                         if not manual_trigger:
                             st.session_state.notified_status[sid] = sig_lvl
                             st.session_state.notified_date[sid] = today_str
                             st.session_state.last_notified_price[sid] = last['close']
                         
+                        # 不論如何都記錄到日誌
                         add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
 
-                        if st.session_state.get("enable_discord", False) and (manual_trigger or is_market_open()):
+                        # 判斷 Discord 發送權限
+                        is_discord_on = st.session_state.get("enable_discord", False)
+                        market_is_open = is_market_open()
+                        
+                        # 手動點擊或開盤期間，且開關開啟才發送
+                        if is_discord_on and (manual_trigger or market_is_open):
                             discord_msg = (
-                                f"━━━━━━━━━━━━━━━━━━━━\n"
+                                f"-----------------------------------------\n"
                                 f"{msg_header} {'(手動掃描)' if manual_trigger else ''}\n"
-                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"**標的：** `{sid} {name}`\n"
-                                f"**評分：** `{last['score']} 分` \n"
-                                f"**形態：** `{last['pattern']}`\n"
-                                f"**現價：** `{current_price}` (量比: `{vol_ratio_val}x`)\n"
-                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"💡 **核心解讀：**\n"
-                                f"{last['pattern_desc']}\n\n"
-                                f"🔍 **關鍵買賣點：**\n"
-                                f"`{last['warning']}`\n\n"
-                                f"📍 **{last['pos_advice']}**\n"
-                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                                f"⏰ 通知時間: {get_taiwan_time().strftime('%H:%M:%S')}"
+                                f"-----------------------------------------\n"
+                                f"股價代碼 : `{sid} {name}`\n"
+                                f"現價 : `{last['close']:.2f}`\n"
+                                f"技術型態 : `{last['pattern']}`\n"
+                                f"戰鬥評分 : `{last['score']}`\n"
+                                f"提醒 : `{last['warning']}`\n"
+                                f"💡 形態解讀：{last['pattern_desc']}\n"
+                                f"📍 `{last['pos_advice']}`\n"
+                                f"預估量比 : `{last['vol_ratio']:.2f}x`\n"
+                                f"⏰通知時間: {get_taiwan_time().strftime('%Y-%m-%d %H:%M:%S')}"
                             )
                             send_discord_message(discord_msg)
-
+                
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
-                    "is_inv": is_inv, "is_snipe": is_snipe, 
-                    "score": last.get("score", 0), 
-                    "warning": last.get("warning", "---"), 
-                    "pattern": last.get("pattern", "---"), 
-                    "pattern_desc": last.get("pattern_desc", "")
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], 
+                    "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
-                
             except Exception as e:
-                st.error(f"處理 {sid} 時發生錯誤: {e}")
+                print(f"Error processing {sid}: {e}")
 
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = [s for s in processed_stocks if s["is_snipe"] and s.get("df") is not None]
