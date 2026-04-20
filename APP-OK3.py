@@ -451,7 +451,10 @@ def plot_advanced_chart(df, title=""):
     
     # 4. 噴發標記 (🚀)
     if "is_first_breakout" in df_plot.columns:
-        breakouts = df_plot[df_plot["is_first_breakout"] == True]
+        # 強制轉換為布林值並填充空值，確保判斷式能抓到 True
+        breakout_mask = df_plot["is_first_breakout"].fillna(False).astype(bool)
+        breakouts = df_plot[breakout_mask == True]
+        
         if not breakouts.empty:
             fig.add_trace(go.Scatter(
                 x=breakouts["date"], 
