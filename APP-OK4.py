@@ -433,20 +433,67 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
 
     return df
 
+import numpy as np
+from scipy.signal import argrelextrema
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
 def plot_advanced_chart(df, title=""):
     if df is None or df.empty: return go.Figure()
-    df_plot = df.tail(100).copy()
+    df_plot = df.tail(100).copy().reset_index(drop=True)
     
     # 確保關鍵標記欄位正確
     if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
     df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
     
-    # 確保 VCP 欄位存在
-    if "vcp_check" not in df_plot.columns: df_plot["vcp_check"] = False
-    
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # 1. 主圖：K線
+    # --- 新增：VCP 自動計算與圖式標記邏輯 ---
+    # 尋找局部高點與低點 (order控制收斂波段的寬度)
+    highs_idx = argrelextrema(df_plot['high'].values, np.greater, order=5)[0]
+    lows_idx = argrelextrema(df_plot['low'].values, np.less, order=5)[0]
+    
+    # 建立波段座標
+    points = sorted([(idx, df_plot.iloc[idx]['high'], 'H') for idx in highs_idx] + 
+                    [(idx, df_plot.iloc[idx]['low'], 'L') for idx in lows_idx], key=lambda x: x[0])
+    
+    # 繪製 VCP 收斂區塊 (仿 image_3.png 的黃色半圓弧效果)
+    vcp_count = 0
+    for i in range(len(points) - 1):
+        p1, p2 = points[i], points[i+1]
+        # 當出現 高點 -> 低點 -> 高點 的結構時，建立一個收斂區塊
+        if p1[2] == 'H' and i+2 < len(points) and points[i+2][2] == 'H':
+            idx_start, idx_mid, idx_end = p1[0], p2[0], points[i+2][0]
+            vcp_high = max(p1[1], points[i+2][1])
+            vcp_low = p2[1]
+            pct = (vcp_high - vcp_low) / vcp_high
+            
+            # 建立弧形曲線資料 (拋物線模擬杯弧)
+            curve_x = df_plot.iloc[idx_start:idx_end+1]['date']
+            x_range = np.linspace(-1, 1, len(curve_x))
+            curve_y = vcp_high - (vcp_high - vcp_low) * (1 - x_range**2) 
+            
+            # 繪製半透明黃色區塊 (仿 image_3)
+            fig.add_trace(go.Scatter(
+                x=curve_x, y=curve_y,
+                fill='tonexty', fillcolor='rgba(255, 241, 118, 0.3)',
+                line=dict(color='rgba(255, 193, 7, 0.5)', width=1, dash='dot'),
+                name=f"VCP收斂 {vcp_count+1}",
+                hoverinfo='skip',
+                showlegend=True
+            ), row=1, col=1)
+            
+            # 標示跌幅百分比 (仿 image_2)
+            fig.add_annotation(
+                x=curve_x.iloc[len(curve_x)//2], y=vcp_low,
+                text=f"-{pct:.1%}", showarrow=True, arrowhead=1,
+                ax=0, ay=20, font=dict(color="#d35400", size=10),
+                row=1, col=1
+            )
+            vcp_count += 1
+            if vcp_count >= 4: break # 最多標示4個收斂
+
+    # 1. 主圖：K線 (移動到 VCP 之後繪製，確保 K 線在最上層)
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
@@ -479,21 +526,8 @@ def plot_advanced_chart(df, title=""):
         stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
         if not stars.empty:
             fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
-
-    # --- 新增：5. 🔋 VCP 籌碼壓縮標記 ---
-    vcp_pts = df_plot[df_plot["vcp_check"].fillna(False).astype(bool)]
-    if not vcp_pts.empty:
-        fig.add_trace(go.Scatter(
-            x=vcp_pts["date"], 
-            y=vcp_pts["high"] * 1.02, # 標註在最高價上方
-            mode="markers+text", 
-            marker=dict(symbol="circle", size=8, color="#2ecc71"), 
-            text="🔋", 
-            textposition="top center", 
-            name="VCP壓縮中"
-        ), row=1, col=1)
     
-    # 6. 副圖：MACD
+    # 5. 副圖：MACD
     if "hist" in df_plot.columns:
         colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
         fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
