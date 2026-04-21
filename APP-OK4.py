@@ -434,107 +434,153 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
 
     return df
 
+def find_vcp_waves(df_plot, order=5):
+    """
+    自動尋找 VCP 波段高低點與振幅
+    order: 尋找局部高低點的窗口大小，越大越平滑，越小越敏感
+    """
+    if len(df_plot) < 20: return []
+
+    # 找局部高點與低點
+    highs_idx = argrelextrema(df_plot['high'].values, np.greater, order=order)[0]
+    lows_idx = argrelextrema(df_plot['low'].values, np.less, order=order)[0]
+    
+    # 轉為日期與價格配對，按時間排序 [(date, price, type, index), ...]
+    points = []
+    for idx in highs_idx:
+        points.append((df_plot.iloc[idx]['date'], df_plot.iloc[idx]['high'], 'high', idx))
+    for idx in lows_idx:
+        points.append((df_plot.iloc[idx]['date'], df_plot.iloc[idx]['low'], 'low', idx))
+    points.sort(key=lambda x: x[0])
+    
+    # 匹配高低點形成波段 [ {start_date, end_date, high, low, pct}, ...]
+    waves = []
+    # 從右往左匹配 (從最新的波段開始)
+    i = len(points) - 1
+    while i >= 1:
+        curr = points[i]
+        prev = points[i-1]
+        
+        # 尋找一個 高點 緊接著一個 低點，且高點在低點之前
+        if prev[2] == 'high' and curr[2] == 'low' and prev[3] < curr[3]:
+            # 計算振幅
+            high_price = prev[1]
+            low_price = curr[1]
+            pct = (high_price - low_price) / high_price
+            
+            wave_data = {
+                'start_date': prev[0],
+                'end_date': curr[0],
+                'high_price': high_price,
+                'low_price': low_price,
+                'pct_text': f"{pct:.1%}" # 格式化振幅文字
+            }
+            waves.append(wave_data)
+            i -= 2 # 跳過 curr，繼續往前找
+        else:
+            i -= 1 # 不匹配則往前移一格
+            
+    # 只取最近的 3 個波段
+    return waves[:3]
+
 def plot_advanced_chart(df, title=""):
     if df is None or df.empty: return go.Figure()
+    # 這裡顯示 120 天，讓 VCP 形態更完整
+    df_plot = df.tail(120).copy()
+    df_plot = df_plot.reset_index(drop=True)
     
-    # 鎖定近 2 個月資料 (約 40-50 根交易日 K 線)，多抓一點點確保圖表美觀
-    df_plot = df.tail(60).copy().reset_index(drop=True)
-    
+    # 確保關鍵標記欄位正確
     if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
     df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
-    
+    if "star_signal" not in df_plot.columns: df_plot["star_signal"] = False
+
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+    
+    # --- 1. K線圖 (Row 1) ---
+    # 為了讓 K 線遮住虛線，我們在後方繪製 K 線，在此處先設定座標軸
+    
+    # MA 均線族 - 簡化MA以突顯 VCP，只留核心均線
+    ma_colors = {5: '#2980b9', 20: '#e67e22'}
+    for ma, color in ma_colors.items():
+        if f"ma{ma}" in df_plot.columns:
+            fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
 
-    # --- 精實型小型 VCP 偵測邏輯 ---
-    try:
-        from scipy.signal import find_peaks
+    # --- 新增：核心 VCP 繪圖邏輯 (仿 DXG 範例) ---
+    waves = find_vcp_waves(df_plot, order=6) # 調整 order 可以控制找高低點的敏感度
+    block_colors = ['rgba(41, 128, 185, 0.15)', 'rgba(39, 174, 96, 0.15)', 'rgba(231, 76, 60, 0.15)']
+    
+    for i, wave in enumerate(waves):
+        color = block_colors[i % len(block_colors)]
         
-        # 調低 distance (從 15 降到 6)，讓它能偵測更頻繁、更小型的波動
-        # 調低 prominence (讓不那麼明顯的小高點也能被列入計算)
-        peaks, _ = find_peaks(df_plot['high'].values, distance=6, prominence=0.3)
+        # A. 畫半透明區塊 (tonexty fill is better than rect shape for interaction)
+        fig.add_shape(
+            type="rect",
+            xref="x", yref="y",
+            x0=wave['start_date'], y0=wave['low_price'],
+            x1=wave['end_date'], y1=wave['high_price'],
+            line=dict(width=0), # 不要邊框
+            fillcolor=color,
+            layer="below", # 畫在 K 線下方
+            row=1, col=1
+        )
         
-        vcp_count = 0
-        if len(peaks) >= 2:
-            # 從右側（最新）開始往回找，抓最近的收縮
-            for i in range(len(peaks)-1):
-                idx_start = peaks[i]
-                idx_end = peaks[i+1]
-                
-                # 計算該區間的高低
-                v_high = max(df_plot.iloc[idx_start]['high'], df_plot.iloc[idx_end]['high'])
-                v_low = df_plot.iloc[idx_start:idx_end+1]['low'].min()
-                idx_low = df_plot.iloc[idx_start:idx_end+1]['low'].idxmin()
-                
-                pct = (v_high - v_low) / v_high
-                
-                # 繪圖判斷：如果百分比太小(例如<1%)或太大則跳過，確保畫出來的是有意義的壓縮
-                if 0.01 < pct < 0.40:
-                    curve_x = df_plot.iloc[idx_start:idx_end+1]['date']
-                    t = np.linspace(0, np.pi, len(curve_x))
-                    curve_y = v_high - (v_high - v_low) * np.sin(t)
-                    
-                    # 1. 頸線 (淡紅虛線)
-                    fig.add_trace(go.Scatter(
-                        x=[df_plot.iloc[idx_start]['date'], df_plot.iloc[idx_end]['date']],
-                        y=[v_high, v_high],
-                        mode="lines",
-                        line=dict(color="rgba(231, 76, 60, 0.3)", width=1, dash="dash"),
-                        showlegend=False
-                    ), row=1, col=1)
+        # B. 畫虛線連接高點到低點
+        fig.add_shape(
+            type="line",
+            xref="x", yref="y",
+            x0=wave['start_date'], y0=wave['high_price'],
+            x1=wave['start_date'], y1=wave['low_price'],
+            line=dict(color="gray", width=1, dash="dash"),
+            row=1, col=1
+        )
 
-                    # 2. 小型杯弧 (橘色細線)
-                    fig.add_trace(go.Scatter(
-                        x=curve_x, y=curve_y,
-                        mode="lines",
-                        line=dict(color="rgba(243, 156, 18, 0.6)", width=1.5),
-                        name=f"小型收縮 {pct:.1%}",
-                        hoverinfo='skip'
-                    ), row=1, col=1)
-                    
-                    # 3. 百分比標註 (縮小字體以符合小型 VCP)
-                    fig.add_annotation(
-                        x=df_plot.iloc[idx_low]['date'], y=v_low,
-                        text=f"-{pct:.1%}",
-                        showarrow=False, ay=10,
-                        font=dict(color="#d35400", size=10),
-                        row=1, col=1
-                    )
-                    vcp_count += 1
-    except:
-        pass
+        # C. 標註百分比文字
+        fig.add_annotation(
+            x=wave['start_date'], # 文字標在波段開始處
+            y=wave['low_price'], # 標在低點位置
+            text=f"<b>-{wave['pct_text']}</b>",
+            showarrow=True,
+            arrowhead=0,
+            ax=0, ay=15, # 文字偏移位置
+            font=dict(size=12, color="#333"),
+            bgcolor="rgba(255,255,255,0.7)", # 文字背景，避免重疊看不清楚
+            bordercolor="#ccc",
+            row=1, col=1
+        )
 
-    # --- 保留原本所有判斷內容 (完全不刪減) ---
+    # 保留原本所有判斷內容與標記 (K線在此處繪製，確保在區塊之上)
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
-    ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
-    for ma, color in ma_colors.items():
-        if f"ma{ma}" in df_plot.columns:
-            fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.2)), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
-    
+    # 🚀 噴發標記
     breakouts = df_plot[df_plot["is_first_breakout"] == True]
     if not breakouts.empty:
-        fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=14, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發"), row=1, col=1)
 
-    if "star_signal" in df_plot.columns:
-        stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
-        if not stars.empty:
-            fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
+    # ⭐ 發動點
+    stars = df_plot[df_plot["star_signal"] == True]
+    if not stars.empty:
+        fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=10, color="#FFD700"), name="發動點"), row=1, col=1)
     
+    # 關鍵位虛線
+    if "upward_key" in df_plot.columns:
+        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.3)', dash='dash', width=1)), row=1, col=1)
+
+    # --- 2. 副圖：MACD (Row 2) ---
     if "hist" in df_plot.columns:
         colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
-        fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
+        fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors, opacity=0.7), row=2, col=1)
     
+    # 版面設定
     fig.update_layout(
         height=700, title=title, template="plotly_white", xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=50, b=10), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        margin=dict(l=10, r=10, t=50, b=10), 
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1, font=dict(size=10))
     )
-    fig.update_yaxes(side="right", row=1, col=1)
+    # y 軸格式
+    fig.update_yaxes(side="right", row=1, col=1) 
     
     return fig
 
