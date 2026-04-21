@@ -623,7 +623,7 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"## {msg_header}",
+                                f"### {msg_header}",
                                 f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"### 📝 **解讀：** {last['pattern_desc']}",
                                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
