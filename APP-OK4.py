@@ -602,14 +602,11 @@ def perform_scan(manual_trigger=False):
                             msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯"
 
                     if should_send:
-                        # 特別提醒判斷 (多方跳空 / VCP)
                         special_alerts = []
                         if last['close'] > df.iloc[-2]['high']: special_alerts.append("🚀 多方跳空缺口")
                         if "VCP" in last['pattern'] or "壓縮" in last['pattern_desc']: special_alerts.append("💎 籌碼壓縮 VCP")
-                        
                         special_note = f"💡 **核心關鍵：** `{' | '.join(special_alerts)}`" if special_alerts else ""
 
-                        # 計算建議價位
                         buy_range_low = last['close'] * 0.995
                         buy_range_high = last['close'] * 1.01
                         stop_loss = last['close'] * 0.94 
@@ -625,7 +622,6 @@ def perform_scan(manual_trigger=False):
                         market_is_open = is_market_open()
                         
                         if is_discord_on and (manual_trigger or market_is_open):
-                            # 構建 Discord 訊息
                             msg_lines = [
                                 f"{msg_header}",
                                 f"{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
@@ -656,21 +652,16 @@ def perform_scan(manual_trigger=False):
             except Exception as e:
                 print(f"Error processing {sid}: {e}")
 
+    # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
-    snipe_targets = [s for s in processed_stocks if s["is_snipe"] and s.get("df") is not None]
-    snipe_targets = sorted(snipe_targets, key=lambda x: x.get("score", 0), reverse=True)
+    snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
     
     if not snipe_targets:
-        st.info("🎯 目前狙擊清單尚無數據（或掃描中），請確認代號是否正確。")
+        st.info("🎯 目前狙擊清單尚無數據。")
     
     for item in snipe_targets:
-        last = item.get("last")
-        sid = item.get("sid")
-        name = item.get("name")
-        df = item.get("df")
-        if last is None or df is None: continue
+        last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
         
-        pattern = item['pattern']
         if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
         elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
         elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
@@ -699,56 +690,41 @@ def perform_scan(manual_trigger=False):
     </div>
 </div>
 """, unsafe_allow_html=True)
-        
         with st.expander(f"查看 {sid} {name} 分析圖表", expanded=("🚀" in pattern)):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
-# --- 庫存持股監控 (格式同步狙擊目標) ---
     st.divider()
-    st.subheader("📦 庫存持股監控 (按健康度排序)")
-    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"] and s.get("df") is not None], key=lambda x: x["score"], reverse=True)
-    
-    if not inventory_targets:
-        st.info("📦 目前庫存清單尚無數據。")
+
+    # --- 渲染 庫存持股監控 (格式同步 + 顏色修正) ---
+    st.subheader("📦 庫存持股監控")
+    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
     
     for item in inventory_targets:
-        last = item.get("last")
-        sid = item.get("sid")
-        name = item.get("name")
-        df = item.get("df")
+        last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
         
-        # 評級標籤邏輯同步
-        pattern = item['pattern']
-        if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
-        elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
-        elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
-        elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
-        else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
-
-        # 健康度與邊框顏色邏輯 (庫存以健康度 score 為主)
-        health_clr = "#28a745" if last['score'] >= 60 else ("#ffa500" if last['score'] >= 40 else "#ff4b4b")
+        # 依照庫存目前的信號決定框線顏色 (同步狙擊目標：買入訊號紅色，賣出訊號綠色)
+        border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         
         st.markdown(f"""
-<div class="dashboard-box" style="border-left: 10px solid {health_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #f8f9fa; border-radius: 5px; color: black;">
+<div class="dashboard-box" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #fdfdfe; border-radius: 5px; color: black;">
     <div style="display:flex; justify-content:space-between; align-items:center;">
         <div style="font-size:1.2em;">
             <b>📦 {sid} {name}</b> 
-            <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
+            <span style="font-size:0.8em; background:#6c757d; color:white; padding:2px 8px; border-radius:4px; margin-left:10px;">持股中</span>
         </div>
-        <div><span style="background:{health_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {last['score']}</span></div>
+        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {last['score']}</span></div>
     </div>
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
-        <div>📍 <b>現價：</b>{last['close']:.2f} (5MA 乖離: {last['bias_5']:.2f}%)</div>
-        <div>⚠️ <b>關鍵提醒：</b>{last['warning']}</div>
+        <div>📍 <b>現價：</b>{last['close']:.2f} (5MA乖離: {last['bias_5']:.2f}%)</div>
+        <div>⚠️ <b>風險狀態：</b>{last['warning']}</div>
     </div>
     <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.5;">
         <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
-        <b>🛡️ 風險狀態：</b><span style="color:{health_clr}; font-weight:bold;">{last['pos_advice']}</span>
+        <b>🛡️ 策略建議：</b><span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
-        
-        with st.expander(f"查看 {sid} {name} 持股分析圖表"):
+        with st.expander(f"查看 {sid} {name} 分析圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
     st.divider()
@@ -758,24 +734,17 @@ def perform_scan(manual_trigger=False):
 
 # --- 10. 主循環邏輯 ---
 placeholder = st.empty()
-
 if analyze_btn:
-    with placeholder.container(): 
-        perform_scan(manual_trigger=True)
-
+    with placeholder.container(): perform_scan(manual_trigger=True)
 elif auto_monitor:
     if is_market_open():
-        with placeholder.container(): 
-            perform_scan(manual_trigger=False)
-        st.caption(f"🔄 盤中自動監控中... 下次掃描預計於 {interval} 分鐘後 (或手動刷新)")
-        st.info(f"最後更新時間: {get_taiwan_time().strftime('%H:%M:%S')}")
+        with placeholder.container(): perform_scan(manual_trigger=False)
+        st.caption(f"🔄 盤中自動監控中... 下次掃描預計於 {interval} 分鐘後")
         time.sleep(10) 
         st.rerun()
     else:
-        with placeholder.container(): 
-            perform_scan(manual_trigger=False)
+        with placeholder.container(): perform_scan(manual_trigger=False)
         st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:30)，自動監控已進入休眠。")
 else:
-    with placeholder.container(): 
-        perform_scan(manual_trigger=False)
-    st.info("💡 自動監控已關閉，請點擊「立即執行掃描」或開啟自動監控。")
+    with placeholder.container(): perform_scan(manual_trigger=False)
+    st.info("💡 自動監控已關閉。")
