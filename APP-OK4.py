@@ -378,23 +378,21 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     recent_low = df["low"].tail(3).min()
     is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
 
-    if is_gap_up: buy_pts.append("🚀多方跳空缺口")
-    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
-    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
-    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
+    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
     if is_retrace: buy_pts.append("量縮回踩5MA(買點)")
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
-    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
+    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
+    if is_gap_up: buy_pts.append("🚀多方跳空缺口")
+    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
 
-    # 建議賣出順序：短線走弱 -> 關鍵位失守 -> 長線走空 -> 趨勢反轉
+    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
-    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: 
-        sell_pts.append("跌破金交關鍵位(下跌賣出)") # 關鍵位通常比均線重要
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
-    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
+    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
 
     # --- 最終評分與結果存入 ---
     if buy_pts: score += 12 * len(set(buy_pts))
@@ -435,61 +433,57 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
 
 def plot_advanced_chart(df, title=""):
     if df is None or df.empty: return go.Figure()
+    df_plot = df.tail(100).copy()
     
-    # 保持顯示近 100 天資料
-    df_plot = df.tail(100).copy().reset_index(drop=True)
-    
-    # 確保必要標記欄位存在，若無則填入預設值
+    # 確保關鍵標記欄位正確
     if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
     df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
-    if "star_signal" not in df_plot.columns: df_plot["star_signal"] = False
-
-    # 建立雙圖表 (主圖與 MACD)
+    
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
-    # 1. 繪製 K 線
+    # 1. 主圖：K線
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
     ), row=1, col=1)
     
-    # 2. 繪製均線族
+    # 2. 均線族
     ma_colors = {5: '#2980b9', 10: '#f1c40f', 20: '#e67e22', 60: '#9b59b6', 200: '#34495e'}
     for ma, color in ma_colors.items():
         if f"ma{ma}" in df_plot.columns:
-            fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.2)), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot[f"ma{ma}"], name=f"{ma}MA", line=dict(color=color, width=1.5)), row=1, col=1)
     
-    # 3. 繪製上漲/下跌關鍵位 (虛線)
-    if "upward_key" in df_plot.columns:
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
-    if "downward_key" in df_plot.columns:
-        fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-    # 4. 繪製 🚀 噴發標記
+    # 3. 🚀 噴發標記
     breakouts = df_plot[df_plot["is_first_breakout"] == True]
     if not breakouts.empty:
-        fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發"), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=breakouts["date"], 
+            y=breakouts["low"] * 0.96, 
+            mode="markers+text", 
+            marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), 
+            text="🚀", 
+            textposition="bottom center", 
+            name="噴發第一根"
+        ), row=1, col=1)
 
-    # 5. 繪製 ⭐ 發動點
-    stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
-    if not stars.empty:
-        fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
+    # 4. ⭐ 發動點
+    if "star_signal" in df_plot.columns:
+        stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
+        if not stars.empty:
+            fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    # 6. 副圖：MACD 柱狀圖
+    # 5. 副圖：MACD
     if "hist" in df_plot.columns:
         colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
         fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
-    # 圖表版面配置
     fig.update_layout(
         height=650, title=title, template="plotly_white", xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=50, b=10), 
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        margin=dict(l=10, r=10, t=50, b=10), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
-    
-    # 將座標軸移至右側
-    fig.update_yaxes(side="right", row=1, col=1)
-    
     return fig
 
 # --- 7. Google 表單同步 ---
@@ -518,7 +512,7 @@ if not st.session_state.first_sync_done:
     sync_sheets()
     st.session_state.first_sync_done = True
 
-# --- 8. 指揮中心 UI 與 主動詢問功能 ---
+# --- 8. 指揮中心 UI ---
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
     fm_token = st.text_input("FinMind Token", value=st.secrets.get("FINMIND_TOKEN", ""), type="password")
@@ -533,40 +527,6 @@ with st.sidebar:
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
     analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
-
-    # --- 新增：個股即時診斷區塊 ---
-    st.divider()
-    st.subheader("🔍 個股即時診斷")
-    query_sid = st.text_input("輸入代碼 (例如: 2330)", placeholder="輸入後按 Enter 或下方按鈕")
-    quick_diag = st.button("🔎 開始診斷報告", use_container_width=True)
-    
-    if quick_diag and query_sid:
-        with st.spinner(f"正在深度診斷 {query_sid}..."):
-            df_q = get_stock_data(query_sid, fm_token)
-            if df_q is not None:
-                df_q = analyze_strategy(df_q)
-                q_last = df_q.iloc[-1]
-                stock_info = get_stock_info()
-                q_name = stock_info[stock_info["stock_id"] == query_sid]["stock_name"].values[0] if query_sid in stock_info["stock_id"].values else "未知"
-                
-                # 彈出診斷結果視窗
-                st.info(f"### 📊 {query_sid} {q_name} 診斷報告")
-                col_a, col_b = st.columns(2)
-                col_a.metric("當前股價", f"{q_last['close']:.2f}")
-                col_b.metric("戰鬥評分", f"{int(q_last['score'])}")
-                
-                st.markdown(f"""
-                * **形態分析：** `{q_last['pattern']}`
-                * **趨勢解讀：** {q_last['pattern_desc']}
-                * **策略建議：** **{q_last['pos_advice']}**
-                * **關鍵提醒：** {q_last['warning']}
-                """)
-                with st.expander("📈 查看診斷技術圖表"):
-                    st.plotly_chart(plot_advanced_chart(df_q, f"診斷報告: {query_sid}"), use_container_width=True)
-            else:
-                st.error(f"❌ 無法取得 {query_sid} 的數據，請檢查代碼是否正確。")
-
-    st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
@@ -588,7 +548,7 @@ def perform_scan(manual_trigger=False):
         m_df = analyze_strategy(m_df, is_market=True)
         m_last = m_df.iloc[-1]
         st.session_state.market_score = m_last["score"]
-        score = int(m_last["score"])
+        score = int(m_last["score"]) # 修正大盤評分為整數
         if score >= 80: cmd, clz, tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強，適合積極操作。"
         elif score >= 60: cmd, clz, tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中，擇優佈局。"
         elif score >= 40: cmd, clz, tip = "Neutral 觀望", "neutral-signal", "🌪 盤勢震盪中，保持低水位。"
@@ -622,6 +582,7 @@ def perform_scan(manual_trigger=False):
                 old_price = st.session_state.last_notified_price.get(sid, last['close'])
                 price_drop = (last['close'] - old_price) / old_price < -0.02 
                 
+                # --- 判定觸發 ---
                 if manual_trigger or old_date != today_str or old_sig != sig_lvl or price_drop:
                     should_send = False
                     msg_header = ""
@@ -662,12 +623,12 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"# {msg_header}", # Discord 標題變大
+                                f"### {msg_header}",
                                 f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
-                                f"📝 **解讀：** {last['pattern_desc']}",
+                                f"### 📝 **解讀：** {last['pattern_desc']}",
                                 f"## 📈 **標的：** `{sid} {name} {last['close']:.2f}`",
                                 f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
-                                f"🛡️ **戰鬥評分：** `{int(last['score'])} / 100`",
+                                f"🛡️ **戰鬥評分：** `{int(last['score'])} / 100`", # Discord 評分轉整數
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"✅ **建議買點：** `{buy_range_low:.2f} ~ {buy_range_high:.2f}`",
                                 f"❌ **硬性停損：** `{stop_loss:.2f}`",
@@ -684,7 +645,7 @@ def perform_scan(manual_trigger=False):
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
-                    "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]), # 這裡存入時轉整數
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
             except Exception as e:
@@ -699,7 +660,7 @@ def perform_scan(manual_trigger=False):
     
     for item in snipe_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
-        score_int = int(last['score'])
+        score_int = int(last['score']) # 確保 UI 顯示為整數
         
         if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
         elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
@@ -740,7 +701,8 @@ def perform_scan(manual_trigger=False):
     
     for item in inventory_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
-        score_int = int(last['score'])
+        score_int = int(last['score']) # 確保健康度顯示為整數
+        
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         
         st.markdown(f"""
