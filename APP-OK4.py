@@ -441,6 +441,9 @@ def plot_advanced_chart(df, title=""):
     if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
     df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
     
+    # 確保 VCP 欄位存在
+    if "vcp_check" not in df_plot.columns: df_plot["vcp_check"] = False
+    
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
     
     # 1. 主圖：K線
@@ -476,8 +479,21 @@ def plot_advanced_chart(df, title=""):
         stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
         if not stars.empty:
             fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
+
+    # --- 新增：5. 🔋 VCP 籌碼壓縮標記 ---
+    vcp_pts = df_plot[df_plot["vcp_check"].fillna(False).astype(bool)]
+    if not vcp_pts.empty:
+        fig.add_trace(go.Scatter(
+            x=vcp_pts["date"], 
+            y=vcp_pts["high"] * 1.02, # 標註在最高價上方
+            mode="markers+text", 
+            marker=dict(symbol="circle", size=8, color="#2ecc71"), 
+            text="🔋", 
+            textposition="top center", 
+            name="VCP壓縮中"
+        ), row=1, col=1)
     
-    # 5. 副圖：MACD
+    # 6. 副圖：MACD
     if "hist" in df_plot.columns:
         colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
         fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
