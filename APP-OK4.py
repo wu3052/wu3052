@@ -548,7 +548,7 @@ def perform_scan(manual_trigger=False):
         m_df = analyze_strategy(m_df, is_market=True)
         m_last = m_df.iloc[-1]
         st.session_state.market_score = m_last["score"]
-        score = m_last["score"]
+        score = int(m_last["score"]) # 修正大盤評分為整數
         if score >= 80: cmd, clz, tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強，適合積極操作。"
         elif score >= 60: cmd, clz, tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中，擇優佈局。"
         elif score >= 40: cmd, clz, tip = "Neutral 觀望", "neutral-signal", "🌪 盤勢震盪中，保持低水位。"
@@ -616,7 +616,7 @@ def perform_scan(manual_trigger=False):
                             st.session_state.notified_date[sid] = today_str
                             st.session_state.last_notified_price[sid] = last['close']
                         
-                        add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
+                        add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", int(last['score']), last['vol_ratio'])
 
                         is_discord_on = st.session_state.get("enable_discord", False)
                         market_is_open = is_market_open()
@@ -628,7 +628,7 @@ def perform_scan(manual_trigger=False):
                                 f"### 📝 **解讀：** {last['pattern_desc']}",
                                 f"## 📈 **標的：** `{sid} {name} {last['close']:.2f}`",
                                 f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
-                                f"🛡️ **戰鬥評分：** `{last['score']} / 100`",
+                                f"🛡️ **戰鬥評分：** `{int(last['score'])} / 100`", # Discord 評分轉整數
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"✅ **建議買點：** `{buy_range_low:.2f} ~ {buy_range_high:.2f}`",
                                 f"❌ **硬性停損：** `{stop_loss:.2f}`",
@@ -645,7 +645,7 @@ def perform_scan(manual_trigger=False):
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
-                    "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], 
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]), # 這裡存入時轉整數
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
             except Exception as e:
@@ -660,6 +660,7 @@ def perform_scan(manual_trigger=False):
     
     for item in snipe_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
+        score_int = int(last['score']) # 確保 UI 顯示為整數
         
         if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
         elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
@@ -677,7 +678,7 @@ def perform_scan(manual_trigger=False):
             <b>🎯 {sid} {name}</b> 
             <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
         </div>
-        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {last['score']}</span></div>
+        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {score_int}</span></div>
     </div>
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
         <div>📍 <b>現價：</b>{last['close']:.2f} (量比: {last['vol_ratio']:.2f}x)</div>
@@ -694,14 +695,14 @@ def perform_scan(manual_trigger=False):
 
     st.divider()
 
-    # --- 渲染 庫存持股監控 (格式同步 + 顏色修正) ---
+    # --- 渲染 庫存持股監控 ---
     st.subheader("📦 庫存持股監控")
     inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
     
     for item in inventory_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
+        score_int = int(last['score']) # 確保健康度顯示為整數
         
-        # 依照庫存目前的信號決定框線顏色 (同步狙擊目標：買入訊號紅色，賣出訊號綠色)
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         
         st.markdown(f"""
@@ -711,7 +712,7 @@ def perform_scan(manual_trigger=False):
             <b>📦 {sid} {name}</b> 
             <span style="font-size:0.8em; background:#6c757d; color:white; padding:2px 8px; border-radius:4px; margin-left:10px;">持股中</span>
         </div>
-        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {last['score']}</span></div>
+        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {score_int}</span></div>
     </div>
     <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
         <div>📍 <b>現價：</b>{last['close']:.2f} (5MA乖離: {last['bias_5']:.2f}%)</div>
