@@ -514,7 +514,7 @@ if not st.session_state.first_sync_done:
     sync_sheets()
     st.session_state.first_sync_done = True
 
-# --- 8. 指揮中心 UI ---
+# --- 8. 指揮中心 UI 與 主動詢問功能 ---
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
     fm_token = st.text_input("FinMind Token", value=st.secrets.get("FINMIND_TOKEN", ""), type="password")
@@ -529,6 +529,40 @@ with st.sidebar:
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
     analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
+
+    # --- 新增：個股即時診斷區塊 ---
+    st.divider()
+    st.subheader("🔍 個股即時診斷")
+    query_sid = st.text_input("輸入代碼 (例如: 2330)", placeholder="輸入後按 Enter 或下方按鈕")
+    quick_diag = st.button("🔎 開始診斷報告", use_container_width=True)
+    
+    if quick_diag and query_sid:
+        with st.spinner(f"正在深度診斷 {query_sid}..."):
+            df_q = get_stock_data(query_sid, fm_token)
+            if df_q is not None:
+                df_q = analyze_strategy(df_q)
+                q_last = df_q.iloc[-1]
+                stock_info = get_stock_info()
+                q_name = stock_info[stock_info["stock_id"] == query_sid]["stock_name"].values[0] if query_sid in stock_info["stock_id"].values else "未知"
+                
+                # 彈出診斷結果視窗
+                st.info(f"### 📊 {query_sid} {q_name} 診斷報告")
+                col_a, col_b = st.columns(2)
+                col_a.metric("當前股價", f"{q_last['close']:.2f}")
+                col_b.metric("戰鬥評分", f"{int(q_last['score'])}")
+                
+                st.markdown(f"""
+                * **形態分析：** `{q_last['pattern']}`
+                * **趨勢解讀：** {q_last['pattern_desc']}
+                * **策略建議：** **{q_last['pos_advice']}**
+                * **關鍵提醒：** {q_last['warning']}
+                """)
+                with st.expander("📈 查看診斷技術圖表"):
+                    st.plotly_chart(plot_advanced_chart(df_q, f"診斷報告: {query_sid}"), use_container_width=True)
+            else:
+                st.error(f"❌ 無法取得 {query_sid} 的數據，請檢查代碼是否正確。")
+
+    st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
@@ -550,7 +584,7 @@ def perform_scan(manual_trigger=False):
         m_df = analyze_strategy(m_df, is_market=True)
         m_last = m_df.iloc[-1]
         st.session_state.market_score = m_last["score"]
-        score = int(m_last["score"]) # 修正大盤評分為整數
+        score = int(m_last["score"])
         if score >= 80: cmd, clz, tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強，適合積極操作。"
         elif score >= 60: cmd, clz, tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中，擇優佈局。"
         elif score >= 40: cmd, clz, tip = "Neutral 觀望", "neutral-signal", "🌪 盤勢震盪中，保持低水位。"
@@ -584,7 +618,6 @@ def perform_scan(manual_trigger=False):
                 old_price = st.session_state.last_notified_price.get(sid, last['close'])
                 price_drop = (last['close'] - old_price) / old_price < -0.02 
                 
-                # --- 判定觸發 ---
                 if manual_trigger or old_date != today_str or old_sig != sig_lvl or price_drop:
                     should_send = False
                     msg_header = ""
@@ -625,12 +658,12 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"### {msg_header}",
+                                f"# {msg_header}", # Discord 標題變大
                                 f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
-                                f"### 📝 **解讀：** {last['pattern_desc']}",
+                                f"📝 **解讀：** {last['pattern_desc']}",
                                 f"## 📈 **標的：** `{sid} {name} {last['close']:.2f}`",
                                 f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
-                                f"🛡️ **戰鬥評分：** `{int(last['score'])} / 100`", # Discord 評分轉整數
+                                f"🛡️ **戰鬥評分：** `{int(last['score'])} / 100`",
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"✅ **建議買點：** `{buy_range_low:.2f} ~ {buy_range_high:.2f}`",
                                 f"❌ **硬性停損：** `{stop_loss:.2f}`",
@@ -647,7 +680,7 @@ def perform_scan(manual_trigger=False):
                 
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
-                    "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]), # 這裡存入時轉整數
+                    "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
             except Exception as e:
@@ -662,7 +695,7 @@ def perform_scan(manual_trigger=False):
     
     for item in snipe_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
-        score_int = int(last['score']) # 確保 UI 顯示為整數
+        score_int = int(last['score'])
         
         if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
         elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
@@ -703,8 +736,7 @@ def perform_scan(manual_trigger=False):
     
     for item in inventory_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
-        score_int = int(last['score']) # 確保健康度顯示為整數
-        
+        score_int = int(last['score'])
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         
         st.markdown(f"""
