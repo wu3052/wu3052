@@ -589,17 +589,17 @@ def perform_scan(manual_trigger=False):
 
                     if is_inv and sig_type == "SELL":
                         should_send = True
-                        msg_header = "🚨🚨🚨 【 庫存風險警示：立即減碼 】 🚨🚨🚨"
+                        msg_header = "🚨🚨🚨 【 庫存風險警示：立即減碼 】 "
                     elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
                         if last.get("is_first_breakout"):
-                            msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 🚀🚀🚀"
+                            msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 "
                         elif "量縮回踩" in last['pattern']:
-                            msg_header = "🔴🔴🔴 【 回踩支撐：低吸機會 】 🔴🔴🔴"
+                            msg_header = "🔴🔴🔴 【 回踩支撐：低吸機會 】 "
                         elif last["vol_ratio"] > 1.8:
-                            msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 🔥🔥🔥"
+                            msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 "
                         else:
-                            msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯"
+                            msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 "
 
                     if should_send:
                         special_alerts = []
@@ -623,11 +623,11 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"#{msg_header}",
-                                f"###{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
-                                f"###📝 **解讀：** {last['pattern_desc']}",
-                                f"━━━━━━━━━━━━━━━━━━━━",
-                                f"##📈 **標的：** `{sid} {name}`",
+                                f"# {msg_header}",
+                                f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
+                                f"### 📝 **解讀：** {last['pattern_desc']}",
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                f"## 📈 **標的：** `{sid} {name}`",
                                 f"💰 **現價：** `{last['close']:.2f}`",
                                 f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
                                 f"🛡️ **戰鬥評分：** `{last['score']} / 100`",
