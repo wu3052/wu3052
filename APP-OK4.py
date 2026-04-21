@@ -623,11 +623,11 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                                 f"{msg_header}",
                                 f"{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"📝 **解讀：** {last['pattern_desc']}",
-                                f""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
                                 f"📈 **標的：** `{sid} {name}`",
                                 f"💰 **現價：** `{last['close']:.2f}`",
                                 f"📊 **預估量比：** `{last['vol_ratio']:.2f}x`",
