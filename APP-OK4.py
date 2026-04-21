@@ -623,7 +623,7 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
                                 f"{msg_header}",
                                 f"{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"📝 **解讀：** {last['pattern_desc']}",
@@ -641,8 +641,7 @@ def perform_scan(manual_trigger=False):
                                 f"📍 **策略：** {last['pos_advice']}",
                                 f"━━━━━━━━━━━━━━━━━━━━",
                                 f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動強制)' if manual_trigger else ''}",
-                                f"🔗 [查看玩股網技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)",
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                                f"🔗 [查看玩股網技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)"
                             ]
                             send_discord_message("\n".join(msg_lines))
                 
