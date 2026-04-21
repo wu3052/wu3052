@@ -378,21 +378,23 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     recent_low = df["low"].tail(3).min()
     is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
 
-    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
+    if is_gap_up: buy_pts.append("🚀多方跳空缺口")
+    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
+    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
     if is_retrace: buy_pts.append("量縮回踩5MA(買點)")
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
     if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
-    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
-    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
-    if is_gap_up: buy_pts.append("🚀多方跳空缺口")
-    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
+    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
 
-    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
+    # 建議賣出順序：短線走弱 -> 關鍵位失守 -> 長線走空 -> 趨勢反轉
     if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
+    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: 
+        sell_pts.append("跌破金交關鍵位(下跌賣出)") # 關鍵位通常比均線重要
     if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
     if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
     if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
-    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: sell_pts.append("跌破黃金交叉關鍵位(下跌賣出)")
+    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(1日不創新高)")
 
     # --- 最終評分與結果存入 ---
     if buy_pts: score += 12 * len(set(buy_pts))
