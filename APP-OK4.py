@@ -703,29 +703,52 @@ def perform_scan(manual_trigger=False):
         with st.expander(f"查看 {sid} {name} 分析圖表", expanded=("🚀" in pattern)):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
+# --- 庫存持股監控 (格式同步狙擊目標) ---
     st.divider()
-    st.subheader("📦 庫存持股監控")
-    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
+    st.subheader("📦 庫存持股監控 (按健康度排序)")
+    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"] and s.get("df") is not None], key=lambda x: x["score"], reverse=True)
+    
+    if not inventory_targets:
+        st.info("📦 目前庫存清單尚無數據。")
+    
     for item in inventory_targets:
-        last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
+        last = item.get("last")
+        sid = item.get("sid")
+        name = item.get("name")
+        df = item.get("df")
+        
+        # 評級標籤邏輯同步
+        pattern = item['pattern']
+        if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
+        elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
+        elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
+        elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
+        else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
+
+        # 健康度與邊框顏色邏輯 (庫存以健康度 score 為主)
         health_clr = "#28a745" if last['score'] >= 60 else ("#ffa500" if last['score'] >= 40 else "#ff4b4b")
         
         st.markdown(f"""
-<div class="dashboard-box" style="border-left: 10px solid {health_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #fdfdfe; border-radius: 5px; color: black;">
+<div class="dashboard-box" style="border-left: 10px solid {health_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #f8f9fa; border-radius: 5px; color: black;">
     <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div style="font-size:1.1em; color: black;"><b>📦 {sid} {name} | 現價: {last['close']:.2f} | {item['pattern']}</b></div>
+        <div style="font-size:1.2em;">
+            <b>📦 {sid} {name}</b> 
+            <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
+        </div>
         <div><span style="background:{health_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {last['score']}</span></div>
     </div>
-    <div style="display:grid; grid-template-columns: 1fr; gap: 10px; margin-top:10px; padding:10px; background:#f0f2f6; border-radius:5px;">
-        <div style="color: black;">📈 <b>5MA 乖離：</b>{last['bias_5']:.2f}%</div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
+        <div>📍 <b>現價：</b>{last['close']:.2f} (5MA 乖離: {last['bias_5']:.2f}%)</div>
+        <div>⚠️ <b>關鍵提醒：</b>{last['warning']}</div>
     </div>
-    <div style="font-size:0.9em; margin-top:8px; color:#555;">
-        <b>🛡️ 風險狀態:</b> <span style="font-weight:bold; color:{health_clr};">{last['pos_advice']}</span> | 提醒: {last['warning']}<br>
-        <b>💡 形態解讀：</b>{item['pattern_desc']}
+    <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.5;">
+        <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
+        <b>🛡️ 風險狀態：</b><span style="color:{health_clr}; font-weight:bold;">{last['pos_advice']}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
-        with st.expander(f"查看 {sid} {name} 分析圖表"):
+        
+        with st.expander(f"查看 {sid} {name} 持股分析圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
     st.divider()
