@@ -434,80 +434,69 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
 
     return df
 
-import numpy as np
-from scipy.signal import argrelextrema
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-
 def plot_advanced_chart(df, title=""):
     if df is None or df.empty: return go.Figure()
-    df_plot = df.tail(100).copy().reset_index(drop=True)
+    # 稍微拉長天數到 120 天，VCP 才看得出收縮感
+    df_plot = df.tail(120).copy().reset_index(drop=True)
     
     # 確保標記欄位
     if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
     df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
     
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-    
-    # --- VCP 美化版圖式邏輯 ---
-    # 稍微調大 order 讓波段更明確 (大波段)
-    highs_idx = argrelextrema(df_plot['high'].values, np.greater, order=7)[0]
-    lows_idx = argrelextrema(df_plot['low'].values, np.less, order=7)[0]
-    
-    points = sorted([(idx, df_plot.iloc[idx]['high'], 'H') for idx in highs_idx] + 
-                    [(idx, df_plot.iloc[idx]['low'], 'L') for idx in lows_idx], key=lambda x: x[0])
-    
-    vcp_count = 0
-    # 為了美觀，我們找 H -> L -> H 的組合
-    for i in range(len(points) - 2):
-        p1, p2, p3 = points[i], points[i+1], points[i+2]
+
+    # --- 精簡版美化 VCP 圖式 (手繪質感) ---
+    # 我們只抓取最近 60 天內最明顯的兩個收縮波段，避免亂七八糟
+    try:
+        from scipy.signal import find_peaks
+        # 找明顯高點
+        peaks, _ = find_peaks(df_plot['high'].values, distance=15, prominence=1)
         
-        if p1[2] == 'H' and p2[2] == 'L' and p3[2] == 'H':
-            idx_start, idx_mid, idx_end = p1[0], p2[0], p3[0]
-            v_high = max(p1[1], p3[1])
-            v_low = p2[1]
-            pct = (v_high - v_low) / v_high
-            
-            # 建立更平滑的圓弧 (Semi-circle approximation)
-            curve_x = df_plot.iloc[idx_start:idx_end+1]['date']
-            t = np.linspace(0, np.pi, len(curve_x))
-            # 使用 sin 函數讓底部更圓潤
-            curve_y = v_high - (v_high - v_low) * np.sin(t)
-            
-            # 1. 畫頂部水平壓力虛線 (仿範例圖)
-            fig.add_trace(go.Scatter(
-                x=[df_plot.iloc[idx_start]['date'], df_plot.iloc[idx_end]['date']],
-                y=[v_high, v_high],
-                mode="lines",
-                line=dict(color="rgba(255, 0, 0, 0.3)", width=1, dash="dash"),
-                showlegend=False, hoverinfo='skip'
-            ), row=1, col=1)
+        if len(peaks) >= 2:
+            # 取最後兩個主要高點來畫杯弧
+            for i in range(len(peaks)-1):
+                idx_s, idx_e = peaks[i], peaks[i+1]
+                v_high = max(df_plot.iloc[idx_s]['high'], df_plot.iloc[idx_e]['high'])
+                v_low = df_plot.iloc[idx_s:idx_e]['low'].min()
+                idx_low = df_plot.iloc[idx_s:idx_e]['low'].idxmin()
+                pct = (v_high - v_low) / v_high
+                
+                # 建立平滑弧線
+                curve_x = df_plot.iloc[idx_s:idx_e+1]['date']
+                t = np.linspace(0, np.pi, len(curve_x))
+                curve_y = v_high - (v_high - v_low) * np.sin(t)
+                
+                # 1. 頂部水平頸線 (紅色虛線)
+                fig.add_trace(go.Scatter(
+                    x=[df_plot.iloc[idx_s]['date'], df_plot.iloc[idx_e]['date']],
+                    y=[v_high, v_high],
+                    mode="lines",
+                    line=dict(color="rgba(231, 76, 60, 0.5)", width=1, dash="dash"),
+                    name="VCP頸線", showlegend=False
+                ), row=1, col=1)
 
-            # 2. 畫杯弧區塊 (淡黃色填充)
-            fig.add_trace(go.Scatter(
-                x=curve_x, y=curve_y,
-                fill='tonexty', 
-                fillcolor='rgba(255, 235, 59, 0.15)', # 極淡黃色
-                line=dict(color='rgba(255, 152, 0, 0.4)', width=2), # 橘色弧線
-                name=f"VCP {int(pct*100)}%",
-                hoverinfo='text',
-                text=f"壓縮幅度: {pct:.1%}"
-            ), row=1, col=1)
-            
-            # 3. 標示百分比 (放在弧形中心)
-            fig.add_annotation(
-                x=df_plot.iloc[idx_mid]['date'], y=v_low,
-                text=f"<b>-{pct:.1%}</b>",
-                showarrow=False,
-                ay=15,
-                font=dict(color="#e67e22", size=11, family="Arial Black"),
-                row=1, col=1
-            )
-            vcp_count += 1
-            if vcp_count >= 3: break
+                # 2. 杯弧線 (橘色，不填充，避免遮擋 K 線)
+                fig.add_trace(go.Scatter(
+                    x=curve_x, y=curve_y,
+                    mode="lines",
+                    line=dict(color="rgba(243, 156, 18, 0.7)", width=2),
+                    name=f"壓縮 {pct:.1%}",
+                    hoverinfo='skip'
+                ), row=1, col=1)
+                
+                # 3. 標註百分比 (像範例圖一樣寫在弧底)
+                fig.add_annotation(
+                    x=df_plot.iloc[idx_low]['date'], y=v_low,
+                    text=f"<b>-{pct:.1%}</b>",
+                    showarrow=False, ay=15,
+                    font=dict(color="#d35400", size=11),
+                    row=1, col=1
+                )
+    except:
+        pass # 若 scipy 出錯則不畫 VCP，確保系統不崩潰
 
-    # --- 以下保留原本所有功能 (不刪減) ---
-    # 1. 主圖：K線 (確保在區塊上方)
+    # --- 以下保留原本所有判斷邏輯 (加法升級) ---
+    # 1. 主圖：K線 (移動到後方繪製，確保 K 線層級最高)
     fig.add_trace(go.Candlestick(
         x=df_plot["date"], open=df_plot["open"], high=df_plot["high"], low=df_plot["low"], close=df_plot["close"], 
         name="K線", increasing_line_color='#ff4b4b', decreasing_line_color='#28a745'
@@ -523,26 +512,29 @@ def plot_advanced_chart(df, title=""):
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["upward_key"], name="上漲關鍵位", line=dict(color='rgba(235,77,75,0.4)', dash='dash')), row=1, col=1)
     fig.add_trace(go.Scatter(x=df_plot["date"], y=df_plot["downward_key"], name="下跌關鍵位", line=dict(color='rgba(46,204,113,0.4)', dash='dash')), row=1, col=1)
     
-    # 3. 🚀 標記
+    # 3. 🚀 噴發標記
     breakouts = df_plot[df_plot["is_first_breakout"] == True]
     if not breakouts.empty:
-        fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=breakouts["date"], y=breakouts["low"] * 0.96, mode="markers+text", marker=dict(symbol="triangle-up", size=15, color="#ff4b4b"), text="🚀", textposition="bottom center", name="噴發第一根"), row=1, col=1)
 
-    # 4. ⭐ 標記
+    # 4. ⭐ 發動點
     if "star_signal" in df_plot.columns:
         stars = df_plot[df_plot["star_signal"].fillna(False).astype(bool)]
         if not stars.empty:
             fig.add_trace(go.Scatter(x=stars["date"], y=stars["low"] * 0.98, mode="markers", marker=dict(symbol="star", size=12, color="#FFD700"), name="發動點"), row=1, col=1)
     
-    # 5. MACD
+    # 5. 副圖：MACD
     if "hist" in df_plot.columns:
         colors = ['#ff4b4b' if v >= 0 else '#28a745' for v in df_plot["hist"]]
         fig.add_trace(go.Bar(x=df_plot["date"], y=df_plot["hist"], name="MACD", marker_color=colors), row=2, col=1)
     
     fig.update_layout(
-        height=650, title=title, template="plotly_white", xaxis_rangeslider_visible=False,
+        height=700, title=title, template="plotly_white", xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=50, b=10), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    # 把 y 軸放右邊比較像專業交易軟體
+    fig.update_yaxes(side="right", row=1, col=1)
+    
     return fig
 
 # --- 7. Google 表單同步 ---
