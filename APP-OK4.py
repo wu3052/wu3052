@@ -333,126 +333,68 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         market_phase = "🍽️盤整盤 (橫盤)"
     df.at[last_idx, "market_phase"] = market_phase
 
-# --- 1. 預先基礎參數計算 ---
-    vol_ratio = row["volume"] / row["vol_ma5"] if row["vol_ma5"] > 0 else 1
-    ma5_trending_up = row["ma5"] > prev["ma5"]
+    # --- 形態強度層級判定 ---
+    pattern_name = market_phase
+    pattern_desc = f"目前處於{market_phase}階段。"
     ma_list_long = [row["ma5"], row["ma10"], row["ma20"], row["ma60"]]
-    
-    # 乖離與糾結度計算
     diff_short = (max([row["ma5"], row["ma10"], row["ma20"]]) - min([row["ma5"], row["ma10"], row["ma20"]])) / row["close"]
     diff_long = (max(ma_list_long) - min(ma_list_long)) / row["close"]
     
-    # K線特徵判定
     is_long_red = (row["close"] > row["open"]) and ((row["close"] - row["open"]) / row["open"] > 0.03)
     is_gap_up = row["open"] > prev["high"] * 1.005
-    
-    # 20日高點與10日低點 (建議由 df 預先算好傳入，此處為示意)
-    # high_20d = row["high_20d"] 
-    # recent_low = row["low_10d"]
 
-    # --- 2. 形態強度層級判定 (決定整體評價 Score) ---
-    pattern_name = market_phase
-    pattern_desc = f"目前處於{market_phase}階段。"
-
-    if row.get("is_first_breakout"):
+    if row["is_first_breakout"]:
         score += 35
         pattern_name = "🚀 噴發第一根"
         pattern_desc = "SSS 級判定！均線糾結後首次帶量突破，能量完全釋放，行情起點。"
-        buy_pts.append("🔥SSS級:噴發訊號")
-        
-    elif diff_long < 0.02 and row["close"] > row["ma5"] and ma5_trending_up:
+        buy_pts.append("噴發訊號")
+    elif diff_long < 0.02 and row["close"] > row["ma5"] and row["ma5"] > prev["ma5"]:
         score += 30
         pattern_name = "💎 鑽石眼"
         pattern_desc = "SS 級判定！五線合一超級共振，週期成本達成一致，發動令已下。"
-        buy_pts.append("💎SS級:鑽石眼強勢點")
-        
+        buy_pts.append("鑽石眼強勢點")
     elif row["close"] > max(ma_list_long) and prev["close"] <= max(ma_list_long):
         score += 25
         pattern_name = "🕳️ 鑽石坑"
         pattern_desc = "S 級判定！克服所有長期壓力，進入主升段無壓力區。"
-        buy_pts.append("🕳️S級:主升段啟動")
-        
-    elif diff_short < 0.015 and row["close"] > row["ma5"] and ma5_trending_up and row["close"] > row["open"]:
+        buy_pts.append("主升段啟動")
+    elif diff_short < 0.015 and row["close"] > row["ma5"] and row["ma5"] > prev["ma5"] and row["close"] > row["open"]:
         score += 20
         pattern_name = "🟡 黃金眼"
         pattern_desc = "A 級判定！均線整齊排列，底部反轉確認。"
-        buy_pts.append("👁️A級:黃金眼排列")
-        
+        buy_pts.append("黃金眼排列")
     elif row["ma5"] > row["ma10"] and row["ma5"] > row["ma20"] and prev["ma5"] <= prev["ma10"]:
         score += 15
         pattern_name = "📐 黃金三角眼"
         pattern_desc = "B 級判定！多頭雛形醞釀，適合分批試單。"
-        buy_pts.append("📐B級:多頭一浪啟動")
-        
-    elif is_long_red and vol_ratio > 1.8:
+        buy_pts.append("多頭一浪啟動")
+    elif is_long_red and row["vol_ratio"] > 1.8:
         score += 15
         pattern_name = "🧱 實體長紅突破"
         pattern_desc = "強力買盤介入，實體紅棒穿透壓力區，配合量能噴發。"
-        buy_pts.append("🧱實體長紅")
+        buy_pts.append("實體長紅")
 
-    # --- 3. 進場具體訊號捕捉 (Buy Signals) ---
-    
-    # 強勢突破類
-    if is_gap_up:
-        if row["close"] >= high_20d: 
-            buy_pts.append("🚀突破型缺口(極強勢)")
-        else:
-            buy_pts.append("🚀多方跳空缺口")
+    # --- 買賣點彙整偵測 ---
+    recent_low = df["low"].tail(3).min()
+    is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
 
-    if not pd.isna(row.get("upward_key")) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]:
-        tag = "🎯帶量站上死交位" if vol_ratio > 1.2 else "🎯站上死交關鍵位"
-        buy_pts.append(tag)
+    if is_gap_up: buy_pts.append("🚀多方跳空缺口")
+    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
+    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: buy_pts.append("站上死交關鍵位(上漲買入)")
+    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
+    if is_retrace: buy_pts.append("量縮回踩5MA(買點)")
+    if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
+    if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
+    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
 
-    # 形態與籌碼類
-    if row.get("vcp_check"):
-        if vol_ratio > 1.5 and row["close"] > prev["high"]:
-            buy_pts.append("🔋VCP帶量突破(籌碼洗淨)")
-        else:
-            buy_pts.append("🔋籌碼壓縮(VCP收斂中)")
-
-    if row.get("star_signal"):
-        buy_pts.append("⭐站上發動點")
-
-    # 支撐回踩類
-    is_retrace = (
-        market_phase == "📈上漲盤 (多頭)" and 
-        row["low"] <= row["ma5"] * 1.005 and 
-        row["close"] >= row["ma5"] and 
-        row["volume"] < row["vol_ma5"] and 
-        ma5_trending_up
-    )
-    if is_retrace:
-        buy_pts.append("量縮回踩5MA")
-
-    if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"] and ma5_trending_up:
-        buy_pts.append("📈站上5MA(短多轉強)")
-
-    if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]:
-        buy_pts.append("站上60分144MA")
-
-    # 位階支撐 (不創新低)
-    if row["close"] > prev["close"] and row["low"] >= recent_low:
-        msg = "🧱築底不創新低" if "下跌" in market_phase else "🛡️位階支撐守穩"
-        buy_pts.append(msg)
-
-    # --- 4. 出場訊號捕捉 (Sell Signals) ---
-    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]:
-        sell_pts.append("📉跌破5MA(短線避險)")
-
-    if not pd.isna(row.get("downward_key")) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: 
-        sell_pts.append("跌破金交關鍵位(絕對止損)")
-
-    if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]:
-        sell_pts.append("跌破10MA(波段轉弱)")
-
-    if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]:
-        sell_pts.append("跌破60分55MA")
-
-    if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]:
-        sell_pts.append("跌破60分144MA(長期轉空)")
-
-    if row["high"] <= prev["high"] and row["close"] < prev["close"]:
-        sell_pts.append("頭部不創新高(轉弱訊號)")
+    # 建議賣出順序：短線走弱 -> 關鍵位失守 -> 長線走空 -> 趨勢反轉
+    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
+    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: 
+        sell_pts.append("跌破金交關鍵位(下跌賣出)") # 關鍵位通常比均線重要
+    if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
+    if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
+    if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
+    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")  
 
     # --- 最終評分與結果存入 ---
     if buy_pts: score += 12 * len(set(buy_pts))
