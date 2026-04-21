@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import re
 import time
-import twstock  # <-- 已取代 yfinance
+import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 頁面配置與進階 CSS ---
@@ -73,7 +73,6 @@ if 'inventory_codes' not in st.session_state: st.session_state.inventory_codes =
 if 'first_sync_done' not in st.session_state: st.session_state.first_sync_done = False
 if 'market_score' not in st.session_state: st.session_state.market_score = 50
 if 'enable_discord' not in st.session_state: st.session_state.enable_discord = True
-if 'last_twstock_call' not in st.session_state: st.session_state.last_twstock_call = 0
 
 # --- 3. 核心工具模組 ---
 def get_taiwan_time():
@@ -84,6 +83,19 @@ def is_market_open():
     start_time = datetime.strptime("09:00", "%H:%M").time()
     end_time = datetime.strptime("13:35", "%H:%M").time()
     return 0 <= now.weekday() <= 4 and start_time <= now.time() <= end_time
+
+def get_yf_ticker(sid):
+    if sid == "TAIEX": return "^TWII"
+    if sid in st.session_state.sid_map: return st.session_state.sid_map[sid]
+    
+    sid_str = str(sid)
+    if len(sid_str) == 4 and sid_str[0] in ['3', '5', '6', '8']:
+        ticker = f"{sid_str}.TWO"
+    else:
+        ticker = f"{sid_str}.TW"
+    
+    st.session_state.sid_map[sid] = ticker
+    return ticker
 
 def send_discord_message(msg):
     if not st.session_state.get("enable_discord", True):
@@ -137,7 +149,6 @@ def calculate_est_volume(current_vol):
 @st.cache_data(ttl=30 if is_market_open() else 3600)
 def get_stock_data(sid, token):
     try:
-        # FinMind 歷史數據
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockPrice", "data_id": sid,
             "start_date": (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
@@ -152,52 +163,40 @@ def get_stock_data(sid, token):
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values("date").reset_index(drop=True)
 
-        # twstock 即時數據獲取 (取代 yfinance)
         if is_market_open() or sid == "TAIEX":
-            # 頻率控制：每 5 秒不超過 3 個 request
-            time.sleep(1.7) 
+            ticker_str = get_yf_ticker(sid)
+            yt = yf.download(ticker_str, period="5d", interval="1m", progress=False, timeout=15)
             
-            try:
-                # 處理大盤特殊 ID
-                target_id = "tse_t00.tw" if sid == "TAIEX" else sid
-                rt_data = twstock.realtime.get(target_id)
+            if not yt.empty:
+                if isinstance(yt.columns, pd.MultiIndex):
+                    yt.columns = yt.columns.get_level_values(0)
                 
-                if rt_data and rt_data.get('success'):
-                    rt = rt_data['realtime']
-                    info = rt_data['info']
+                yt.columns = [c.capitalize() for c in yt.columns]
+                last_price = float(yt['Close'].iloc[-1])
+                today_start = get_taiwan_time().replace(hour=9, minute=0, second=0, microsecond=0)
+                today_yt = yt[yt.index >= today_start]
+                
+                if not today_yt.empty:
+                    day_vol = int(today_yt['Volume'].sum())
+                    day_high = float(today_yt['High'].max())
+                    day_low = float(today_yt['Low'].min())
                     
-                    # 更新名稱對照
-                    st.session_state.sid_map[sid] = info.get('name', sid)
-                    
-                    # 抓取數值 (考慮開盤未成交情況)
-                    try:
-                        latest_p = float(rt['latest_trade_price']) if rt['latest_trade_price'] != '-' else float(rt['get'].get('open', 0))
-                        day_high = float(rt['high']) if rt['high'] != '-' else latest_p
-                        day_low = float(rt['low']) if rt['low'] != '-' else latest_p
-                        day_vol = int(rt['accumulated_trade_volume']) if rt['accumulated_trade_volume'] != '-' else 0
-                    except:
-                        latest_p = df.iloc[-1]['close']
-                        day_high, day_low, day_vol = latest_p, latest_p, 0
-
-                    # 更新或新增今日 Row
-                    today_date = get_taiwan_time().date()
-                    if df.iloc[-1]['date'].date() == today_date:
+                    if df.iloc[-1]['date'].date() == get_taiwan_time().date():
                         idx = df.index[-1]
                     else:
                         new_row = df.iloc[-1].copy()
-                        new_row['date'] = pd.Timestamp(today_date)
+                        new_row['date'] = pd.Timestamp(get_taiwan_time().date())
                         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                         idx = df.index[-1]
-                    
-                    df.at[idx, 'close'] = latest_p
+                        
+                    df.at[idx, 'close'] = last_price
                     df.at[idx, 'high'] = day_high
                     df.at[idx, 'low'] = day_low
-                    df.at[idx, 'volume'] = day_vol * 1000 # twstock 張轉股
-                    df.at[idx, 'est_volume'] = calculate_est_volume(day_vol * 1000)
+                    df.at[idx, 'volume'] = day_vol
+                    df.at[idx, 'est_volume'] = calculate_est_volume(day_vol)
                 else:
                     df['est_volume'] = df['volume']
-            except Exception as e:
-                print(f"twstock Error for {sid}: {e}")
+            else:
                 df['est_volume'] = df['volume']
         else:
             df['est_volume'] = df['volume']
@@ -298,18 +297,18 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     df['hl_range'] = (df['high'] - df['low']) / df['close']
     df['vcp_check'] = df['hl_range'].rolling(5).mean() < df['hl_range'].rolling(20).mean() * 0.7
 
-# --- 全表噴發點過濾判定 (確保 5 天內不重複出現 🚀) ---
+    # --- 全表噴發點過濾判定 (確保 5 天內不重複出現 🚀) ---
     max_ma_3_prev = df[["ma5", "ma10", "ma20"]].max(axis=1).shift(1)
     min_ma_3_prev = df[["ma5", "ma10", "ma20"]].min(axis=1).shift(1)
     df["was_tangling"] = (max_ma_3_prev - min_ma_3_prev) / df["close"].shift(1) < 0.035
     
-    # 1. 先計算原始的訊號 (raw_signals)
+    # 1. 先計算原始的訊號
     raw_signals = (df["was_tangling"]) & (df["close"] > max_ma_3_prev) & (df["vol_ratio"] > 1.2) & (df["ma5"] > df["ma5"].shift(1))
     
     # 2. 建立一個乾淨的欄位來存過濾後的結果
     filtered_signals = raw_signals.copy()
     
-    # 3. 執行冷卻時間過濾 (Cool-down logic)
+    # 3. 執行冷卻時間過濾
     for i in range(1, len(df)):
         if filtered_signals.iloc[i]:
             if filtered_signals.iloc[max(0, i-5):i].any():
@@ -436,6 +435,7 @@ def plot_advanced_chart(df, title=""):
     if df is None or df.empty: return go.Figure()
     df_plot = df.tail(100).copy()
     
+    # 確保關鍵標記欄位正確
     if "is_first_breakout" not in df_plot.columns: df_plot["is_first_breakout"] = False
     df_plot["is_first_breakout"] = df_plot["is_first_breakout"].fillna(False).astype(bool)
     
@@ -489,20 +489,15 @@ def plot_advanced_chart(df, title=""):
 # --- 7. Google 表單同步 ---
 def sync_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
-    if not sheet_id: 
-        add_log("SYS", "SYSTEM", "WARN", "未設定 MONITOR_SHEET_ID，跳過同步")
-        return
+    if not sheet_id: return
     try:
-        # 增加 timestamp 防止快取
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&cache_bus={int(time.time())}"
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df_sheet = pd.read_csv(url)
         
         def clean_col(name):
             if name in df_sheet.columns:
-                # 強化清洗：去除 nan、空值，並確保代號為純數字字串
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
-                # 確保 2330.TW 這種格式會被正確處理為 2330
                 return " ".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
             return ""
         
@@ -513,7 +508,6 @@ def sync_sheets():
         st.error(f"同步失敗: {e}")
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
 
-# 初始同步
 if not st.session_state.first_sync_done:
     sync_sheets()
     st.session_state.first_sync_done = True
@@ -521,41 +515,26 @@ if not st.session_state.first_sync_done:
 # --- 8. 指揮中心 UI ---
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
-    
-    # 認證區
     fm_token = st.text_input("FinMind Token", value=st.secrets.get("FINMIND_TOKEN", ""), type="password")
-    
-    # 推送開關
     st.session_state.enable_discord = st.toggle("📢 開啟 Discord 訊息推送", value=st.session_state.enable_discord)
     
-    # 手動同步按鈕
-    if st.button("🔄 手動同步雲端清單", use_container_width=True):
+    if st.button("🔄 手動同步雲端清單"):
         sync_sheets()
-        st.success("同步完成")
         st.rerun()
         
-    st.divider()
-    
-    # 編輯區
-    st.session_state.search_codes = st.text_area("🎯 狙擊清單 (空格/換行分隔)", value=st.session_state.search_codes, height=150)
-    st.session_state.inventory_codes = st.text_area("📦 庫存清單 (空格/換行分隔)", value=st.session_state.inventory_codes, height=100)
-    
-    # 監控參數
+    st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes)
+    st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
     interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
     auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
-    analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True, type="primary")
-    
-    # 系統狀態
-    market_status = is_market_open()
-    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴 開盤中' if market_status else '🟢 已收盤'}")
+    analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
+    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
     today_str = get_taiwan_time().strftime('%Y-%m-%d')
     now = get_taiwan_time()
-    st.markdown(f"### 📡 掃描報告：{now.strftime('%Y-%m-%d %H:%M:%S')}")
+    st.markdown(f"### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # 解析代號清單
     snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
     inv_list = [c for c in re.split(r'[\s\n,]+', st.session_state.inventory_codes) if c]
     all_codes = sorted(list(set(snipe_list + inv_list)))
@@ -563,69 +542,54 @@ def perform_scan(manual_trigger=False):
     stock_info = get_stock_info()
     processed_stocks = []
 
-    # 1. 優先渲染大盤分析 (TAIEX)
+    # 1. 優先渲染大盤分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df, is_market=True)
         m_last = m_df.iloc[-1]
         st.session_state.market_score = m_last["score"]
         score = m_last["score"]
-        
-        # 決定大盤狀態燈號
         if score >= 80: cmd, clz, tip = "🚀 強力買進", "buy-signal", "🔥 市場動能極強，適合積極操作。"
         elif score >= 60: cmd, clz, tip = "📈 分批買進", "buy-signal", "⚖️ 穩定上漲中，擇優佈局。"
         elif score >= 40: cmd, clz, tip = "Neutral 觀望", "neutral-signal", "🌪 盤勢震盪中，保持低水位。"
         elif score >= 20: cmd, clz, tip = "📉 分批賣出", "sell-signal", "🛑 趨勢轉弱，注意風險。"
         else: cmd, clz, tip = "💀 強力賣出", "sell-signal", "🚨 極高風險，建議空手。"
         
-        # 渲染大盤卡片
         c1, c2 = st.columns([1, 2])
-        with c1: 
-            diff = m_last['close'] - m_df.iloc[-2]['close']
-            st.metric("加權指數", f"{m_last['close']:.2f}", f"{diff:+.2f}")
-        with c2: 
-            st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
-        
-        with st.expander("📊 查看大盤詳細趨勢圖表"):
+        with c1: st.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
+        with c2: st.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
+        with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-    # 2. 多執行緒處理個股
+    # 2. 處理個股
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
         for future in future_to_sid:
             sid = future_to_sid[future]
             try:
                 df = future.result()
-                if df is None or len(df) < 5: continue
-                
-                # 套用核心策略分析
+                if df is None: continue
                 df = analyze_strategy(df, is_market=False)
                 last = df.iloc[-1]
                 name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
                 is_inv, is_snipe = sid in inv_list, sid in snipe_list
                 
-                # 訊號狀態判定
                 sig_type = last['sig_type']
-                # 加入爆量判定標記
                 sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
                 
-                # 歷史狀態對比 (決定是否發送通知)
                 old_sig = st.session_state.notified_status.get(sid)
                 old_date = st.session_state.notified_date.get(sid)
                 old_price = st.session_state.last_notified_price.get(sid, last['close'])
-                price_drop = (last['close'] - old_price) / old_price < -0.02 # 跌幅超過2%觸發更新
+                price_drop = (last['close'] - old_price) / old_price < -0.02 
                 
-                # --- 判定是否觸發通知 ---
+                # --- 判定觸發 ---
                 if manual_trigger or old_date != today_str or old_sig != sig_lvl or price_drop:
                     should_send = False
                     msg_header = ""
 
-                    # 邏輯 A：庫存股賣訊警示
                     if is_inv and sig_type == "SELL":
                         should_send = True
-                        msg_header = "🚨🚨🚨 【 庫存風險警示：建議減碼 】 🚨🚨🚨"
-                    
-                    # 邏輯 B：狙擊股買訊觸發
+                        msg_header = "🚨🚨🚨 【 庫存風險警示：立即減碼 】 🚨🚨🚨"
                     elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
                         if last.get("is_first_breakout"):
@@ -638,27 +602,30 @@ def perform_scan(manual_trigger=False):
                             msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 🎯🎯🎯"
 
                     if should_send:
-                        # 處理特別提醒 (多方跳空 / VCP)
+                        # 特別提醒判斷 (多方跳空 / VCP)
                         special_alerts = []
                         if last['close'] > df.iloc[-2]['high']: special_alerts.append("🚀 多方跳空缺口")
                         if "VCP" in last['pattern'] or "壓縮" in last['pattern_desc']: special_alerts.append("💎 籌碼壓縮 VCP")
+                        
                         special_note = f"💡 **核心關鍵：** `{' | '.join(special_alerts)}`" if special_alerts else ""
 
-                        # 計算建議區間
+                        # 計算建議價位
                         buy_range_low = last['close'] * 0.995
                         buy_range_high = last['close'] * 1.01
-                        stop_loss = last['close'] * 0.94  # 預設 6% 停損
+                        stop_loss = last['close'] * 0.94 
 
-                        # 更新狀態防止重複通知
                         if not manual_trigger:
                             st.session_state.notified_status[sid] = sig_lvl
                             st.session_state.notified_date[sid] = today_str
                             st.session_state.last_notified_price[sid] = last['close']
                         
-                        add_log(sid, name, sig_type, f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
+                        add_log(sid, name, "BUY" if ("BUY" in sig_type or last.get("is_first_breakout")) else "SELL", f"{last['warning']} | {last['pattern']}", last['score'], last['vol_ratio'])
 
-                        # 推送至 Discord
-                        if st.session_state.enable_discord and (manual_trigger or is_market_open()):
+                        is_discord_on = st.session_state.get("enable_discord", False)
+                        market_is_open = is_market_open()
+                        
+                        if is_discord_on and (manual_trigger or market_is_open):
+                            # 構建 Discord 訊息
                             msg_lines = [
                                 f"{msg_header}",
                                 f"{special_note}" if special_note else "◈ 穩定趨勢追蹤中",
@@ -676,92 +643,97 @@ def perform_scan(manual_trigger=False):
                                 f"⚠️ **提醒：** {last['warning']}",
                                 f"📍 **策略：** {last['pos_advice']}",
                                 f"━━━━━━━━━━━━━━━━━━━━",
-                                f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動)' if manual_trigger else ''}",
-                                f"🔗 [查看技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)"
+                                f"⏰ **時間：** {get_taiwan_time().strftime('%H:%M:%S')} {'(手動強制)' if manual_trigger else ''}",
+                                f"🔗 [查看玩股網技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)"
                             ]
                             send_discord_message("\n".join(msg_lines))
                 
-                # 收集已處理資料用於 UI 渲染
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": last["score"], 
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
             except Exception as e:
-                st.error(f"處理 {sid} 時發生錯誤: {e}")
+                print(f"Error processing {sid}: {e}")
 
-    # --- UI 渲染部分 ---
-    # 3. 狙擊清單 (按評分排序)
-    st.subheader("🔥 狙擊目標監控 (按評分強弱)")
-    snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x["score"], reverse=True)
+    st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
+    snipe_targets = [s for s in processed_stocks if s["is_snipe"] and s.get("df") is not None]
+    snipe_targets = sorted(snipe_targets, key=lambda x: x.get("score", 0), reverse=True)
     
     if not snipe_targets:
-        st.info("🎯 目前清單無數據，請在側邊欄輸入股票代號。")
+        st.info("🎯 目前狙擊清單尚無數據（或掃描中），請確認代號是否正確。")
     
     for item in snipe_targets:
-        last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
-        # 定義等級顏色
+        last = item.get("last")
+        sid = item.get("sid")
+        name = item.get("name")
+        df = item.get("df")
+        if last is None or df is None: continue
+        
         pattern = item['pattern']
         if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
         elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
         elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
-        else: rank_tag, tag_clr, txt_clr = "A 級", "#3498db", "white"
+        elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
+        else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
 
-        is_boom = (last["vol_ratio"] > 1.8 and "BUY" in last["sig_type"])
-        border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else "#ccc"
+        is_boom = ("BUY" in last["sig_type"] and last["vol_ratio"] > 1.8)
+        border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         
         st.markdown(f"""
-        <div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr};">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div style="font-size:1.2em;">
-                    <b>🎯 {sid} {name}</b> 
-                    <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
-                </div>
-                <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {last['score']}</span></div>
-            </div>
-            <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
-                <div>📍 <b>現價：</b>{last['close']:.2f} (量比: {last['vol_ratio']:.2f}x)</div>
-                <div>⚠️ <b>關鍵提醒：</b>{last['warning']}</div>
-            </div>
-            <div style="font-size:0.95em; margin-top:10px; color:#333;">
-                <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
-                <b>💰 資金建議：</b><span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
-            </div>
+<div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #f8f9fa; border-radius: 5px; color: black;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:1.2em;">
+            <b>🎯 {sid} {name}</b> 
+            <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
         </div>
-        """, unsafe_allow_html=True)
+        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {last['score']}</span></div>
+    </div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
+        <div>📍 <b>現價：</b>{last['close']:.2f} (量比: {last['vol_ratio']:.2f}x)</div>
+        <div>⚠️ <b>關鍵提醒：</b>{last['warning']}</div>
+    </div>
+    <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.5;">
+        <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
+        <b>💰 資金建議：</b><span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
         
-        with st.expander(f"查看 {sid} {name} 完整分析", expanded=("🚀" in pattern)):
+        with st.expander(f"查看 {sid} {name} 分析圖表", expanded=("🚀" in pattern)):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
-    # 4. 庫存監控
     st.divider()
-    st.subheader("📦 庫存持股健康度")
+    st.subheader("📦 庫存持股監控")
     inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
-    
     for item in inventory_targets:
         last, sid, name, df = item["last"], item["sid"], item["name"], item["df"]
         health_clr = "#28a745" if last['score'] >= 60 else ("#ffa500" if last['score'] >= 40 else "#ff4b4b")
         
         st.markdown(f"""
-        <div class="dashboard-box" style="border-left: 10px solid {health_clr}; background: #fdfdfe;">
-            <div style="display:flex; justify-content:space-between; align-items:center;">
-                <div style="font-size:1.1em; color: black;"><b>📦 {sid} {name} | 現價: {last['close']:.2f}</b></div>
-                <div><span style="background:{health_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {last['score']}</span></div>
-            </div>
-            <div style="font-size:0.9em; margin-top:8px; color:#555;">
-                <b>🛡️ 風險建議:</b> <span style="font-weight:bold; color:{health_clr};">{last['pos_advice']}</span><br>
-                <b>💡 型態特徵:</b> {item['pattern']} | 乖離: {last['bias_5']:.2f}%
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+<div class="dashboard-box" style="border-left: 10px solid {health_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #fdfdfe; border-radius: 5px; color: black;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:1.1em; color: black;"><b>📦 {sid} {name} | 現價: {last['close']:.2f} | {item['pattern']}</b></div>
+        <div><span style="background:{health_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {last['score']}</span></div>
+    </div>
+    <div style="display:grid; grid-template-columns: 1fr; gap: 10px; margin-top:10px; padding:10px; background:#f0f2f6; border-radius:5px;">
+        <div style="color: black;">📈 <b>5MA 乖離：</b>{last['bias_5']:.2f}%</div>
+    </div>
+    <div style="font-size:0.9em; margin-top:8px; color:#555;">
+        <b>🛡️ 風險狀態:</b> <span style="font-weight:bold; color:{health_clr};">{last['pos_advice']}</span> | 提醒: {last['warning']}<br>
+        <b>💡 形態解讀：</b>{item['pattern_desc']}
+    </div>
+</div>
+""", unsafe_allow_html=True)
+        with st.expander(f"查看 {sid} {name} 分析圖表"):
+            st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
-    # 5. 日誌渲染
     st.divider()
     st.write("### 📜 戰情即時日誌")
     log_content = "".join(st.session_state.event_log)
     st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
 
-# --- 10. 主循環執行 ---
+# --- 10. 主循環邏輯 ---
 placeholder = st.empty()
 
 if analyze_btn:
@@ -769,18 +741,18 @@ if analyze_btn:
         perform_scan(manual_trigger=True)
 
 elif auto_monitor:
-    # 盤中自動刷新邏輯
     if is_market_open():
         with placeholder.container(): 
             perform_scan(manual_trigger=False)
-        st.caption(f"🔄 自動監控中... 下次掃描預計於 {interval} 分鐘後")
-        time.sleep(interval * 60) # 等待設定的間隔
+        st.caption(f"🔄 盤中自動監控中... 下次掃描預計於 {interval} 分鐘後 (或手動刷新)")
+        st.info(f"最後更新時間: {get_taiwan_time().strftime('%H:%M:%S')}")
+        time.sleep(10) 
         st.rerun()
     else:
-        # 非盤中僅執行一次，不進入循環
         with placeholder.container(): 
             perform_scan(manual_trigger=False)
-        st.warning("🌙 目前非台股盤中時間，自動監控暫停。")
+        st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:30)，自動監控已進入休眠。")
 else:
     with placeholder.container(): 
         perform_scan(manual_trigger=False)
+    st.info("💡 自動監控已關閉，請點擊「立即執行掃描」或開啟自動監控。")
