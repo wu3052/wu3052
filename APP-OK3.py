@@ -147,15 +147,15 @@ def calculate_est_volume(current_vol):
     est = current_vol * (270 / (passed + 10)) 
     return est
 
-@st.cache_data(ttl=15 if is_market_open() else 3600)
+@st.cache_data(ttl=60) # 建議統一使用 60 秒，避免緩存過期判定失效
 def get_stock_data(sid, token):
     try:
-        # 1. 依然從 FinMind 抓取長期的歷史日線數據 (作為基底)
+        # 1. FinMind 抓歷史基底
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockPrice", "data_id": sid,
-            "start_date": (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
+            "start_date": (datetime.now() - timedelta(days=365)).strftime("%Y-%m-%d"),
             "token": token
-        }, timeout=15).json()
+        }, timeout=10).json()
         
         data = res.get("data", [])
         if not data: return None
@@ -163,61 +163,53 @@ def get_stock_data(sid, token):
         df.columns = [c.lower() for c in df.columns]
         df = df.rename(columns={"max": "high", "min": "low", "trading_volume": "volume"})
         df['date'] = pd.to_datetime(df['date'])
-        df = df.sort_values("date").reset_index(drop=True)
+        
+        # 2. 強制獲取即時價格 (解決 yfinance/FinMind 滯後問題)
+        try:
+            realtime_data = twstock.realtime.get(sid)
+            if realtime_data and realtime_data['success']:
+                real = realtime_data['realtime']
+                # 取得最新價，處理 '-' 的情況
+                def safe_float(val, default):
+                    return float(val) if val != '-' else default
 
-        # 2. 如果是開盤期間，使用 twstock 獲取「真正即時」的盤中數據
-        if is_market_open() or sid == "TAIEX":
-            try:
-                # 取得即時報價
-                realtime_data = twstock.realtime.get(sid)
+                last_price = safe_float(real['latest_trade_price'], safe_float(real['open'], 0))
+                if last_price == 0 and not df.empty: last_price = df['close'].iloc[-1]
                 
-                if realtime_data and realtime_data['success']:
-                    info = realtime_data['info']
-                    real = realtime_data['realtime']
-                    
-                    # 取得最新成交價、高、低、量
-                    # 注意：twstock 的量單位通常是「張」，需轉換為「股」以符合 FinMind 格式 (張 * 1000)
-                    last_price = float(real['latest_trade_price']) if real['latest_trade_price'] != '-' else float(real['open'])
-                    day_high = float(real['high']) if real['high'] != '-' else last_price
-                    day_low = float(real['low']) if real['low'] != '-' else last_price
-                    day_vol = int(real['accumulate_trade_volume']) * 1000 
-                    
-                    # 更新或新增今日資料列
-                    today_dt = pd.Timestamp(get_taiwan_time().date())
-                    if df.iloc[-1]['date'].date() == today_dt.date():
-                        idx = df.index[-1]
-                    else:
-                        new_row = df.iloc[-1].copy()
-                        new_row['date'] = today_dt
-                        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-                        idx = df.index[-1]
-                    
-                    df.at[idx, 'close'] = last_price
-                    df.at[idx, 'high'] = day_high
-                    df.at[idx, 'low'] = day_low
-                    df.at[idx, 'volume'] = day_vol
-                    df.at[idx, 'est_volume'] = calculate_est_volume(day_vol)
+                day_high = safe_float(real['high'], last_price)
+                day_low = safe_float(real['low'], last_price)
+                day_vol = int(real['accumulate_trade_volume']) * 1000 
+
+                today_dt = pd.Timestamp(get_taiwan_time().date())
+                
+                # 如果 df 最後一筆不是今天，則新增一行
+                if df['date'].iloc[-1].date() < today_dt.date():
+                    new_row = pd.DataFrame([{
+                        'date': today_dt, 'open': safe_float(real['open'], last_price),
+                        'high': day_high, 'low': day_low, 'close': last_price, 'volume': day_vol
+                    }])
+                    df = pd.concat([df, new_row], ignore_index=True)
                 else:
-                    # 如果 twstock 失敗，降級回 yfinance 或保留原樣
-                    df['est_volume'] = df['volume']
-            except Exception as e:
-                add_log(sid, "SYS", "ERROR", f"twstock 即時抓取失敗: {e}")
-                df['est_volume'] = df['volume']
-        else:
-            df['est_volume'] = df['volume']
-            
-        # 數據清洗 (保留原本邏輯)
-        if df is not None and not df.empty:
-            df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
-            df['volume'] = df['volume'].fillna(0)
-            if 'est_volume' in df.columns:
-                df['est_volume'] = df['est_volume'].fillna(df['volume'])
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].ffill()
+                    # 更新最後一筆為即時數據
+                    idx = df.index[-1]
+                    df.at[idx, 'close'] = last_price
+                    df.at[idx, 'high'] = max(df.at[idx, 'high'], day_high)
+                    df.at[idx, 'low'] = min(df.at[idx, 'low'], day_low)
+                    df.at[idx, 'volume'] = day_vol
+        except Exception as e:
+            print(f"即時數據合併跳過 ({sid}): {e}")
+
+        # 計算預估量
+        df['est_volume'] = df['volume'].apply(calculate_est_volume) if is_market_open() else df['volume']
+        
+        # 清洗與補值
+        df = df.sort_values("date").drop_duplicates(subset=['date'], keep='last')
+        df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].ffill()
+        df['date'] = df['date'].dt.tz_localize(None)
         
         return df
     except Exception as e:
-        print(f"Error fetching {sid}: {e}")
+        st.error(f"獲取股票 {sid} 失敗: {e}")
         return None
 
 @st.cache_data(ttl=86400)
@@ -380,15 +372,16 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         pattern_desc = "強力買盤介入，實體紅棒穿透壓力區，配合量能噴發。"
         buy_pts.append("實體長紅")
 
-    # --- 買賣點彙整偵測 ---
-    recent_low = df["low"].tail(3).min()
-    is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
-
-# --- 1. 定義輔助判斷 (確保邏輯完整) ---
+   # --- 1. 定義輔助判斷 (建議保留此版) ---
     recent_low = df["low"].tail(3).min()
     is_gap_up = row["open"] > prev["high"] * 1.005
-    # 量縮回踩判定：價格回踩5MA且量比前一日縮減
-    is_retrace = (row["low"] <= row["ma5"] * 1.005) and (row["close"] > row["ma5"]) and (row["volume"] < prev["volume"])
+
+    # 量縮回踩判定：
+    # 條件：最低價觸及MA5(±0.5%) + 收盤守在MA5之上 + 成交量低於前日且低於5日均量
+    is_retrace = (row["low"] <= row["ma5"] * 1.005) and \
+                 (row["close"] > row["ma5"]) and \
+                 (row["volume"] < prev["volume"]) and \
+                 (row["volume"] < row["vol_ma5"])
 
     # --- 2. 建議買入順序 (邏輯加強版) ---
     if is_gap_up: buy_pts.append("🚀多方跳空缺口")
@@ -764,7 +757,7 @@ with st.sidebar:
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
-# --- 側邊欄結束，回到主頁面邏輯 (注意這裡不要有縮排) ---
+# --- 側邊欄結束，回到主頁面邏輯 ---
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
@@ -943,7 +936,6 @@ def perform_scan(manual_trigger=False):
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
         score_int = int(last['score'])
         
-        # 這裡套用與狙擊清單相同的等級判斷邏輯
         if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
         elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
         elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
@@ -989,12 +981,10 @@ elif auto_monitor:
         with placeholder.container(): 
             perform_scan(manual_trigger=False)
         
-        # 加法升級：更明確的倒數與同步提示
         st.info(f"🔄 自動監控中... 已同步 Google 表單清單。下次掃描預計於 {interval} 分鐘後。")
-        time.sleep(interval * 60) # 根據您設定的 slider 間隔暫停
+        time.sleep(interval * 60) 
         st.rerun()
     else:
-        # 非開盤時間僅執行一次掃描後停住
         with placeholder.container(): 
             perform_scan(manual_trigger=False)
         st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:30)，自動監控已進入休眠。")
@@ -1002,4 +992,3 @@ else:
     with placeholder.container(): 
         perform_scan(manual_trigger=False)
     st.info("💡 自動監控已關閉。")
-
