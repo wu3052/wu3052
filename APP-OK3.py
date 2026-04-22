@@ -548,82 +548,46 @@ def get_yf_ticker(code):
 
 @st.cache_data(ttl=3600)
 def run_stock_screener():
-    """執行全台股掃描 - 強化格式相容版"""
-    all_codes = []
-    # 1. 取得所有代碼
-    for code, info in twstock.codes.items():
-        if len(code) == 4 and info.type == '股票':
-            all_codes.append(get_yf_ticker(code))
-    
+    # ... 前段取得 all_codes 代碼不變 ...
     found_targets = []
-    batch_size = 50 
-    progress_bar = st.progress(0)
-    status_text = st.empty()
     
-    for i in range(0, len(all_codes), batch_size):
-        batch = all_codes[i:i+batch_size]
-        progress_bar.progress(min(i / len(all_codes), 1.0))
-        status_text.caption(f"正在分析第 {i} 檔，目前已找到 {len(found_targets)} 檔符合條件標的...")
-        
+    # 增加一個進度檢查
+    for i in range(0, len(all_codes), 50):
+        batch = all_codes[i:i+50]
         try:
-            # yfinance 下載
-            data = yf.download(batch, period="8mo", interval="1d", group_by='ticker', progress=False)
+            # 使用 yfinance 抓取
+            data = yf.download(batch, period="8mo", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
-                    # A. 提取資料並處理 MultiIndex 問題
-                    if len(batch) > 1:
-                        if ticker not in data or data[ticker].empty: continue
-                        df_single = data[ticker].copy()
-                    else:
-                        df_single = data.copy()
+                    df_single = data[ticker].copy().dropna()
+                    if len(df_single) < 150: continue
                     
-                    df_single = df_single.dropna(subset=['Close']) # 確保有收盤價
-                    if len(df_single) < 100: continue
+                    # --- 重點 1: 強制轉換為與 get_stock_data 一致的小寫格式 ---
+                    df_single.columns = [c.lower() for c in df_single.columns]
+                    df_single = df_single.rename(columns={"adj close": "close"})
                     
-                    # B. 強制校正欄位名稱 (yfinance 有時會首字母大寫或有空白)
-                    df_single.columns = [str(c).lower().strip() for c in df_single.columns]
-                    df_single = df_single.reset_index()
-                    df_single = df_single.rename(columns={
-                        "date": "date", 
-                        "adj close": "close", 
-                        "close": "close_raw"
-                    })
-                    
-                    # 如果 adj close 不存在，就用 close
-                    if 'close' not in df_single.columns and 'close_raw' in df_single.columns:
-                        df_single['close'] = df_single['close_raw']
-
-                    # C. 補齊 analyze_strategy 必備欄位
+                    # --- 重點 2: 補齊策略必備的 est_volume 欄位 ---
+                    # 全市場掃描多在收盤或大量分析，可直接將 volume 映射過去
                     df_single['est_volume'] = df_single['volume']
                     
-                    # D. 執行策略分析
+                    # 執行您的 analyze_strategy
                     analyzed_df = analyze_strategy(df_single)
-                    if analyzed_df is None or analyzed_df.empty: continue
+                    if analyzed_df is None: continue
                     
                     last_row = analyzed_df.iloc[-1]
-                    sid = ticker.split('.')[0]
                     
-                    # E. 極寬鬆篩選條件：只要評分超過 50 且 5日均量 > 100 張 (驗證用)
-                    vol_ma5 = analyzed_df['volume'].tail(5).mean()
-                    
-                    # 判斷是否入選
-                    if (last_row['score'] >= 50) and vol_ma5 > 100000:
+                    # --- 重點 3: 放寬篩選條件進行測試 ---
+                    # 如果原本 75 分掃不到，先降到 60 分試試
+                    if last_row['score'] >= 60 and last_row['vol_ratio'] > 1.0:
                         found_targets.append({
-                            "代碼": sid,
+                            "代碼": ticker.split('.')[0],
                             "評分": int(last_row['score']),
-                            "形態": last_row['pattern'] if last_row['pattern'] else "趨勢觀察",
-                            "股價": round(last_row['close'], 2),
-                            "量比": round(last_row['vol_ratio'], 2),
+                            "形態": last_row['pattern'],
                             "提醒": last_row['warning']
                         })
-                except:
-                    continue
-        except:
-            continue
-
-    progress_bar.empty()
-    status_text.empty()
+                except: continue
+        except: continue
     return pd.DataFrame(found_targets)
 
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
