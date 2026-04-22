@@ -575,44 +575,42 @@ if not st.session_state.first_sync_done:
 # --- 7.5 搜尋所有股票 ---
 def screen_stocks(use_kd=False, max_pct=5.0, min_vol=500):
     """
-    選股邏輯：
-    1. 股價 > 20MA (月線)
-    2. 股價 > 200MA (近似 40週 MA)
-    3. 5MA < 10MA (糾結位階)
-    4. 成交量 > 使用者定義張數 (min_vol)
-    5. 今日漲幅 < 使用者定義上限 (max_pct)
-    6. (可選) KD 金叉
+    選股邏輯：120天走勢、20MA以上、40週MA以上、5MA<10MA、量能與漲幅篩選
     """
     all_tw_stocks = twstock.codes
-    # 篩選上市櫃股票
     target_list = [sid for sid, info in all_tw_stocks.items() 
                    if info.type == '股票' and (info.market in ['上市', '上櫃'])]
     
-    # 轉換 yfinance 格式
+    # 轉換 yfinance 格式 (台股後綴 .TW 或 .TWO)
     yf_symbols = [f"{sid}.TW" if all_tw_stocks[sid].market == '上市' else f"{sid}.TWO" for sid in target_list]
     
-    # 批次下載數據 (過去 250 天)
+    # 下載數據
     data = yf.download(yf_symbols, period="250d", interval="1d", group_by='ticker', threads=True)
     
-    selected_list = []
+    found_targets = []
+    total_count = len(target_list)
     
-    # 建立進度條
+    # --- 建立動態進度顯示器 ---
     progress_bar = st.progress(0)
-    total = len(target_list)
-
+    status_text = st.empty() # 用於顯示 🚀 正在分析 (120/1750): 掃描出 5 檔
+    
     for i, sid in enumerate(target_list):
-        # 更新進度條
-        progress_bar.progress((i + 1) / total)
+        # 更新即時進度狀態
+        current_num = i + 1
+        found_num = len(found_targets)
+        status_text.markdown(f"🚀 **正在分析 ({current_num}/{total_count}): 掃描出 {found_num} 檔**")
+        progress_bar.progress(current_num / total_count)
         
         ticker = f"{sid}.TW" if all_tw_stocks[sid].market == '上市' else f"{sid}.TWO"
         if ticker not in data.columns.get_level_values(0): continue
         
         df = data[ticker].dropna()
-        if len(df) < 200: continue
+        if len(df) < 200: continue # 確保有足夠數據計算 40週(200日) MA
             
-        last_close = df['Close'].iloc[-1]
-        prev_close = df['Close'].iloc[-2]
-        vol_today = df['Volume'].iloc[-1] / 1000  # 換算成張
+        curr_price = df['Close'].iloc[-1]
+        prev_price = df['Close'].iloc[-2]
+        vol_today = df['Volume'].iloc[-1] / 1000  # 換算張數
+        change_pct = ((curr_price - prev_price) / prev_price) * 100
         
         # 移動平均線
         ma5 = df['Close'].rolling(5).mean().iloc[-1]
@@ -620,22 +618,19 @@ def screen_stocks(use_kd=False, max_pct=5.0, min_vol=500):
         ma20 = df['Close'].rolling(20).mean().iloc[-1]
         ma200 = df['Close'].rolling(200).mean().iloc[-1]
         
-        # 漲幅
-        pct_change = ((last_close - prev_close) / prev_close) * 100
-        
-        # --- 篩選條件 ---
-        c1 = last_close > ma20
-        c2 = last_close > ma200
+        # 篩選條件
+        c1 = curr_price > ma20
+        c2 = curr_price > ma200
         c3 = ma5 < ma10
-        c4 = vol_today >= min_vol # 使用手動填寫的張數
-        c5 = pct_change < max_pct # 使用手動填寫的漲幅上限
+        c4 = vol_today >= min_vol
+        c5 = change_pct < max_pct 
         
-        # 出量偵測 (前2~3天突然出現 > 1倍以上的量)
-        is_vol_boost = False
-        for j in range(-3, 0): # 檢查當天、前一天、前二天
+        # 出量定義：回溯前2~3天突然出現>2倍以上的量
+        is_volume_burst = False
+        for j in range(-3, 0): 
             prev_v = df['Volume'].iloc[j-1]
             if prev_v > 0 and (df['Volume'].iloc[j] / prev_v) >= 2.0:
-                is_vol_boost = True
+                is_volume_burst = True
                 break
 
         # KD 篩選
@@ -646,21 +641,28 @@ def screen_stocks(use_kd=False, max_pct=5.0, min_vol=500):
             rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
             k = rsv.ewm(com=2).mean()
             d = k.ewm(com=2).mean()
-            # K 向上突破 D
             kd_pass = k.iloc[-1] > d.iloc[-1] and k.iloc[-2] <= d.iloc[-2]
 
         if all([c1, c2, c3, c4, c5, kd_pass]):
-            score = 70 if is_vol_boost else 60
-            selected_list.append({
-                "代碼": sid,
-                "名稱": all_tw_stocks[sid].name,
+            # 評分邏輯
+            score = 80 if is_volume_burst else 65
+            name = all_tw_stocks[sid].name
+            
+            # 使用您要求的欄位格式
+            found_targets.append({
+                "追蹤": False, 
+                "股價代號": sid,
+                "股價名稱": name,
                 "評分": score,
-                "股價": round(last_close, 2),
-                "出量": "🔥 是" if is_vol_boost else "否"
+                "股價": round(curr_price, 2),
+                "漲幅%": round(change_pct, 2),
+                "出量": "✅ 是" if is_volume_burst else "—"
             })
             
-    progress_bar.empty() # 完成後移除進度條
-    return pd.DataFrame(selected_list)
+    # 掃描結束，清除進度顯示
+    progress_bar.empty()
+    status_text.empty()
+    return pd.DataFrame(found_targets)
 
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
 with st.sidebar:
@@ -963,25 +965,36 @@ else:
 
 # === 修正後的選股顯示區塊 (請確保這行 if 與下方的 placeholder 平行) ===
 if run_screen:
-    st.subheader("📋 符合條件股票清單")
-    with st.spinner("正在掃描全市場股票 (使用 yfinance 批次處理)..."):
-        # 傳入 sidebar 設定的變數
-        results_df = screen_stocks(use_kd=use_kd_val, max_pct=max_pct, min_vol=min_vol)
+    st.divider()
+    st.subheader("📋 符合條件股票清單 (手動篩選區)")
+    
+    results_df = screen_stocks(use_kd=use_kd_val, max_pct=max_pct, min_vol=min_vol)
+    
+    if not results_df.empty:
+        st.info("💡 請在表格第一欄點擊勾選想要追蹤的標的，完成後手動複製代碼至左側『🎯 狙擊清單』。")
         
-        if not results_df.empty:
-            st.write("勾選後代碼會出現在下方，您可以自行複製到狙擊清單：")
-            
-            results_df.insert(0, "加入追蹤", False)
-            edited_df = st.data_editor(
-                results_df,
-                column_config={"加入追蹤": st.column_config.CheckboxColumn(default=False)},
-                disabled=["代碼", "名稱", "評分", "股價", "出量"],
-                hide_index=True,
-                key="stock_selector_table"
-            )
-            
-            selected_codes = edited_df[edited_df["加入追蹤"] == True]["代碼"].tolist()
-            if selected_codes:
-                st.success(f"已選取代碼: `{', '.join(selected_codes)}`")
-        else:
-            st.warning("符合條件的股票目前為 0，請調整篩選條件。")
+        # 使用 data_editor 呈現表格
+        edited_df = st.data_editor(
+            results_df,
+            column_config={
+                "追蹤": st.column_config.CheckboxColumn(help="勾選欲追蹤的標的", default=False),
+                "股價代號": st.column_config.TextColumn(disabled=True),
+                "股價名稱": st.column_config.TextColumn(disabled=True),
+                "評分": st.column_config.NumberColumn(disabled=True),
+                "股價": st.column_config.NumberColumn(disabled=True),
+                "漲幅%": st.column_config.NumberColumn(disabled=True),
+                "出量": st.column_config.TextColumn(disabled=True),
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="stock_selector_main"
+        )
+        
+        # 顯示勾選結果
+        selected_codes = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
+        if selected_codes:
+            code_string = ", ".join(selected_codes)
+            st.success(f"✅ 您已勾選: `{code_string}`")
+            st.code(code_string, language="text") # 提供一個代碼區塊方便一鍵複製
+    else:
+        st.warning("未找到符合條件的股票，建議放寬漲幅限制或張數門檻。")
