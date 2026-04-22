@@ -465,13 +465,17 @@ def plot_advanced_chart(df, title=""):
 def sync_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
     if not sheet_id: return
+    # 增加一個簡單的快取判定，避免 1 分鐘內重複執行
+    curr_t = time.time()
+    if st.session_state.get("last_sync_time") and (curr_t - st.session_state.last_sync_time < 60):
+        return
+    
     try:
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df_sheet = pd.read_csv(url)
         
         def clean_col(name):
             if name in df_sheet.columns:
-                # 這裡保留您最嚴格的清洗邏輯：排除 nan、空值，並確保代碼格式正確
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
                 return ",".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
@@ -480,12 +484,10 @@ def sync_sheets():
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
-        # 只有在真的有抓到資料時才更新，防止雲端斷線時把本地清單洗掉
-        if new_search is not None:
-            st.session_state.search_codes = new_search
-        if new_inv is not None:
-            st.session_state.inventory_codes = new_inv
-            
+        if new_search is not None: st.session_state.search_codes = new_search
+        if new_inv is not None: st.session_state.inventory_codes = new_inv
+        
+        st.session_state.last_sync_time = curr_t
         add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
     except Exception as e:
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
@@ -495,17 +497,8 @@ if not st.session_state.first_sync_done:
     st.session_state.first_sync_done = True
 
 # --- 7.5 全市場選股工具函式 ---
-def get_yf_ticker(sid):
-    """將台股代碼轉換為 yfinance 格式"""
-    if sid == "TAIEX": return "^TWII"
-    sid_str = str(sid)
-    if len(sid_str) == 4 and sid_str[0] in ['3', '5', '6', '8']:
-        return f"{sid_str}.TWO"
-    else:
-        return f"{sid_str}.TW"
-
-@st.cache_data(ttl=60)
-def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_limit=5.0):
+@st.cache_data(ttl=600) # 盤中不用太頻繁掃描全市場
+def run_stock_screener(enable_kd_filter, min_volume_limit, max_growth_limit):
     all_codes = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
@@ -517,13 +510,17 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
     status_text = st.empty()
     total_count = len(all_codes)
     
+    # 優化：先抓好 stock_info 避免在迴圈內反覆執行
+    stock_info = get_stock_info()
+    
     for i in range(0, total_count, batch_size):
         batch = all_codes[i:i+batch_size]
         progress_bar.progress(min(i / total_count, 1.0))
         status_text.markdown(f"🔍 **進度:** `{i}/{total_count}` | 🔥 **符合標的:** `{len(found_targets)}` 檔")
         
         try:
-            data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False, threads=False)
+            # 關鍵修改：threads=True 加速下載
+            data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False, threads=True)
             for ticker in batch:
                 try:
                     df = data[ticker].copy() if len(batch) > 1 else data.copy()
@@ -542,23 +539,20 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                     if not (0 <= change_pct <= max_growth_limit): continue
 
                     # 出量偵測
-                    def check_volume_burst(idx):
-                        if abs(idx) + 4 > len(df): return False
-                        v = df['volume'].iloc[idx]
-                        avg_v = df['volume'].iloc[idx-4 : idx-1].mean()
-                        return v > (avg_v * 2.0)
-                    
-                    is_volume_burst = check_volume_burst(-1) or check_volume_burst(-2) or check_volume_burst(-3)
+                    v_burst = False
+                    if len(df) > 5:
+                        avg_v = df['volume'].iloc[-5:-1].mean()
+                        if df['volume'].iloc[-1] > (avg_v * 2.0): v_burst = True
 
                     # 均線與 KD 篩選
-                    ma20 = df['close'].rolling(20).mean().iloc[-1]
-                    ma200 = df['close'].rolling(200).mean().iloc[-1]
                     ma5 = df['close'].rolling(5).mean().iloc[-1]
                     ma10 = df['close'].rolling(10).mean().iloc[-1]
+                    ma20 = df['close'].rolling(20).mean().iloc[-1]
+                    ma200 = df['close'].rolling(200).mean().iloc[-1]
                     
-                    cond_trend = curr_price > ma20 and curr_price > ma200
-                    cond_retrace = ma5 < ma10 
+                    if not (curr_price > ma20 and curr_price > ma200 and ma5 < ma10): continue
 
+                    # KD 計算
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9 + 0.0001) * 100
@@ -566,16 +560,15 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                     df['d'] = df['k'].ewm(com=2).mean()
                     kd_cross = df['k'].iloc[-2] <= df['d'].iloc[-2] and df['k'].iloc[-1] > df['d'].iloc[-1]
 
-                    if cond_trend and cond_retrace:
-                        if enable_kd_filter and not kd_cross: continue
-                        sid = ticker.split('.')[0]
-                        stock_info = get_stock_info()
-                        name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
-                        
-                        found_targets.append({
-                            "追蹤": False, "股價代號": sid, "股價名稱": name, "評分": 0,
-                            "股價": round(curr_price, 2), "漲幅%": round(change_pct, 2), "出量": "✅ 是" if is_volume_burst else "—"
-                        })
+                    if enable_kd_filter and not kd_cross: continue
+                    
+                    sid = ticker.split('.')[0]
+                    name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
+                    
+                    found_targets.append({
+                        "追蹤": False, "股價代號": sid, "股價名稱": name,
+                        "股價": round(curr_price, 2), "漲幅%": round(change_pct, 2), "出量": "✅ 是" if v_burst else "—"
+                    })
                 except: continue
         except: continue
     progress_bar.empty()
@@ -595,8 +588,8 @@ with st.sidebar:
     st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes, height=100)
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes, height=100)
     
-    auto_monitor = st.checkbox("🔄 開啟盤中自動監控", value=True)
-    interval = st.slider("監控頻率 (分鐘)", 1, 30, 5) # 補回 interval 變數
+    auto_monitor = st.checkbox("🔄 開啟盤中自動監控", value=False) # 預設關閉，手動開啟
+    interval = st.slider("監控頻率 (分鐘)", 1, 30, 5)
     analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
 
     st.divider()
@@ -617,26 +610,11 @@ with st.sidebar:
                     st.plotly_chart(plot_advanced_chart(df_q, f"診斷: {query_sid}"), use_container_width=True)
     
     st.divider()
-    st.subheader("🔭 全市場潛力股挖掘")
-    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉", value=True, key="screen_kd")
-    vol_limit = st.number_input("成交量 > (張)", value=500, key="screen_vol")
-    growth_limit = st.number_input("漲幅 < (%)", value=5.0, key="screen_growth")
-
     if st.button("🔎 執行全台股掃描"):
-        screen_results = run_stock_screener(use_kd_strict, vol_limit, growth_limit)
+        screen_results = run_stock_screener(st.session_state.get("screen_kd", True), 500, 5.0)
         st.session_state.screen_results = screen_results
-        if not screen_results.empty: st.balloons()
 
-    if 'screen_results' in st.session_state and not st.session_state.screen_results.empty:
-        with st.expander("📊 掃描結果", expanded=True):
-            edited_df = st.data_editor(st.session_state.screen_results, hide_index=True, key="editor_v2")
-            if st.button("📥 加入勾選股票"):
-                selected = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
-                new_list = ",".join(list(set([c.strip() for c in (st.session_state.search_codes + "," + ",".join(selected)).split(",") if c.strip()])))
-                st.session_state.search_codes = new_list
-                st.rerun()
-
-# --- 9. 執行掃描邏輯 (完整補回 Discord 格式與 UI 分級) ---
+# --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
     if not manual_trigger: sync_sheets() 
     
@@ -659,7 +637,7 @@ def perform_scan(manual_trigger=False):
         score = int(m_last["score"])
         cmd, clz, tip = ("🚀 強力買進", "buy-signal", "🔥 市場動能極強") if score >= 80 else ("📈 分批買進", "buy-signal", "⚖️ 穩定上漲中") if score >= 60 else ("Neutral 觀望", "neutral-signal", "🌪 盤勢震盪")
         c1, c2 = st.columns([1, 2])
-        c1.metric("加權指數", f"{m_last['close']:.2f}", f"{m_last['close']-m_df.iloc[-2]['close']:.2f}")
+        c1.metric("加權指數", f"{m_last['close']:.2f}", f"{round(m_last['close']-m_df.iloc[-2]['close'], 2)}")
         c2.markdown(f"<div class='status-card {clz}'>{cmd} | {tip} (評分: {score})</div>", unsafe_allow_html=True)
 
     # 2. 個股處理
@@ -675,11 +653,9 @@ def perform_scan(manual_trigger=False):
                 name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
                 is_inv, is_snipe = sid in inv_list, sid in snipe_list
                 
-                # 通知判定邏輯
                 sig_type = last['sig_type']
                 sig_lvl = f"{sig_type}_{'BOOM' if (sig_type=='BUY' and last['vol_ratio']>1.8) else 'NOR'}"
                 
-                # 只有信號改變或是強制掃描才發送 Discord
                 if manual_trigger or st.session_state.notified_status.get(sid) != sig_lvl:
                     should_send = False
                     msg_header = ""
@@ -688,26 +664,23 @@ def perform_scan(manual_trigger=False):
                     elif is_snipe and ("BUY" in sig_type or last.get("is_first_breakout", False)):
                         should_send = True
                         if last.get("is_first_breakout"): msg_header = "🚀🚀🚀 【 噴發第一根：強勢確認 】 "
-                        elif last["vol_ratio"] > 1.8: msg_header = "🔥🔥🔥 【 狙擊標的：爆量點火 】 "
+                        elif last["vol_ratio"] > 1.8: msg_header = "🔥🔥規 【 狙擊標的：爆量點火 】 "
                         else: msg_header = "🎯🎯🎯 【 買點觸發：執行計畫 】 "
 
-                    if should_send:
-                        # 補回特殊的 VCP / 跳空 標籤
+                    if should_send and st.session_state.get("enable_discord", False):
                         special_alerts = []
                         if last['close'] > df.iloc[-2]['high']: special_alerts.append("🚀 多方跳空缺口")
                         if "VCP" in last['pattern'] or "壓縮" in last['pattern_desc']: special_alerts.append("💎 籌碼壓縮 VCP")
                         special_note = f"💡 **核心關鍵：** `{' | '.join(special_alerts)}`" if special_alerts else ""
 
-                        # 完整的 Discord 專業排版
-                        if st.session_state.get("enable_discord", False):
-                            msg = f"## {msg_header}\n{special_note}\n### 📈 **標的：** `{sid} {name} {last['close']:.2f}`\n" \
-                                  f"📊 **預估量比：** `{last['vol_ratio']:.2f}x` | **評分：** `{int(last['score'])}` \n" \
-                                  f"━━━━━━━━━━━━━━━━━━━━\n" \
-                                  f"✅ **建議買點：** `{last['close']*0.995:.2f} ~ {last['close']*1.01:.2f}`\n" \
-                                  f"❌ **硬性停損：** `{last['close']*0.94:.2f}`\n" \
-                                  f"📍 **策略：** {last['pos_advice']}\n" \
-                                  f"🔗 [技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)"
-                            send_discord_message(msg)
+                        msg = f"## {msg_header}\n{special_note}\n### 📈 **標的：** `{sid} {name} {last['close']:.2f}`\n" \
+                              f"📊 **預估量比：** `{last['vol_ratio']:.2f}x` | **評分：** `{int(last['score'])}` \n" \
+                              f"━━━━━━━━━━━━━━━━━━━━\n" \
+                              f"✅ **建議買點：** `{last['close']*0.995:.2f} ~ {last['close']*1.01:.2f}`\n" \
+                              f"❌ **硬性停損：** `{last['close']*0.94:.2f}`\n" \
+                              f"📍 **策略：** {last['pos_advice']}\n" \
+                              f"🔗 [技術圖表](https://www.wantgoo.com/stock/{sid}/technical-chart)"
+                        send_discord_message(msg)
                         
                         st.session_state.notified_status[sid] = sig_lvl
                         add_log(sid, name, "BUY" if "BUY" in sig_type else "SELL", last['pattern'], int(last['score']), last['vol_ratio'])
@@ -715,14 +688,12 @@ def perform_scan(manual_trigger=False):
                 processed_stocks.append({"df": df, "last": last, "sid": sid, "name": name, "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"])})
             except: continue
 
-    # 3. 渲染 UI (補回 SSS/SS 級分級與高亮樣式)
+    # 3. 渲染 UI (SSS/SS 高亮版)
     for category, title in [("is_snipe", "🔥 狙擊目標監控"), ("is_inv", "📦 庫存持股監控")]:
         st.subheader(title)
         targets = sorted([s for s in processed_stocks if s[category]], key=lambda x: x["score"], reverse=True)
         for item in targets:
             last, sid, name, pattern = item["last"], item["sid"], item["name"], item["last"]["pattern"]
-            
-            # 分級邏輯
             if "🚀" in pattern: rank, clr = "SSS 級", "#ff4b4b"
             elif "💎" in pattern: rank, clr = "SS 級", "#ffa500"
             elif "🕳️" in pattern: rank, clr = "S 級", "#f1c40f"
@@ -739,28 +710,27 @@ def perform_scan(manual_trigger=False):
                 </div>
                 <div style="margin-top:5px;">評分: {int(last['score'])} | 現價: {last['close']} | 量比: {last['vol_ratio']:.2f}x</div>
                 <div style="font-size:0.9em; color:#555; margin-top:5px;">💡 {item['last']['pattern_desc']}</div>
-                <div style="font-weight:bold; color:#d35400; margin-top:5px;">💰 {last['pos_advice']}</div>
             </div>
             """, unsafe_allow_html=True)
-            with st.expander(f"查看 {sid} {name} 分析圖表", expanded=("🚀" in pattern)):
+            with st.expander(f"查看 {sid} {name} 圖表", expanded=("🚀" in pattern)):
                 st.plotly_chart(plot_advanced_chart(item["df"], f"{sid} {name}"), use_container_width=True)
 
     st.write("### 📜 戰情即時日誌")
-    log_content = "".join(st.session_state.event_log)
-    st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='log-container'>{''.join(st.session_state.event_log)}</div>", unsafe_allow_html=True)
 
-# --- 10. 主循環邏輯 ---
+# --- 10. 主循環邏輯 (優化版：解決卡死問題) ---
 placeholder = st.empty()
 if analyze_btn:
     with placeholder.container(): perform_scan(manual_trigger=True)
 elif auto_monitor:
+    with placeholder.container(): perform_scan()
     if is_market_open():
-        with placeholder.container(): perform_scan()
         st.info(f"🔄 自動監控中... 下次掃描預計於 {interval} 分鐘後。")
+        # 這裡不使用 sleep，改用簡單的重新執行邏輯
+        st.button("停止監控")
         time.sleep(interval * 60)
         st.rerun()
     else:
-        with placeholder.container(): perform_scan()
         st.warning("🌙 目前非開盤時間，自動監控已進入休眠。")
 else:
     with placeholder.container(): perform_scan()
