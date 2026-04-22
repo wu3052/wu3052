@@ -548,15 +548,6 @@ def get_yf_ticker(sid):
 
 @st.cache_data(ttl=3600)
 def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
-    """
-    全台股掃描 - 嚴格進階版
-    條件：
-    1. 股價 > 20MA 且 > 40週線(200MA)
-    2. 5MA < 10MA (短線回檔)
-    3. 成交量 > 500張
-    4. KD值：9K 向上突破 9D (日)
-    5. 出量定義：當日量 > 前2-3天平均量 1 倍以上 (量縮後突發量)
-    """
     all_codes = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
@@ -565,19 +556,18 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
     found_targets = []
     batch_size = 50 
     progress_bar = st.progress(0)
-    status_text = st.empty()
     
     for i in range(0, len(all_codes), batch_size):
         batch = all_codes[i:i+batch_size]
         progress_bar.progress(min(i / len(all_codes), 1.0))
-        status_text.caption(f"正在深度分析第 {i} 檔，已找到 {len(found_targets)} 檔符合條件標的...")
         
         try:
-            # 抓取 1 年數據以確保均線與 KD 計算準確
+            # 抓取 1 年數據
             data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
+                    # 判斷 MultiIndex 格式
                     if len(batch) > 1:
                         if ticker not in data or data[ticker].empty: continue
                         df = data[ticker].copy()
@@ -585,22 +575,22 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
                         df = data.copy()
                     
                     df = df.dropna(subset=['Close'])
-                    if len(df) < 200: continue
+                    if len(df) < 100: continue
                     
-                    # 統一格式
+                    # 統一欄位小寫化
                     df.columns = [str(c).lower().strip() for c in df.columns]
                     df = df.rename(columns={"adj close": "close"})
+                    if 'close' not in df.columns: df['close'] = df['close'] # yfinance fallback
 
-                    # --- 1. 成交量過濾 (當日須 > 指定張數) ---
+                    # --- 1. 成交量過濾 (張數) ---
                     curr_vol = df['volume'].iloc[-1]
                     if curr_vol < (min_volume_limit * 1000): continue
 
-                    # --- 2. 出量定義 (量縮後突然出現 > 1倍以上的量) ---
-                    # 計算前 2~3 天的平均成交量
+                    # --- 2. 出量定義 (今天比前2-3天均量翻倍) ---
                     prev_vols_avg = df['volume'].iloc[-4:-1].mean()
-                    is_volume_burst = curr_vol > (prev_vols_avg * 2.0) # 當日量 > 前幾日均量 2 倍(即增長1倍以上)
+                    is_volume_burst = curr_vol > (prev_vols_avg * 2.0)
 
-                    # --- 3. 計算均線條件 ---
+                    # --- 3. 均線條件 ---
                     ma20 = df['close'].rolling(20).mean().iloc[-1]
                     ma200 = df['close'].rolling(200).mean().iloc[-1]
                     ma5 = df['close'].rolling(5).mean().iloc[-1]
@@ -608,35 +598,34 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
                     curr_price = df['close'].iloc[-1]
 
                     cond_trend = curr_price > ma20 and curr_price > ma200
-                    cond_retrace = ma5 < ma10 # 短線修正中
+                    cond_retrace = ma5 < ma10 
 
-                    # --- 4. 計算 KD 值 (9, 3, 3) ---
+                    # --- 4. KD 計算 ---
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
-                    df['k'] = rsv.ewm(com=2).mean() # 9K
-                    df['d'] = df['k'].ewm(com=2).mean() # 9D
+                    df['k'] = rsv.ewm(com=2).mean()
+                    df['d'] = df['k'].ewm(com=2).mean()
                     
                     k_today, d_today = df['k'].iloc[-1], df['d'].iloc[-1]
                     k_yesterday, d_yesterday = df['k'].iloc[-2], df['d'].iloc[-2]
-                    
-                    # KD 金叉條件
                     kd_cross = k_yesterday <= d_yesterday and k_today > d_today
 
-                    # --- 總合判斷 ---
-                    # 基礎：趨勢多頭 + 短線回測
-                    # 嚴格勾選：KD金叉 (若開啟)
                     if cond_trend and cond_retrace:
                         if enable_kd_filter and not kd_cross: continue
                         
                         sid = ticker.split('.')[0]
                         stock_info = get_stock_info()
-                        name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
+                        # 取得名稱，若失敗顯示代碼
+                        try:
+                            name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0]
+                        except:
+                            name = "未知"
                         
-                        # 執行原本策略獲取綜合評分
+                        # 評分系統相容性處理
                         df['est_volume'] = df['volume']
                         analyzed_df = analyze_strategy(df)
-                        score = int(analyzed_df.iloc[-1]['score']) if analyzed_df is not None else 0
+                        score = int(analyzed_df.iloc[-1]['score']) if (analyzed_df is not None and not analyzed_df.empty) else 0
 
                         found_targets.append({
                             "股價代號": sid,
@@ -649,7 +638,9 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
         except: continue
 
     progress_bar.empty()
-    status_text.empty()
+    # 重要：如果沒結果，回傳一個包含正確欄位的空 DataFrame
+    if not found_targets:
+        return pd.DataFrame(columns=["股價代號", "股價名稱", "評分", "股價", "出量"])
     return pd.DataFrame(found_targets)
     
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
@@ -719,19 +710,29 @@ with st.sidebar:
                 st.warning("查無符合條件的股票，建議取消 KD 嚴格模式再試一次。")
 
     # 如果有結果，顯示表格
-    if 'screen_results' in st.session_state and st.session_state.screen_results is not None:
+    if 'screen_results' in st.session_state:
         with st.expander("📊 查看選股結果", expanded=True):
-            res_df = st.session_state.screen_results.sort_values(by="評分", ascending=False)
-            # 依照你的要求顯示欄位
-            st.dataframe(res_df[["股價代號", "股價名稱", "評分", "股價", "出量"]], use_container_width=True)
+            res_df = st.session_state.screen_results
             
-            # 提供複製代碼功能
-            top_codes = ",".join(res_df['股價代號'].astype(str).tolist())
-            if st.button("📋 將結果加入狙擊清單"):
-                current_codes = st.session_state.get('search_codes', "")
-                st.session_state.search_codes = f"{current_codes}\n{top_codes}".strip()
-                st.success("已成功匯入！")
-                st.rerun()
+            if not res_df.empty:
+                # 再次檢查欄位是否存在，防止 KeyError
+                cols_to_show = ["股價代號", "股價名稱", "評分", "股價", "出量"]
+                actual_cols = [c for c in cols_to_show if c in res_df.columns]
+                
+                # 依照評分排序
+                res_df = res_df.sort_values(by="評分", ascending=False)
+                
+                st.dataframe(res_df[actual_cols], use_container_width=True)
+                
+                # 快速加入按鈕
+                top_codes = ",".join(res_df['股價代號'].astype(str).tolist())
+                if st.button("📋 加入狙擊清單"):
+                    current = st.session_state.get('search_codes', "")
+                    st.session_state.search_codes = f"{current}\n{top_codes}".strip()
+                    st.success(f"已加入 {len(res_df)} 檔標的")
+                    st.rerun()
+            else:
+                st.write("目前無符合所有條件之標的。")
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
