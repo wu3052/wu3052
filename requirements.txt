@@ -6,3 +6,4 @@ plotly
 twstock
 google-generativeai
 scipy
+yfinance
