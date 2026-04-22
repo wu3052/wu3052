@@ -550,28 +550,28 @@ def sync_sheets():
     if not sheet_id: return
     
     try:
-        # --- 修改點：讀取原本的試算表 ---
-        # 建議在試算表中使用公式 =INDEX('表單回覆 1'!B:B, COUNTA('表單回覆 1'!B:B)) 
-        # 將最新清單連動到原本的 'snipe_list' 欄位，這樣這段程式碼就不必大改
+        # --- 讀取原本的試算表 ---
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df_sheet = pd.read_csv(url)
         
-       def clean_col(name):
+        # 這裡縮排 8 個空格
+        def clean_col(name):
             if name in df_sheet.columns:
-                # 抓取該欄位所有內容
+                # 這裡縮排 12 個空格
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
                 
                 # 將所有格子內容合併（這會包含你 A2 公式那一長串）
                 combined_str = ",".join(valid_series)
                 
-                # 【關鍵】統一將空格、換行換成逗號，再根據逗號拆開，最後去除重複
+                # 統一將空格、換行換成逗號，再根據逗號拆開，最後去除重複
                 all_codes = re.split(r'[,\s\n]+', combined_str)
                 unique_codes = sorted(list(set([c.strip() for c in all_codes if c.strip()])))
                 
                 return ",".join(unique_codes)
             return None
-           
+            
+        # 執行 clean_col 函式，縮排回 8 個空格
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
