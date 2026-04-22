@@ -556,21 +556,22 @@ def sync_sheets():
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df_sheet = pd.read_csv(url)
         
-        def clean_col(name):
+       def clean_col(name):
             if name in df_sheet.columns:
-                # 1. 抓取該欄位所有有內容的格子（包括 A2 的公式結果和 A3 以下的舊代碼）
+                # 抓取該欄位所有內容
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
                 
-                # 2. 這是關鍵：將所有格子合併起來
-                # 如果 A2 是 "2330,2317"，A3 是 "6129"，合併後會變成 "2330,2317,6129"
-                full_string = ",".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
+                # 將所有格子內容合併（這會包含你 A2 公式那一長串）
+                combined_str = ",".join(valid_series)
                 
-                # 3. 再次格式化：把可能出現的空格換成逗號，並去掉多餘逗號
-                clean_string = full_string.replace(" ", ",").replace(",,", ",")
-                return clean_string
+                # 【關鍵】統一將空格、換行換成逗號，再根據逗號拆開，最後去除重複
+                all_codes = re.split(r'[,\s\n]+', combined_str)
+                unique_codes = sorted(list(set([c.strip() for c in all_codes if c.strip()])))
+                
+                return ",".join(unique_codes)
             return None
-
+           
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
