@@ -548,9 +548,9 @@ def get_yf_ticker(sid):
 
 @st.cache_data(ttl=3600)
 def run_stock_screener():
-    """執行全台股掃描 - 強化格式相容版"""
-    all_codes = [] # 確保變數在此定義
-    # 1. 取得所有上市櫃股票代碼
+    """執行全台股掃描 - 依照用戶自訂條件：長線多頭+短線回檔"""
+    all_codes = []
+    # 1. 取得所有代碼
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
             all_codes.append(get_yf_ticker(code))
@@ -560,57 +560,60 @@ def run_stock_screener():
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # 確保 all_codes 存在後再進入迴圈
     for i in range(0, len(all_codes), batch_size):
         batch = all_codes[i:i+batch_size]
         progress_bar.progress(min(i / len(all_codes), 1.0))
         status_text.caption(f"正在分析第 {i} 檔，目前已找到 {len(found_targets)} 檔符合條件標的...")
         
         try:
-            # yfinance 批量下載
-            data = yf.download(batch, period="8mo", interval="1d", group_by='ticker', progress=False)
+            # yfinance 下載 (需抓取至少 200 個交易日以計算 40 週線)
+            data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
-                    # 提取單一股票資料
                     if len(batch) > 1:
                         if ticker not in data or data[ticker].empty: continue
-                        df_single = data[ticker].copy()
+                        df = data[ticker].copy()
                     else:
-                        df_single = data.copy()
+                        df = data.copy()
                     
-                    df_single = df_single.dropna(subset=['Close']) 
-                    if len(df_single) < 120: continue
+                    df = df.dropna(subset=['Close'])
+                    if len(df) < 200: continue # 確保有足夠數據算 40 週線
                     
-                    # --- 重要：強制轉換欄位名稱為小寫，以符合 analyze_strategy ---
-                    df_single.columns = [str(c).lower().strip() for c in df_single.columns]
-                    df_single = df_single.reset_index()
-                    df_single = df_single.rename(columns={"date": "date", "adj close": "close"})
+                    # 統一欄位名稱
+                    df.columns = [str(c).lower().strip() for c in df.columns]
+                    df = df.rename(columns={"adj close": "close"})
                     
-                    # 如果沒有 adj close，則使用一般的 close
-                    if 'close' not in df_single.columns and 'close' in df_single.columns:
-                        pass # 已正確映射
+                    # --- 計算你的篩選條件 ---
+                    # 1. 20日 MA (月線)
+                    ma20 = df['close'].rolling(20).mean().iloc[-1]
+                    # 2. 40週 MA (約 200 日線)
+                    ma200 = df['close'].rolling(200).mean().iloc[-1]
+                    # 3. 5日與 10日 MA
+                    ma5 = df['close'].rolling(5).mean().iloc[-1]
+                    ma10 = df['close'].rolling(10).mean().iloc[-1]
                     
-                    # --- 重要：補齊策略分析所需的預估成交量欄位 ---
-                    df_single['est_volume'] = df_single['volume']
+                    curr_price = df['close'].iloc[-1]
                     
-                    # 執行您的核心策略分析
-                    analyzed_df = analyze_strategy(df_single)
-                    if analyzed_df is None or analyzed_df.empty: continue
+                    # --- 條件判斷邏輯 ---
+                    cond1 = curr_price > ma20     # 股價 > 20日MA
+                    cond2 = curr_price > ma200    # 股價 > 40週MA (200日)
+                    cond3 = ma5 < ma10            # 5日MA < 10日MA (短線修正)
                     
-                    last_row = analyzed_df.iloc[-1]
-                    sid = ticker.split('.')[0]
-                    
-                    # 篩選條件：評分 > 65 且 5日均量 > 200張
-                    vol_ma5 = analyzed_df['volume'].tail(5).mean()
-                    if (last_row['score'] >= 65) and vol_ma5 > 200000:
+                    if cond1 and cond2 and cond3:
+                        sid = ticker.split('.')[0]
+                        # 為了相容你的主介面，這裡也執行一次 analyze_strategy 獲取評分
+                        df['est_volume'] = df['volume']
+                        analyzed_df = analyze_strategy(df)
+                        score = int(analyzed_df.iloc[-1]['score']) if analyzed_df is not None else 0
+                        
                         found_targets.append({
                             "代碼": sid,
-                            "評分": int(last_row['score']),
-                            "形態": last_row['pattern'],
-                            "股價": round(last_row['close'], 2),
-                            "量比": round(last_row['vol_ratio'], 2),
-                            "提醒": last_row['warning']
+                            "評分": score,
+                            "形態": "🔥 長多短回",
+                            "股價": round(curr_price, 2),
+                            "量比": round(df['volume'].iloc[-1] / df['volume'].tail(5).mean(), 2),
+                            "提醒": "符合 20MA/40週線支撐條件"
                         })
                 except:
                     continue
