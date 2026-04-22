@@ -546,7 +546,7 @@ def get_yf_ticker(sid):
     else:
         return f"{sid_str}.TW"
 
-@st.cache_data(ttl=60) # 縮短緩存時間，確保能抓到最新價
+@st.cache_data(ttl=60)
 def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_limit=5.0):
     all_codes = []
     for code, info in twstock.codes.items():
@@ -554,74 +554,59 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
             all_codes.append(get_yf_ticker(code))
     
     found_targets = []
-    batch_size = 50 
-    progress_bar = st.progress(0)
+    batch_size = 100 
     
-    for i in range(0, len(all_codes), batch_size):
+    # --- 建立動態進度顯示區 ---
+    progress_bar = st.progress(0)
+    status_text = st.empty() # 用於動態更新文字狀態
+    
+    total_count = len(all_codes)
+    
+    for i in range(0, total_count, batch_size):
         batch = all_codes[i:i+batch_size]
-        progress_bar.progress(min(i / len(all_codes), 1.0))
+        
+        # 更新進度條與文字
+        current_progress = min(i / total_count, 1.0)
+        progress_bar.progress(current_progress)
+        status_text.markdown(f"🔍 **掃描進度:** `{i}/{total_count}` | 🔥 **已偵測到標的:** `{len(found_targets)}` 檔")
         
         try:
-            # 1. 抓取歷史資料 (算 MA, KD 用)
-            data_hist = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
+            data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
                     if len(batch) > 1:
-                        if ticker not in data_hist or data_hist[ticker].empty: continue
-                        df = data_hist[ticker].copy()
+                        if ticker not in data or data[ticker].empty: continue
+                        df = data[ticker].copy()
                     else:
-                        df = data_hist.copy()
+                        df = data.copy()
                     
                     df = df.dropna(subset=['Close'])
+                    if len(df) < 100: continue
                     
-                    # --- 關鍵修正：同步獲取即時價格 ---
-                    # 有時候 yfinance 的歷史資料最後一筆是昨天的，我們需要檢查最新的實時價格
-                    ticker_obj = yf.Ticker(ticker)
-                    current_info = ticker_obj.fast_info # 使用 fast_info 獲取當秒價格
-                    
-                    actual_last_price = current_info['last_price']
-                    actual_last_vol = current_info['last_volume']
-                    
-                    # 如果 yfinance 歷史資料還沒更新今天的 K 線，我們手動補上一列最新數據
-                    last_date_in_df = df.index[-1].date()
-                    today_date = datetime.now().date()
-                    
-                    if last_date_in_df < today_date:
-                        # 建立一列今天的虛擬數據來參與運算
-                        new_row = df.iloc[-1].copy()
-                        new_row.name = datetime.now()
-                        new_row['open'] = actual_last_price # 簡化處理
-                        new_row['high'] = actual_last_price
-                        new_row['low'] = actual_last_price
-                        new_row['close'] = actual_last_price
-                        new_row['volume'] = actual_last_vol
-                        df = pd.concat([df, pd.DataFrame([new_row])])
-
-                    # 格式統一
                     df.columns = [str(c).lower().strip() for c in df.columns]
                     df = df.rename(columns={"adj close": "close"})
 
-                    # --- 1. 成交量過濾 ---
+                    curr_price = df['close'].iloc[-1]
+                    prev_close = df['close'].iloc[-2]
                     curr_vol = df['volume'].iloc[-1]
+
+                    # 條件 1: 成交量
                     if curr_vol < (min_volume_limit * 1000): continue
 
-                    # --- 2. 漲幅過濾 (以真正最新價計算) ---
-                    prev_close = df['close'].iloc[-2]
-                    curr_price = df['close'].iloc[-1]
+                    # 條件 2: 漲幅 0~X%
                     change_pct = ((curr_price - prev_close) / prev_close) * 100
                     if not (0 <= change_pct <= max_growth_limit): continue
 
-                    # --- 3. 出量偵測 (當天或前2-3天有翻倍量) ---
+                    # 條件 3: 出量偵測
                     def check_volume_burst(target_idx):
                         if abs(target_idx) + 4 > len(df): return False
                         v = df['volume'].iloc[target_idx]
                         avg_v = df['volume'].iloc[target_idx-4 : target_idx-1].mean()
                         return v > (avg_v * 2.0)
-
                     is_volume_burst = check_volume_burst(-1) or check_volume_burst(-2) or check_volume_burst(-3)
 
-                    # --- 4. 均線與 KD 條件 ---
+                    # 條件 4: 均線與 KD
                     ma20 = df['close'].rolling(20).mean().iloc[-1]
                     ma200 = df['close'].rolling(200).mean().iloc[-1]
                     ma5 = df['close'].rolling(5).mean().iloc[-1]
@@ -630,7 +615,6 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                     cond_trend = curr_price > ma20 and curr_price > ma200
                     cond_retrace = ma5 < ma10 
 
-                    # KD 計算
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
@@ -650,7 +634,7 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                         score = int(analyzed_df.iloc[-1]['score']) if (analyzed_df is not None) else 0
 
                         found_targets.append({
-                            "追蹤": False, 
+                            "追蹤": False,
                             "股價代號": sid,
                             "股價名稱": name,
                             "評分": score,
@@ -661,8 +645,12 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                 except: continue
         except: continue
 
+    # 掃描結束，清空狀態與進度條
     progress_bar.empty()
+    status_text.empty()
     return pd.DataFrame(found_targets)
+
+
     
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
 with st.sidebar:
@@ -718,20 +706,21 @@ with st.sidebar:
     growth_limit = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5, help="找出尚未噴發太遠的股票")
 
     if st.button("🔎 執行全台股掃描", use_container_width=True):
-        with st.spinner(f"正在掃描漲幅 < {growth_limit}% 之標的..."):
-            # 將 growth_limit 傳入函式
-            screen_results = run_stock_screener(
-                enable_kd_filter=use_kd_strict, 
-                min_volume_limit=vol_limit,
-                max_growth_limit=growth_limit
-            )
-            
-            if not screen_results.empty:
-                st.session_state.screen_results = screen_results
-                st.success(f"找到 {len(screen_results)} 檔符合條件標的！")
-            else:
-                st.session_state.screen_results = pd.DataFrame()
-                st.warning("查無符合條件標的。")
+        # 這裡會執行上面的 run_stock_screener，裡面已經有進度條
+        screen_results = run_stock_screener(
+            enable_kd_filter=use_kd_strict, 
+            min_volume_limit=vol_limit,
+            max_growth_limit=growth_limit
+        )
+        
+        if not screen_results.empty:
+            st.session_state.screen_results = screen_results
+            # 在按鈕下方顯示最終結果數量
+            st.balloons() # 找到股票時噴出氣球慶祝一下
+            st.success(f"✅ 掃描完成！共發現 `{len(screen_results)}` 檔符合條件標的。")
+        else:
+            st.session_state.screen_results = pd.DataFrame()
+            st.warning("⚠️ 掃描完成，但目前查無符合條件標的。")
 
     if 'screen_results' in st.session_state and not st.session_state.screen_results.empty:
         with st.expander("📊 勾選標的加入狙擊", expanded=True):
