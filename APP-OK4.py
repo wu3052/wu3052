@@ -499,33 +499,30 @@ def plot_advanced_chart(df, title=""):
 # --- 7. Google 表單同步 ---
 def sync_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
-    if not sheet_id: 
-        add_log("SYS", "SYSTEM", "ERROR", "找不到 MONITOR_SHEET_ID")
-        return
+    if not sheet_id: return
     try:
-        # 加上時間戳記避免讀到 Google 舊的緩存
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&timestamp={time.time()}"
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df_sheet = pd.read_csv(url)
         
         def clean_col(name):
             if name in df_sheet.columns:
-                # 抓取該欄位，轉成字串，排除 NaN，並用空格連接
-                valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'nan.0'], np.nan).dropna()
-                # 確保只取純數字部分 (防止 2330.0 出現)
-                codes = [x.split('.')[0].strip() for x in valid_series if x.strip() != ""]
-                return " ".join(codes)
-            return None
+                valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
+                valid_series = valid_series[valid_series.str.strip() != ""]
+                return " ".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
+            return None # 改為回傳 None 以便判斷
 
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
+        # 只有在真的有抓到資料時才更新，防止雲端斷線時把本地清單洗掉
         if new_search is not None:
             st.session_state.search_codes = new_search
         if new_inv is not None:
             st.session_state.inventory_codes = new_inv
             
-        add_log("SYS", "SYSTEM", "INFO", f"成功同步！狙擊:{len(new_search.split()) if new_search else 0}檔, 庫存:{len(new_inv.split()) if new_inv else 0}檔")
+        add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
     except Exception as e:
+        # 同步失敗時紀錄日誌，但保留原本 st.session_state 裡的代碼
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
 
 if not st.session_state.first_sync_done:
@@ -593,8 +590,8 @@ def perform_scan(manual_trigger=False):
     now = get_taiwan_time()
     st.markdown(f"### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
     
-    snipe_list = [c.strip() for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c.strip().isdigit()]
-    inv_list = [c.strip() for c in re.split(r'[\s\n,]+', st.session_state.inventory_codes) if c.strip().isdigit()]
+    snipe_list = [c for c in re.split(r'[\s\n,]+', st.session_state.search_codes) if c]
+    inv_list = [c for c in re.split(r'[\s\n,]+', st.session_state.inventory_codes) if c]
     all_codes = sorted(list(set(snipe_list + inv_list)))
     
     stock_info = get_stock_info()
@@ -707,6 +704,7 @@ def perform_scan(manual_trigger=False):
                 })
             except Exception as e:
                 print(f"Error processing {sid}: {e}")
+
     # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
@@ -810,3 +808,4 @@ else:
     with placeholder.container(): 
         perform_scan(manual_trigger=False)
     st.info("💡 自動監控已關閉。")
+
