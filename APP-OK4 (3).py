@@ -794,31 +794,10 @@ def perform_scan(manual_trigger=False):
         with st.expander(f"查看 {sid} {name} 分析圖表"):
             st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
-# --- 介面呈現區塊 ---
-
-st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
-snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
-
-if not snipe_targets:
-    st.info("🎯 目前狙擊清單尚無數據。")
-else:
-    for item in snipe_targets:
-        render_stock_card(item, is_inventory=False)
-
-st.divider()
-
-st.subheader("📦 庫存持股監控")
-inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
-
-if not inventory_targets:
-    st.write("目前尚無監控中的庫存持股。")
-else:
-    for item in inventory_targets:
-        render_stock_card(item, is_inventory=True)
-
-st.divider()
-st.write("### 📜 戰情即時日誌")
-# (後面接原本的日誌與主循環邏輯...)
+    st.divider()
+    st.write("### 📜 戰情即時日誌")
+    log_content = "".join(st.session_state.event_log)
+    st.markdown(f"<div class='log-container'>{log_content}</div>", unsafe_allow_html=True)
 
 # --- 10. 主循環邏輯 ---
 placeholder = st.empty()
