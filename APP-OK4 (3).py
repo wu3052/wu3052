@@ -711,54 +711,88 @@ def perform_scan(manual_trigger=False):
             except Exception as e:
                 print(f"Error processing {sid}: {e}")
 
-# --- 修正後的渲染區域 ---
-
-def render_stock_card(item, is_inventory=False):
-    last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
-    score_int = int(last['score'])
+    # --- 渲染 狙擊目標監控 ---
+    st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
+    snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
     
-    # 1. 統一等級判斷邏輯 (避免使用 Emoji 作為唯一判斷依據)
-    if "SSS" in pattern or "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS Rank", "#ff4b4b", "white"
-    elif "SS" in pattern or "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS Rank", "#ffa500", "white"
-    elif "S" in pattern or "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S Rank", "#f1c40f", "black"
-    elif "A" in pattern or "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A Rank", "#2ecc71", "black"
-    else: rank_tag, tag_clr, txt_clr = "B Rank", "#3498db", "white"
-
-    # 2. 判斷邊框顏色
-    border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
+    if not snipe_targets:
+        st.info("🎯 目前狙擊清單尚無數據。")
     
-    # 3. 根據屬性調整標籤
-    title_prefix = "[HOLD]" if is_inventory else "[TARGET]"
-    score_label = "Health" if is_inventory else "Score"
-    extra_info = f"(Bias: {last['bias_5']:.2f}%)" if is_inventory else f"(Vol Ratio: {last['vol_ratio']:.2f}x)"
-    warning_label = "Risk Status" if is_inventory else "Warning"
-    advice_label = "Strategy" if is_inventory else "Capital Advice"
+    for item in snipe_targets:
+        last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
+        score_int = int(last['score'])
+        
+        if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
+        elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
+        elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
+        elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
+        else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
 
-    # 4. 渲染 HTML (已移除可能報錯的 Emoji)
-    st.markdown(f"""
-<div style="border-left: 10px solid {border_clr}; margin-bottom:12px; text-align:left; padding: 15px; background: #fdfdfe; border-radius: 8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); color: black;">
+        is_boom = ("BUY" in last["sig_type"] and last["vol_ratio"] > 1.8)
+        border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
+        
+        st.markdown(f"""
+<div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #f8f9fa; border-radius: 5px; color: black;">
     <div style="display:flex; justify-content:space-between; align-items:center;">
-        <div style="font-size:1.25em;">
-            <b style="color:#555;">{title_prefix}</b> <b>{sid} {name}</b> 
-            <span style="font-size:0.7em; background:{tag_clr}; color:{txt_clr}; padding:3px 10px; border-radius:4px; margin-left:10px; vertical-align:middle;">{rank_tag}</span>
+        <div style="font-size:1.2em;">
+            <b>🎯 {sid} {name}</b> 
+            <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
         </div>
-        <div><span style="background:{border_clr}; color:white; padding:5px 15px; border-radius:20px; font-weight:bold; font-size:0.9em;">{score_label}: {score_int}</span></div>
+        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">戰鬥評分: {score_int}</span></div>
     </div>
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:12px; padding:10px; background:#f8f9fa; border-radius:5px;">
-        <div><b>PRICE:</b> {last['close']:.2f} <span style="font-size:0.85em; color:#666;">{extra_info}</span></div>
-        <div><b>{warning_label}:</b> {last['warning']}</div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
+        <div>📍 <b>現價：</b>{last['close']:.2f} (量比: {last['vol_ratio']:.2f}x)</div>
+        <div>⚠️ <b>關鍵提醒：</b>{last['warning']}</div>
     </div>
-    <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.6;">
-        <b>Pattern Analysis:</b> {item['pattern_desc']}<br>
-        <b>{advice_label}:</b> <span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
+    <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.5;">
+        <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
+        <b>💰 資金建議：</b><span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
     </div>
 </div>
 """, unsafe_allow_html=True)
+        with st.expander(f"查看 {sid} {name} 分析圖表", expanded=("🚀" in pattern)):
+            st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
+
+    st.divider()
+
+# --- 渲染 庫存持股監控 ---
+    st.subheader("📦 庫存持股監控")
+    inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
     
-    # 圖表展開邏輯
-    should_expand = (not is_inventory and ("SSS" in pattern or "🚀" in pattern))
-    with st.expander(f"Analysis Chart ({sid} {name})", expanded=should_expand):
-        st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
+    for item in inventory_targets:
+        last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
+        score_int = int(last['score'])
+        
+        # 這裡套用與狙擊清單相同的等級判斷邏輯
+        if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
+        elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
+        elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
+        elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
+        else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
+
+        border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
+        
+        st.markdown(f"""
+<div class="dashboard-box" style="border-left: 10px solid {border_clr}; margin-bottom:10px; text-align:left; padding: 15px; background: #fdfdfe; border-radius: 5px; color: black;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:1.2em;">
+            <b>📦 {sid} {name}</b> 
+            <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
+        </div>
+        <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {score_int}</span></div>
+    </div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
+        <div>📍 <b>現價：</b>{last['close']:.2f} (5MA乖離: {last['bias_5']:.2f}%)</div>
+        <div>⚠️ <b>風險狀態：</b>{last['warning']}</div>
+    </div>
+    <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.5;">
+        <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
+        <b>🛡️ 策略建議：</b><span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+        with st.expander(f"查看 {sid} {name} 分析圖表"):
+            st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
 
 # --- 介面呈現區塊 ---
 
