@@ -536,58 +536,89 @@ if not st.session_state.first_sync_done:
     st.session_state.first_sync_done = True
 
 # --- 7.5 全市場選股工具函式 ---
-def get_yf_ticker(code):
+def get_yf_ticker(sid):
     """將台股代碼轉換為 yfinance 格式"""
-    try:
-        if code in twstock.codes:
-            market = twstock.codes[code].market
-            return f"{code}.TW" if market == '上市' else f"{code}.TWO"
-        return f"{code}.TW"
-    except:
-        return f"{code}.TW"
+    if sid == "TAIEX": return "^TWII"
+    sid_str = str(sid)
+    # 根據代碼長度與開頭判斷上市或上櫃
+    if len(sid_str) == 4 and sid_str[0] in ['3', '5', '6', '8']:
+        return f"{sid_str}.TWO"
+    else:
+        return f"{sid_str}.TW"
 
 @st.cache_data(ttl=3600)
 def run_stock_screener():
-    # ... 前段取得 all_codes 代碼不變 ...
-    found_targets = []
+    """執行全台股掃描 - 強化格式相容版"""
+    all_codes = [] # 確保變數在此定義
+    # 1. 取得所有上市櫃股票代碼
+    for code, info in twstock.codes.items():
+        if len(code) == 4 and info.type == '股票':
+            all_codes.append(get_yf_ticker(code))
     
-    # 增加一個進度檢查
-    for i in range(0, len(all_codes), 50):
-        batch = all_codes[i:i+50]
+    found_targets = []
+    batch_size = 50 
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # 確保 all_codes 存在後再進入迴圈
+    for i in range(0, len(all_codes), batch_size):
+        batch = all_codes[i:i+batch_size]
+        progress_bar.progress(min(i / len(all_codes), 1.0))
+        status_text.caption(f"正在分析第 {i} 檔，目前已找到 {len(found_targets)} 檔符合條件標的...")
+        
         try:
-            # 使用 yfinance 抓取
-            data = yf.download(batch, period="8mo", group_by='ticker', progress=False)
+            # yfinance 批量下載
+            data = yf.download(batch, period="8mo", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
-                    df_single = data[ticker].copy().dropna()
-                    if len(df_single) < 150: continue
+                    # 提取單一股票資料
+                    if len(batch) > 1:
+                        if ticker not in data or data[ticker].empty: continue
+                        df_single = data[ticker].copy()
+                    else:
+                        df_single = data.copy()
                     
-                    # --- 重點 1: 強制轉換為與 get_stock_data 一致的小寫格式 ---
-                    df_single.columns = [c.lower() for c in df_single.columns]
-                    df_single = df_single.rename(columns={"adj close": "close"})
+                    df_single = df_single.dropna(subset=['Close']) 
+                    if len(df_single) < 120: continue
                     
-                    # --- 重點 2: 補齊策略必備的 est_volume 欄位 ---
-                    # 全市場掃描多在收盤或大量分析，可直接將 volume 映射過去
+                    # --- 重要：強制轉換欄位名稱為小寫，以符合 analyze_strategy ---
+                    df_single.columns = [str(c).lower().strip() for c in df_single.columns]
+                    df_single = df_single.reset_index()
+                    df_single = df_single.rename(columns={"date": "date", "adj close": "close"})
+                    
+                    # 如果沒有 adj close，則使用一般的 close
+                    if 'close' not in df_single.columns and 'close' in df_single.columns:
+                        pass # 已正確映射
+                    
+                    # --- 重要：補齊策略分析所需的預估成交量欄位 ---
                     df_single['est_volume'] = df_single['volume']
                     
-                    # 執行您的 analyze_strategy
+                    # 執行您的核心策略分析
                     analyzed_df = analyze_strategy(df_single)
-                    if analyzed_df is None: continue
+                    if analyzed_df is None or analyzed_df.empty: continue
                     
                     last_row = analyzed_df.iloc[-1]
+                    sid = ticker.split('.')[0]
                     
-                    # --- 重點 3: 放寬篩選條件進行測試 ---
-                    # 如果原本 75 分掃不到，先降到 60 分試試
-                    if last_row['score'] >= 60 and last_row['vol_ratio'] > 1.0:
+                    # 篩選條件：評分 > 65 且 5日均量 > 200張
+                    vol_ma5 = analyzed_df['volume'].tail(5).mean()
+                    if (last_row['score'] >= 65) and vol_ma5 > 200000:
                         found_targets.append({
-                            "代碼": ticker.split('.')[0],
+                            "代碼": sid,
                             "評分": int(last_row['score']),
                             "形態": last_row['pattern'],
+                            "股價": round(last_row['close'], 2),
+                            "量比": round(last_row['vol_ratio'], 2),
                             "提醒": last_row['warning']
                         })
-                except: continue
-        except: continue
+                except:
+                    continue
+        except:
+            continue
+
+    progress_bar.empty()
+    status_text.empty()
     return pd.DataFrame(found_targets)
 
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
