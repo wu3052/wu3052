@@ -600,7 +600,7 @@ def perform_scan(manual_trigger=False):
     stock_info = get_stock_info()
     processed_stocks = []
 
-# 1. 優先渲染大盤分析
+    # 1. 優先渲染大盤分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df, is_market=True)
@@ -619,7 +619,7 @@ def perform_scan(manual_trigger=False):
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-# 2. 處理個股
+    # 2. 處理個股
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
         for future in future_to_sid:
@@ -680,7 +680,7 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"## {msg_header}", 
+                                f"## {msg_header}", # Discord 標題變大
                                 f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"📝 **解讀：** {last['pattern_desc']}",
                                 f"## 📈 **標的：** `{sid} {name} {last['close']:.2f}`",
@@ -706,8 +706,6 @@ def perform_scan(manual_trigger=False):
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
             except Exception as e:
-                # 這裡嚴格對齊 try，並使用純淨空格
-                add_log(sid, "SYSTEM", "ERROR", f"處理個股數據異常: {str(e)}")
                 print(f"Error processing {sid}: {e}")
     # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
