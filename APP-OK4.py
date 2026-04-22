@@ -710,7 +710,7 @@ def perform_scan(manual_trigger=False):
                 # --- [try 區塊結束] ---
 
             except Exception as e:
-                # 此行必須與上方的 try 垂直對齊
+                # 這裡嚴格對齊 try，確保無 IndentationError
                 add_log(sid, "SYSTEM", "ERROR", f"處理個股數據異常: {str(e)}")
                 print(f"Error processing {sid}: {e}")
                 
