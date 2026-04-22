@@ -562,12 +562,10 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
         progress_bar.progress(min(i / len(all_codes), 1.0))
         
         try:
-            # 抓取 1 年數據
             data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
-                    # 判斷 MultiIndex 格式
                     if len(batch) > 1:
                         if ticker not in data or data[ticker].empty: continue
                         df = data[ticker].copy()
@@ -577,70 +575,70 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
                     df = df.dropna(subset=['Close'])
                     if len(df) < 100: continue
                     
-                    # 統一欄位小寫化
                     df.columns = [str(c).lower().strip() for c in df.columns]
                     df = df.rename(columns={"adj close": "close"})
-                    if 'close' not in df.columns: df['close'] = df['close'] # yfinance fallback
 
-                    # --- 1. 成交量過濾 (張數) ---
+                    # --- 1. 成交量過濾 (>500張) ---
                     curr_vol = df['volume'].iloc[-1]
                     if curr_vol < (min_volume_limit * 1000): continue
 
-                    # --- 2. 出量定義 (今天比前2-3天均量翻倍) ---
-                    prev_vols_avg = df['volume'].iloc[-4:-1].mean()
-                    is_volume_burst = curr_vol > (prev_vols_avg * 2.0)
+                    # --- 2. 漲幅過濾 (0% ~ 10%) ---
+                    prev_close = df['close'].iloc[-2]
+                    curr_price = df['close'].iloc[-1]
+                    change_pct = ((curr_price - prev_close) / prev_close) * 100
+                    if not (0 <= change_pct <= 10): continue
 
-                    # --- 3. 均線條件 ---
+                    # --- 3. 出量偵測 (當天或前2-3天有翻倍量) ---
+                    def check_volume_burst(target_idx):
+                        # 比對 target_idx 那天與其前 3 天的均量
+                        v = df['volume'].iloc[target_idx]
+                        avg_v = df['volume'].iloc[target_idx-4 : target_idx-1].mean()
+                        return v > (avg_v * 2.0)
+
+                    # 檢查當天、昨天、前天是否有出量
+                    is_volume_burst = check_volume_burst(-1) or check_volume_burst(-2) or check_volume_burst(-3)
+
+                    # --- 4. 均線與 KD 條件 ---
                     ma20 = df['close'].rolling(20).mean().iloc[-1]
                     ma200 = df['close'].rolling(200).mean().iloc[-1]
                     ma5 = df['close'].rolling(5).mean().iloc[-1]
                     ma10 = df['close'].rolling(10).mean().iloc[-1]
-                    curr_price = df['close'].iloc[-1]
 
                     cond_trend = curr_price > ma20 and curr_price > ma200
                     cond_retrace = ma5 < ma10 
 
-                    # --- 4. KD 計算 ---
+                    # KD 計算
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
                     df['k'] = rsv.ewm(com=2).mean()
                     df['d'] = df['k'].ewm(com=2).mean()
-                    
-                    k_today, d_today = df['k'].iloc[-1], df['d'].iloc[-1]
-                    k_yesterday, d_yesterday = df['k'].iloc[-2], df['d'].iloc[-2]
-                    kd_cross = k_yesterday <= d_yesterday and k_today > d_today
+                    kd_cross = df['k'].iloc[-2] <= df['d'].iloc[-2] and df['k'].iloc[-1] > df['d'].iloc[-1]
 
                     if cond_trend and cond_retrace:
                         if enable_kd_filter and not kd_cross: continue
                         
                         sid = ticker.split('.')[0]
                         stock_info = get_stock_info()
-                        # 取得名稱，若失敗顯示代碼
-                        try:
-                            name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0]
-                        except:
-                            name = "未知"
+                        name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
                         
-                        # 評分系統相容性處理
                         df['est_volume'] = df['volume']
                         analyzed_df = analyze_strategy(df)
-                        score = int(analyzed_df.iloc[-1]['score']) if (analyzed_df is not None and not analyzed_df.empty) else 0
+                        score = int(analyzed_df.iloc[-1]['score']) if (analyzed_df is not None) else 0
 
                         found_targets.append({
+                            "追蹤": False, # 預設不勾選
                             "股價代號": sid,
                             "股價名稱": name,
                             "評分": score,
                             "股價": round(curr_price, 2),
+                            "漲幅%": round(change_pct, 2),
                             "出量": "✅ 是" if is_volume_burst else "—"
                         })
                 except: continue
         except: continue
 
     progress_bar.empty()
-    # 重要：如果沒結果，回傳一個包含正確欄位的空 DataFrame
-    if not found_targets:
-        return pd.DataFrame(columns=["股價代號", "股價名稱", "評分", "股價", "出量"])
     return pd.DataFrame(found_targets)
     
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
@@ -710,29 +708,38 @@ with st.sidebar:
                 st.warning("查無符合條件的股票，建議取消 KD 嚴格模式再試一次。")
 
     # 如果有結果，顯示表格
-    if 'screen_results' in st.session_state:
-        with st.expander("📊 查看選股結果", expanded=True):
+if 'screen_results' in st.session_state:
+        with st.expander("📊 查看選股結果 (請勾選欲追蹤標的)", expanded=True):
             res_df = st.session_state.screen_results
             
             if not res_df.empty:
-                # 再次檢查欄位是否存在，防止 KeyError
-                cols_to_show = ["股價代號", "股價名稱", "評分", "股價", "出量"]
-                actual_cols = [c for c in cols_to_show if c in res_df.columns]
-                
-                # 依照評分排序
-                res_df = res_df.sort_values(by="評分", ascending=False)
-                
-                st.dataframe(res_df[actual_cols], use_container_width=True)
-                
-                # 快速加入按鈕
-                top_codes = ",".join(res_df['股價代號'].astype(str).tolist())
-                if st.button("📋 加入狙擊清單"):
-                    current = st.session_state.get('search_codes', "")
-                    st.session_state.search_codes = f"{current}\n{top_codes}".strip()
-                    st.success(f"已加入 {len(res_df)} 檔標的")
-                    st.rerun()
+                # 使用 data_editor 建立可勾選表格
+                edited_df = st.data_editor(
+                    res_df,
+                    column_config={
+                        "追蹤": st.column_config.CheckboxColumn(help="勾選以加入狙擊清單", default=False)
+                    },
+                    disabled=["股價代號", "股價名稱", "評分", "股價", "漲幅%", "出量"],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="stock_editor"
+                )
+
+                if st.button("📥 將勾選標的加入狙擊清單", use_container_width=True):
+                    # 篩選出有勾選的代碼
+                    selected_codes = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
+                    if selected_codes:
+                        new_codes_str = ",".join(selected_codes)
+                        # 更新 Session State 中的清單，並手動觸發一次同步前的合併
+                        current_list = st.session_state.get('search_codes', "")
+                        st.session_state.search_codes = f"{current_list}\n{new_codes_str}".strip()
+                        st.success(f"已將 {len(selected_codes)} 檔標的加入清單！")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.warning("請先勾選標的。")
             else:
-                st.write("目前無符合所有條件之標的。")
+                st.write("查無符合標的。")
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
