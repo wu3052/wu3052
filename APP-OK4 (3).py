@@ -496,38 +496,51 @@ def plot_advanced_chart(df, title=""):
     )
     return fig
 
-# --- 7. Google 表單同步 ---
+# --- 7. Google 表單同步 (增強版) ---
 def sync_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
     if not sheet_id: return
     try:
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
-        df_sheet = pd.read_csv(url)
+        # 加上時間戳參數避免瀏覽器或伺服器快取舊資料
+        timestamp = int(time.time())
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&t={timestamp}"
+        
+        # 增加 timeout 並檢查回應狀態碼
+        response = requests.get(url, timeout=15)
+        if response.status_code != 200:
+            add_log("SYS", "SYSTEM", "ERROR", f"雲端請求失敗: {response.status_code}")
+            return
+
+        # 使用 StringIO 確保編碼正確解析
+        from io import StringIO
+        df_sheet = pd.read_csv(StringIO(response.text))
         
         def clean_col(name):
             if name in df_sheet.columns:
+                # 強化資料清洗，確保過濾掉空格與無效字元
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
-                valid_series = valid_series[valid_series.str.strip() != ""]
-                return " ".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
-            return None # 改為回傳 None 以便判斷
+                # 移除非數字的雜質 (如英文字母或標點)
+                valid_series = valid_series.apply(lambda x: re.sub(r'[^0-9]', '', x.split('.')[0].strip()))
+                valid_series = valid_series[valid_series != ""]
+                return " ".join(valid_series)
+            return None
 
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
-        # 只有在真的有抓到資料時才更新，防止雲端斷線時把本地清單洗掉
-        if new_search is not None:
+        # 只有在確保有抓到代碼時才更新 Session State
+        if new_search:
             st.session_state.search_codes = new_search
-        if new_inv is not None:
+        if new_inv:
             st.session_state.inventory_codes = new_inv
             
-        add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
+        if new_search or new_inv:
+            add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
+        else:
+            add_log("SYS", "SYSTEM", "WARNING", "表單同步成功但內容為空，保留本地數據")
+            
     except Exception as e:
-        # 同步失敗時紀錄日誌，但保留原本 st.session_state 裡的代碼
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
-
-if not st.session_state.first_sync_done:
-    sync_sheets()
-    st.session_state.first_sync_done = True
 
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
 with st.sidebar:
