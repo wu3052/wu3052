@@ -147,7 +147,7 @@ def calculate_est_volume(current_vol):
     est = current_vol * (270 / (passed + 10)) 
     return est
 
-@st.cache_data(ttl=30 if is_market_open() else 3600)
+@st.cache_data(ttl=15 if is_market_open() else 3600)
 def get_stock_data(sid, token):
     try:
         # 1. 依然從 FinMind 抓取長期的歷史日線數據 (作為基底)
