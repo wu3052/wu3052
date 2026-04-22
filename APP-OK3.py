@@ -556,7 +556,7 @@ def run_stock_screener():
             all_codes.append(get_yf_ticker(code))
     
     found_targets = []
-    batch_size = 50 # 縮小批次以增進穩定性
+    batch_size = 50 
     
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -567,52 +567,54 @@ def run_stock_screener():
         status_text.caption(f"正在掃描第 {i} ~ {i+len(batch)} 檔股票...")
         
         try:
-            # 使用 yfinance 下載
+            # yfinance 批量下載
             data = yf.download(batch, period="8mo", group_by='ticker', interval="1d", progress=False)
             
             for ticker in batch:
                 try:
+                    # 檢查數據是否存在
                     if len(batch) > 1:
-                        if ticker not in data: continue
+                        if ticker not in data or data[ticker].empty: continue
                         df_single = data[ticker].copy()
                     else:
+                        if data.empty: continue
                         df_single = data.copy()
                     
                     df_single = df_single.dropna()
                     if len(df_single) < 120: continue
                     
-                    # 格式轉換以符合 analyze_strategy
+                    # 格式轉換
                     df_single = df_single.reset_index()
                     df_single.columns = [c.lower() for c in df_single.columns]
                     df_single = df_single.rename(columns={"date": "date", "adj close": "close"})
                     
-                    # 補齊分析器需要的預估量欄位
+                    # 補齊分析器需要的欄位
                     df_single['est_volume'] = df_single['volume']
                     
-                    # 呼叫你原本的策略分析
+                    # 呼叫策略分析
                     analyzed_df = analyze_strategy(df_single)
-                    if analyzed_df is None: continue
+                    if analyzed_df is None or analyzed_df.empty: continue
                     
                     last_row = analyzed_df.iloc[-1]
                     sid = ticker.split('.')[0]
                     
-                    # 篩選條件：高分或強勢形態，且 5 日均量 > 500 張 (500,000股)
-                # 寬鬆版過濾邏輯
-                vol_ma5 = analyzed_df['volume'].tail(5).mean()
-                has_pattern = last_row['pattern'] != "" and "正常" not in last_row['pattern']
-                
-                # 只要評分高於 65 或是 有特殊形態，且成交量大於 200 張就入選
-                if (last_row['score'] >= 65 or has_pattern) and vol_ma5 > 200000:
-                    found_targets.append({
-                        "代碼": sid,
-                        "評分": int(last_row['score']),
-                        "形態": last_row['pattern'] if last_row['pattern'] else "趨勢觀察",
-                        "股價": round(last_row['close'], 2),
-                        "量比": round(last_row['vol_ratio'], 2),
-                        "提醒": last_row['warning']
-                    })
-                except:
-                    continue
+                    # --- 調整後的篩選條件 (更寬鬆) ---
+                    vol_ma5 = analyzed_df['volume'].tail(5).mean()
+                    # 只要評分 > 60 或 有特殊形態，且 5日均量 > 200張 (200,000股)
+                    if (last_row['score'] >= 60 or last_row['pattern'] != "") and vol_ma5 > 200000:
+                        found_targets.append({
+                            "代碼": sid,
+                            "評分": int(last_row['score']),
+                            "形態": last_row['pattern'] if last_row['pattern'] else "趨勢觀察",
+                            "股價": round(last_row['close'], 2),
+                            "量比": round(last_row['vol_ratio'], 2),
+                            "提醒": last_row['warning']
+                        })
+                except Exception as e:
+                    # 這裡就是原本噴錯的地方，現在補上 except
+                    continue 
+        except Exception as e:
+            continue
 
     progress_bar.empty()
     status_text.empty()
