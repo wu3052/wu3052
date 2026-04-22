@@ -749,6 +749,39 @@ with st.sidebar:
         else:
             st.session_state.screen_results = pd.DataFrame()
             st.warning("⚠️ 掃描完成，但目前查無符合條件標的。")
+        if 'screen_results' in st.session_state:
+        # 使用 expander 摺疊，避免側邊欄被拉得太長
+        with st.expander("📊 查看選股結果 (請勾選)", expanded=True):
+            res_df = st.session_state.screen_results
+            
+            if not res_df.empty:
+                # 使用 data_editor
+                edited_df = st.data_editor(
+                    res_df,
+                    column_config={
+                        "追蹤": st.column_config.CheckboxColumn(help="勾選以加入狙擊清單", default=False)
+                    },
+                    disabled=["股價代號", "股價名稱", "評分", "股價", "漲幅%", "出量"],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="stock_editor"
+                )
+
+                if st.button("📥 將勾選標的加入狙擊清單", use_container_width=True):
+                    selected_codes = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
+                    if selected_codes:
+                        new_codes_str = ",".join(selected_codes)
+                        current_list = st.session_state.get('search_codes', "")
+                        # 邏輯優化：確保合併時不會出現多餘逗號
+                        combined = f"{current_list},{new_codes_str}".strip(",")
+                        st.session_state.search_codes = combined
+                        st.success(f"已加入 {len(selected_codes)} 檔標的！")
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.warning("請先勾選標的。")
+            else:
+                st.write("查無符合標的。")
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
