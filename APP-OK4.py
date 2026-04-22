@@ -622,10 +622,9 @@ def perform_scan(manual_trigger=False):
 # 2. 處理個股
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
-        for future in future_to_sid:
+for future in future_to_sid:
             sid = future_to_sid[future]
             try:
-                # --- [try 區塊開始] ---
                 df = future.result()
                 if df is None: 
                     continue
@@ -707,10 +706,8 @@ def perform_scan(manual_trigger=False):
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
-                # --- [try 區塊結束] ---
 
             except Exception as e:
-                # 這裡嚴格對齊 try，確保無 IndentationError
                 add_log(sid, "SYSTEM", "ERROR", f"處理個股數據異常: {str(e)}")
                 print(f"Error processing {sid}: {e}")
                 
