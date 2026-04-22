@@ -619,14 +619,16 @@ def perform_scan(manual_trigger=False):
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-    # 2. 處理個股
+# 2. 處理個股
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
         for future in future_to_sid:
             sid = future_to_sid[future]
             try:
+                # --- [try 區塊開始] ---
                 df = future.result()
-                if df is None: continue
+                if df is None: 
+                    continue
                 df = analyze_strategy(df, is_market=False)
                 last = df.iloc[-1]
                 name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
@@ -680,7 +682,7 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"## {msg_header}", # Discord 標題變大
+                                f"## {msg_header}",
                                 f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"📝 **解讀：** {last['pattern_desc']}",
                                 f"## 📈 **標的：** `{sid} {name} {last['close']:.2f}`",
@@ -700,18 +702,18 @@ def perform_scan(manual_trigger=False):
                             ]
                             send_discord_message("\n".join(msg_lines))
                 
-                
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
-                
+                # --- [try 區塊結束] ---
+
             except Exception as e:
-                # 這裡必須與上方的 try 完全對齊
+                # 此行必須與上方的 try 垂直對齊
                 add_log(sid, "SYSTEM", "ERROR", f"處理個股數據異常: {str(e)}")
                 print(f"Error processing {sid}: {e}")
-
+                
     # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
