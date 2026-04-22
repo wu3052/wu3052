@@ -749,7 +749,7 @@ with st.sidebar:
         else:
             st.session_state.screen_results = pd.DataFrame()
             st.warning("⚠️ 掃描完成，但目前查無符合條件標的。")
-        if 'screen_results' in st.session_state:
+    if 'screen_results' in st.session_state:
         # 使用 expander 摺疊，避免側邊欄被拉得太長
         with st.expander("📊 查看選股結果 (請勾選)", expanded=True):
             res_df = st.session_state.screen_results
