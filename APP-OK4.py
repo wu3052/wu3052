@@ -499,30 +499,33 @@ def plot_advanced_chart(df, title=""):
 # --- 7. Google 表單同步 ---
 def sync_sheets():
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
-    if not sheet_id: return
+    if not sheet_id: 
+        add_log("SYS", "SYSTEM", "ERROR", "找不到 MONITOR_SHEET_ID")
+        return
     try:
-        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+        # 加上時間戳記避免讀到 Google 舊的緩存
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&timestamp={time.time()}"
         df_sheet = pd.read_csv(url)
         
         def clean_col(name):
             if name in df_sheet.columns:
-                valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
-                valid_series = valid_series[valid_series.str.strip() != ""]
-                return " ".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
-            return None # 改為回傳 None 以便判斷
+                # 抓取該欄位，轉成字串，排除 NaN，並用空格連接
+                valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'nan.0'], np.nan).dropna()
+                # 確保只取純數字部分 (防止 2330.0 出現)
+                codes = [x.split('.')[0].strip() for x in valid_series if x.strip() != ""]
+                return " ".join(codes)
+            return None
 
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
-        # 只有在真的有抓到資料時才更新，防止雲端斷線時把本地清單洗掉
         if new_search is not None:
             st.session_state.search_codes = new_search
         if new_inv is not None:
             st.session_state.inventory_codes = new_inv
             
-        add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
+        add_log("SYS", "SYSTEM", "INFO", f"成功同步！狙擊:{len(new_search.split()) if new_search else 0}檔, 庫存:{len(new_inv.split()) if new_inv else 0}檔")
     except Exception as e:
-        # 同步失敗時紀錄日誌，但保留原本 st.session_state 裡的代碼
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
 
 if not st.session_state.first_sync_done:
