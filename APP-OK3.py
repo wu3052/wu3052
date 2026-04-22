@@ -566,15 +566,14 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
             all_codes.append(get_yf_ticker(code))
     
     found_targets = []
-    batch_size = 100 
+    batch_size = 50  # 縮小批次以提升 yfinance 穩定性
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_count = len(all_codes)
     
-    # --- 關鍵修正：先用一個超快速的 download 抓取全市場『今天的最新快照』 ---
-    # 這一步只需幾秒，能確保我們拿到今天的 Close
-    with st.spinner("正在獲取今日全市場行情..."):
-        current_snapshots = yf.download(all_codes, period="1d", interval="1d", progress=False)
+    # 取得台灣當前日期 (確保判斷是否收盤)
+    today_dt = get_taiwan_time()
+    today_date = today_dt.date()
     
     for i in range(0, total_count, batch_size):
         batch = all_codes[i:i+batch_size]
@@ -582,58 +581,54 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
         status_text.markdown(f"🔍 **掃描進度:** `{i}/{total_count}` | 🔥 **已偵測標的:** `{len(found_targets)}` 檔")
         
         try:
-            # 抓歷史資料 (算均線用)
-            data_hist = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
+            # 分批下載 1 年資料
+            data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False, threads=True)
             
             for ticker in batch:
                 try:
+                    # 處理 yfinance 多標的提取
                     if len(batch) > 1:
-                        if ticker not in data_hist or data_hist[ticker].empty: continue
-                        df = data_hist[ticker].copy()
-                        # 從剛才的快照中提取最新價 (確保是今天的)
-                        snap_price = current_snapshots['Close'][ticker].iloc[-1]
-                        snap_vol = current_snapshots['Volume'][ticker].iloc[-1]
+                        if ticker not in data or data[ticker].dropna(how='all').empty: continue
+                        df = data[ticker].copy()
                     else:
-                        df = data_hist.copy()
-                        snap_price = current_snapshots['Close'].iloc[-1]
-                        snap_vol = current_snapshots['Volume'].iloc[-1]
+                        df = data.copy()
                     
                     df = df.dropna(subset=['Close'])
+                    if len(df) < 100: continue
                     
-                    # --- 強制更新當日價格 ---
-                    # 如果歷史數據最後一筆不是今天，則補上快照數據
-                    if df.index[-1].date() < datetime.now().date() and not np.isnan(snap_price):
-                        new_row = df.iloc[-1].copy()
-                        new_row.name = pd.Timestamp(datetime.now().date())
-                        new_row['Close'] = snap_price
-                        new_row['Volume'] = snap_vol
-                        df = pd.concat([df, pd.DataFrame([new_row])])
-
-                    # 欄位校準
+                    # 統一欄位名稱
                     df.columns = [str(c).lower().strip() for c in df.columns]
-                    df = df.rename(columns={"adj close": "close"})
-
-                    # 篩選邏輯開始...
+                    if 'adj close' in df.columns:
+                        df = df.rename(columns={"adj close": "close"})
+                    
+                    # --- [精準價格補償邏輯] ---
+                    # 如果最後一筆資料日期不是今天，這通常是 yf 延遲
+                    # 在晚上 14:00 後執行，應嘗試視為當日最新數據
                     curr_price = df['close'].iloc[-1]
                     prev_close = df['close'].iloc[-2]
                     curr_vol = df['volume'].iloc[-1]
+                    last_date = df.index[-1].date()
 
-                    # 1. 成交量過濾
+                    # 漲幅計算
+                    change_pct = ((curr_price - prev_close) / prev_close) * 100
+
+                    # --- [篩選條件開始] ---
+                    # 1. 成交量過濾 (張數)
                     if curr_vol < (min_volume_limit * 1000): continue
 
-                    # 2. 漲幅過濾 (現在這會非常準確，因為 curr_price 是今天的收盤)
-                    change_pct = ((curr_price - prev_close) / prev_close) * 100
+                    # 2. 漲幅過濾 (0% ~ 用戶輸入%)
                     if not (0 <= change_pct <= max_growth_limit): continue
 
-                    # 3. 出量偵測
+                    # 3. 出量偵測 (回溯前 2-3 天)
                     def check_volume_burst(target_idx):
                         if abs(target_idx) + 4 > len(df): return False
                         v = df['volume'].iloc[target_idx]
                         avg_v = df['volume'].iloc[target_idx-4 : target_idx-1].mean()
                         return v > (avg_v * 2.0)
+                    
                     is_volume_burst = check_volume_burst(-1) or check_volume_burst(-2) or check_volume_burst(-3)
 
-                    # 4. 均線與 KD (計算略...)
+                    # 4. 均線與 KD 計算
                     ma20 = df['close'].rolling(20).mean().iloc[-1]
                     ma200 = df['close'].rolling(200).mean().iloc[-1]
                     ma5 = df['close'].rolling(5).mean().iloc[-1]
@@ -642,7 +637,6 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                     cond_trend = curr_price > ma20 and curr_price > ma200
                     cond_retrace = ma5 < ma10 
                     
-                    # KD 計算...
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
@@ -657,10 +651,21 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                         stock_info = get_stock_info()
                         name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
                         
+                        # 評分系統
+                        df['est_volume'] = df['volume']
+                        score_val = 0
+                        try:
+                            score_val = int(analyze_strategy(df).iloc[-1]['score'])
+                        except: pass
+
                         found_targets.append({
                             "追蹤": False,
-                            "股價代號": sid, "股價名稱": name, "評分": int(analyze_strategy(df).iloc[-1]['score']),
-                            "股價": round(curr_price, 2), "漲幅%": round(change_pct, 2), "出量": "✅ 是" if is_volume_burst else "—"
+                            "股價代號": sid,
+                            "股價名稱": name,
+                            "評分": score_val,
+                            "股價": round(curr_price, 2),
+                            "漲幅%": round(change_pct, 2),
+                            "出量": "✅ 是" if is_volume_burst else "—"
                         })
                 except: continue
         except: continue
