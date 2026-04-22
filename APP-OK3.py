@@ -597,22 +597,22 @@ def run_stock_screener():
                     sid = ticker.split('.')[0]
                     
                     # 篩選條件：高分或強勢形態，且 5 日均量 > 500 張 (500,000股)
-                    vol_ma5 = analyzed_df['volume'].tail(5).mean()
-                    if (last_row['score'] >= 75 or "🚀" in last_row['pattern'] or "💎" in last_row['pattern']) \
-                       and vol_ma5 > 500000:
-                        
-                        found_targets.append({
-                            "代碼": sid,
-                            "評分": int(last_row['score']),
-                            "形態": last_row['pattern'],
-                            "股價": round(last_row['close'], 2),
-                            "量比": round(last_row['vol_ratio'], 2),
-                            "提醒": last_row['warning']
-                        })
+                # 寬鬆版過濾邏輯
+                vol_ma5 = analyzed_df['volume'].tail(5).mean()
+                has_pattern = last_row['pattern'] != "" and "正常" not in last_row['pattern']
+                
+                # 只要評分高於 65 或是 有特殊形態，且成交量大於 200 張就入選
+                if (last_row['score'] >= 65 or has_pattern) and vol_ma5 > 200000:
+                    found_targets.append({
+                        "代碼": sid,
+                        "評分": int(last_row['score']),
+                        "形態": last_row['pattern'] if last_row['pattern'] else "趨勢觀察",
+                        "股價": round(last_row['close'], 2),
+                        "量比": round(last_row['vol_ratio'], 2),
+                        "提醒": last_row['warning']
+                    })
                 except:
                     continue
-        except:
-            continue
 
     progress_bar.empty()
     status_text.empty()
