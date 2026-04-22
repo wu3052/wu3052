@@ -698,41 +698,45 @@ with st.sidebar:
                     st.plotly_chart(plot_advanced_chart(df_q, f"診斷報告: {query_sid}"), use_container_width=True)
 
     # --- 全市場潛力股挖掘 ---
-st.divider()
+# --- 這裡開始是側邊欄底部的全市場選股 UI ---
+    st.divider()
     st.subheader("🔭 全市場潛力股挖掘")
     st.caption("均線長多短回 + 量縮後出量 + KD金叉 (嚴格篩選)")
     
-    # 新增勾選框
-    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉標的 (嚴格模式)", value=True)
+    # 讓使用者手動調整條件
+    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉標的 (日線)", value=True)
     vol_limit = st.number_input("成交量大於 (張)", value=500, step=100)
 
     if st.button("🔎 執行全台股掃描 (進階版)", use_container_width=True):
-        with st.spinner("正在進行嚴格選股掃描..."):
-            # 傳入 UI 的參數
+        with st.spinner("正在進行嚴格選股掃描，請稍候..."):
+            # 調用選股函式
             screen_results = run_stock_screener(enable_kd_filter=use_kd_strict, min_volume_limit=vol_limit)
             
-            if not screen_results.empty:
+            if screen_results is not None and not screen_results.empty:
                 st.session_state.screen_results = screen_results
                 st.success(f"找到 {len(screen_results)} 檔符合嚴格條件標的！")
             else:
-                st.warning("查無符合條件的股票，請嘗試取消 KD 嚴格模式。")
+                st.warning("查無符合條件的股票，建議取消 KD 嚴格模式再試一次。")
 
-    if 'screen_results' in st.session_state:
+    # 如果有結果，顯示表格
+    if 'screen_results' in st.session_state and st.session_state.screen_results is not None:
         with st.expander("📊 查看選股結果", expanded=True):
             res_df = st.session_state.screen_results.sort_values(by="評分", ascending=False)
-            # 顯示你要求的表格欄位
+            # 依照你的要求顯示欄位
             st.dataframe(res_df[["股價代號", "股價名稱", "評分", "股價", "出量"]], use_container_width=True)
             
             # 提供複製代碼功能
             top_codes = ",".join(res_df['股價代號'].astype(str).tolist())
-            if st.button("📋 加入狙擊清單"):
-                st.session_state.search_codes = f"{st.session_state.get('search_codes', '')}\n{top_codes}".strip()
+            if st.button("📋 將結果加入狙擊清單"):
+                current_codes = st.session_state.get('search_codes', "")
+                st.session_state.search_codes = f"{current_codes}\n{top_codes}".strip()
+                st.success("已成功匯入！")
                 st.rerun()
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
 
-# --- 接下來銜接你原本的 9. 主要內容顯示區 ---
+# --- 側邊欄結束，回到主頁面邏輯 (注意這裡不要有縮排) ---
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
