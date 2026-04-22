@@ -380,50 +380,82 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
         pattern_desc = "強力買盤介入，實體紅棒穿透壓力區，配合量能噴發。"
         buy_pts.append("實體長紅")
 
-    # --- 買賣點彙整偵測 ---
-    recent_low = df["low"].tail(3).min()
-    is_retrace = (market_phase == "📈上漲盤 (多頭)" and row["volume"] < row["vol_ma5"] and 0 <= (row["close"] - row["ma5"]) / row["ma5"] < 0.015)
+    # --- 1. 核心判斷變數定義 (統一計算，避免重複) ---
+    last_idx = df.index[-1]
+    row = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    # 價格位階與缺口判斷
+    recent_low = df["low"].tail(3).min()  # 近三日最低點
+    recent_high = df["high"].tail(3).max() # 近三日最高點
+    is_gap_up = row["open"] > prev["high"] * 1.005 # 跳空開高 0.5%
+    
+    # 量縮回踩判定：
+    # 邏輯：價格回踩 5MA 附近(正負0.5%)，且收盤仍守在 5MA 之上，且成交量縮減
+    is_retrace = (row["low"] <= row["ma5"] * 1.005) and \
+                 (row["close"] > row["ma5"]) and \
+                 (row["volume"] < prev["volume"])
 
-# --- 1. 定義輔助判斷 (確保邏輯完整) ---
-    recent_low = df["low"].tail(3).min()
-    is_gap_up = row["open"] > prev["high"] * 1.005
-    # 量縮回踩判定：價格回踩5MA且量比前一日縮減
-    is_retrace = (row["low"] <= row["ma5"] * 1.005) and (row["close"] > row["ma5"]) and (row["volume"] < prev["volume"])
-
-    # --- 2. 建議買入順序 (邏輯加強版) ---
+    # --- 2. 買點偵測 (buy_pts) ---
+    buy_pts = []
     if is_gap_up: buy_pts.append("🚀多方跳空缺口")
-    if row["vcp_check"]: buy_pts.append("🔋籌碼壓縮(VCP)")
-    if not pd.isna(row["upward_key"]) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: 
+    if row.get("vcp_check"): buy_pts.append("🔋籌碼壓縮(VCP)")
+    
+    # 站上關鍵位 (死交關鍵位上漲)
+    if not pd.isna(row.get("upward_key")) and row["close"] > row["upward_key"] and prev["close"] <= row["upward_key"]: 
         buy_pts.append("站上死交關鍵位(上漲買入)")
-    if row["star_signal"]: buy_pts.append("站上發動點(觀察買點)")
+        
+    if row.get("star_signal"): buy_pts.append("站上發動點(觀察買點)")
     if is_retrace: buy_pts.append("量縮回踩5MA(買點)")
     if row["close"] > row["ma5"] and prev["close"] <= prev["ma5"]: buy_pts.append("站上5MA(買點)")
-    if row["close"] > row["ma144_60min"] and prev["close"] <= prev["ma144_60min"]: buy_pts.append("站上60分144MA(買點)")
-    if row["close"] > prev["close"] and row["low"] >= recent_low: buy_pts.append("底部位階支撐(不創新低)")
+    if row["close"] > row.get("ma144_60min", 0) and prev["close"] <= prev.get("ma144_60min", 0): 
+        buy_pts.append("站上60分144MA(買點)")
+    
+    # 底部位階支撐
+    if row["close"] > prev["close"] and row["low"] >= recent_low: 
+        buy_pts.append("底部位階支撐(不創新低)")
 
-    # --- 3. 建議賣出順序 (短線走弱 -> 關鍵位失守 -> 長線走空) ---
-    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: sell_pts.append("跌破5MA(注意賣點)")
-    if not pd.isna(row["downward_key"]) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: 
+    # --- 3. 賣點偵測 (sell_pts) ---
+    sell_pts = []
+    if row["close"] < row["ma5"] and prev["close"] >= prev["ma5"]: 
+        sell_pts.append("跌破5MA(注意賣點)")
+        
+    # 跌破關鍵位 (金交關鍵位下跌)
+    if not pd.isna(row.get("downward_key")) and row["close"] < row["downward_key"] and prev["close"] >= row["downward_key"]: 
         sell_pts.append("跌破金交關鍵位(下跌賣出)") 
-    if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: sell_pts.append("跌破10MA(賣點)")
-    if row["close"] < row["ma55_60min"] and prev["close"] >= prev["ma55_60min"]: sell_pts.append("跌破60分55MA(注意賣點)")
-    if row["close"] < row["ma144_60min"] and prev["close"] >= prev["ma144_60min"]: sell_pts.append("跌破60分144MA(賣點)")
-    if row["close"] < prev["close"] and row["high"] <= prev["high"]: sell_pts.append("頭部位階跌破(不創新高)")
+        
+    if row["close"] < row["ma10"] and prev["close"] >= prev["ma10"]: 
+        sell_pts.append("跌破10MA(賣點)")
+        
+    if row["close"] < row.get("ma55_60min", 0) and prev["close"] >= prev.get("ma55_60min", 0): 
+        sell_pts.append("跌破60分55MA(注意賣點)")
+        
+    if row["close"] < row.get("ma144_60min", 0) and prev["close"] >= prev.get("ma144_60min", 0): 
+        sell_pts.append("跌破60分144MA(賣點)")
+        
+    # 頭部位階跌破
+    if row["close"] < prev["close"] and row["high"] <= prev["high"]: 
+        sell_pts.append("頭部位階跌破(不創新高)")
 
-    # --- 最終評分與結果存入 ---
+    # --- 4. 評分邏輯計算 ---
+    score = 50 # 基礎分
     if buy_pts: score += 12 * len(set(buy_pts))
     if sell_pts: score -= 20 * len(set(sell_pts))
+    
+    # 加分項
     if row["vol_ratio"] > 1.8: score += 10
     if is_gap_up: score += 10
-    if row["vcp_check"]: score += 5
+    if row.get("vcp_check"): score += 5
     if row["close"] > row["ma200"]: score += 5
-    if row["is_weekly_bull"]: score += 5
+    if row.get("is_weekly_bull"): score += 5
     
-    # 大盤風控邏輯
-    if not is_market and hasattr(st.session_state, 'market_score') and st.session_state.market_score < 40:
-        score -= 20
+    # 大盤風控：如果大盤分數過低則扣分
+    if not is_market and hasattr(st.session_state, 'market_score'):
+        if st.session_state.market_score < 40:
+            score -= 20
 
-    if row["vcp_check"] and ("噴發" in pattern_name or "眼" in pattern_name):
+    # --- 5. 形態名稱修正與結果寫入 ---
+    if row.get("vcp_check") and ("噴發" in pattern_name or "眼" in pattern_name):
         pattern_name = "🔋 VCP + " + pattern_name
 
     df.at[last_idx, "score"] = max(0, min(100, score))
@@ -431,15 +463,20 @@ def analyze_strategy(df, sid=None, token=None, is_market=False):
     df.at[last_idx, "pattern_desc"] = pattern_desc
     df.at[last_idx, "warning"] = " | ".join(buy_pts + sell_pts) if (buy_pts or sell_pts) else "趨勢穩定"
     
+    # 決定訊號類型
     sig = "HOLD"
     if buy_pts: sig = "BUY"
     if sell_pts: sig = "SELL"
+    
+    # 避險邏輯覆蓋
     if not is_market and hasattr(st.session_state, 'market_score') and st.session_state.market_score < 40 and sig == "BUY":
         sig = "HOLD (大盤空頭避險)"
         df.at[last_idx, "warning"] = "⚠️ 大盤疲弱，暫緩開火 | " + df.at[last_idx, "warning"]
+        
     df.at[last_idx, "sig_type"] = sig
 
-    risk_vol = (row["atr"] / row["close"]) * 100
+    # 倉位配置建議
+    risk_vol = (row["atr"] / row["close"]) * 100 if "atr" in row else 2.0
     if risk_vol < 1.5: advice = "建議配置: 15~20% (穩健型)"
     elif risk_vol < 3.0: advice = "建議配置: 8~12% (標準型)"
     else: advice = "建議配置: 3~5% (高波動小心)"
