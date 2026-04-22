@@ -548,60 +548,67 @@ def get_yf_ticker(code):
 
 @st.cache_data(ttl=3600)
 def run_stock_screener():
-    """執行全台股掃描"""
+    """執行全台股掃描 - 強化格式相容版"""
     all_codes = []
-    # 取得所有上市櫃股票代碼
+    # 1. 取得所有代碼
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
             all_codes.append(get_yf_ticker(code))
     
     found_targets = []
     batch_size = 50 
-    
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     for i in range(0, len(all_codes), batch_size):
         batch = all_codes[i:i+batch_size]
         progress_bar.progress(min(i / len(all_codes), 1.0))
-        status_text.caption(f"正在掃描第 {i} ~ {i+len(batch)} 檔股票...")
+        status_text.caption(f"正在分析第 {i} 檔，目前已找到 {len(found_targets)} 檔符合條件標的...")
         
         try:
-            # yfinance 批量下載
-            data = yf.download(batch, period="8mo", group_by='ticker', interval="1d", progress=False)
+            # yfinance 下載
+            data = yf.download(batch, period="8mo", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch:
                 try:
-                    # 檢查數據是否存在
+                    # A. 提取資料並處理 MultiIndex 問題
                     if len(batch) > 1:
                         if ticker not in data or data[ticker].empty: continue
                         df_single = data[ticker].copy()
                     else:
-                        if data.empty: continue
                         df_single = data.copy()
                     
-                    df_single = df_single.dropna()
-                    if len(df_single) < 120: continue
+                    df_single = df_single.dropna(subset=['Close']) # 確保有收盤價
+                    if len(df_single) < 100: continue
                     
-                    # 格式轉換
+                    # B. 強制校正欄位名稱 (yfinance 有時會首字母大寫或有空白)
+                    df_single.columns = [str(c).lower().strip() for c in df_single.columns]
                     df_single = df_single.reset_index()
-                    df_single.columns = [c.lower() for c in df_single.columns]
-                    df_single = df_single.rename(columns={"date": "date", "adj close": "close"})
+                    df_single = df_single.rename(columns={
+                        "date": "date", 
+                        "adj close": "close", 
+                        "close": "close_raw"
+                    })
                     
-                    # 補齊分析器需要的欄位
+                    # 如果 adj close 不存在，就用 close
+                    if 'close' not in df_single.columns and 'close_raw' in df_single.columns:
+                        df_single['close'] = df_single['close_raw']
+
+                    # C. 補齊 analyze_strategy 必備欄位
                     df_single['est_volume'] = df_single['volume']
                     
-                    # 呼叫策略分析
+                    # D. 執行策略分析
                     analyzed_df = analyze_strategy(df_single)
                     if analyzed_df is None or analyzed_df.empty: continue
                     
                     last_row = analyzed_df.iloc[-1]
                     sid = ticker.split('.')[0]
                     
-                    # --- 調整後的篩選條件 (更寬鬆) ---
+                    # E. 極寬鬆篩選條件：只要評分超過 50 且 5日均量 > 100 張 (驗證用)
                     vol_ma5 = analyzed_df['volume'].tail(5).mean()
-                    # 只要評分 > 60 或 有特殊形態，且 5日均量 > 200張 (200,000股)
-                    if (last_row['score'] >= 60 or last_row['pattern'] != "") and vol_ma5 > 200000:
+                    
+                    # 判斷是否入選
+                    if (last_row['score'] >= 50) and vol_ma5 > 100000:
                         found_targets.append({
                             "代碼": sid,
                             "評分": int(last_row['score']),
@@ -610,10 +617,9 @@ def run_stock_screener():
                             "量比": round(last_row['vol_ratio'], 2),
                             "提醒": last_row['warning']
                         })
-                except Exception as e:
-                    # 這裡就是原本噴錯的地方，現在補上 except
-                    continue 
-        except Exception as e:
+                except:
+                    continue
+        except:
             continue
 
     progress_bar.empty()
