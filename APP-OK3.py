@@ -541,56 +541,36 @@ def plot_advanced_chart(df, title=""):
 
 # --- 7. Google 表單同步 ---
 def sync_sheets():
-    # 如果剛剛才手動按下「加入清單」，先跳過本次同步，避免網頁被舊資料覆蓋
-    if st.session_state.get('manual_updated', False):
-        st.session_state.manual_updated = False
-        return
-
     sheet_id = st.secrets.get("MONITOR_SHEET_ID")
     if not sheet_id: return
-    
     try:
-        # --- 修改點：讀取原本的試算表 ---
-        # 建議在試算表中使用公式 =INDEX('表單回覆 1'!B:B, COUNTA('表單回覆 1'!B:B)) 
-        # 將最新清單連動到原本的 'snipe_list' 欄位，這樣這段程式碼就不必大改
         url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
         df_sheet = pd.read_csv(url)
         
         def clean_col(name):
             if name in df_sheet.columns:
-                # 這裡改為用逗號或空格分隔，確保格式統一
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
-                return ",".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
-            return None
+                return " ".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
+            return None # 改為回傳 None 以便判斷
 
         new_search = clean_col('snipe_list')
         new_inv = clean_col('inventory_list')
         
+        # 只有在真的有抓到資料時才更新，防止雲端斷線時把本地清單洗掉
         if new_search is not None:
             st.session_state.search_codes = new_search
         if new_inv is not None:
             st.session_state.inventory_codes = new_inv
             
-        add_log("SYS", "SYSTEM", "INFO", "成功從 Google 雲端同步最新數據")
+        add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
     except Exception as e:
+        # 同步失敗時紀錄日誌，但保留原本 st.session_state 裡的代碼
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
 
-def write_to_google_form(stock_codes_str):
-    # 【填寫重點】將連結中的 viewform 改成 formResponse
-    # 範例網址：https://docs.google.com/forms/d/e/1FAIpQLSxxxx/formResponse
-    form_url = "https://docs.google.com/forms/d/e/1FAIpQLSdPr1QScI98ndIkeanX8Y295L-bXIQfJMGvZztmRtVOzACXGw/formResponse"
-    
-    # 【填寫重點】換成你取得的 entry.XXXXXXXX 編號
-    data = {"entry.339395508": stock_codes_str}
-    
-    try:
-        # 送出表單資料
-        response = requests.post(form_url, data=data, timeout=5)
-        return response.status_code == 200
-    except Exception as e:
-        print(f"寫入失敗: {e}")
-        return False
+if not st.session_state.first_sync_done:
+    sync_sheets()
+    st.session_state.first_sync_done = True
 
 # --- 7.5 搜尋所有股票 ---
 @st.cache_data(ttl=60)
@@ -792,20 +772,10 @@ with st.sidebar:
                     if selected_codes:
                         new_codes_str = ",".join(selected_codes)
                         current_list = st.session_state.get('search_codes', "")
-                        
-                        # 產生合併後的最新字串
+                        # 邏輯優化：確保合併時不會出現多餘逗號
                         combined = f"{current_list},{new_codes_str}".strip(",")
-                        
-                        # A. 更新網頁畫面
                         st.session_state.search_codes = combined
-                        st.session_state.manual_updated = True # 標記手動更新，防止被 sync_sheets 覆蓋
-                        
-                        # B. 寫入雲端表單
-                        if write_to_google_form(combined):
-                            st.success(f"✅ 成功！{len(selected_codes)} 檔標的已同步至雲端存檔。")
-                        else:
-                            st.warning("⚠️ 本地已加入，但雲端同步失敗（請檢查表單連結）。")
-                            
+                        st.success(f"已加入 {len(selected_codes)} 檔標的！")
                         time.sleep(1)
                         st.rerun()
                     else:
@@ -1052,6 +1022,3 @@ else:
     with placeholder.container(): 
         perform_scan(manual_trigger=False)
     st.info("💡 自動監控已關閉。")
-
-
-
