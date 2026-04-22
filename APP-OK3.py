@@ -684,9 +684,6 @@ with st.sidebar:
                     st.success("已加入清單，記得儲存或執行掃描")
                     st.rerun()
 
-    st.divider()
-    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}"))
-
     # --- 個股即時診斷區塊 ---
     st.divider()
     st.subheader("🔍 個股即時診斷")
