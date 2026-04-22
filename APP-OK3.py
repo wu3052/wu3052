@@ -560,19 +560,16 @@ def get_full_market_prices():
 @st.cache_data(ttl=60)
 def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_limit=5.0):
     all_codes = []
+    # 建立台股 4 碼股票清單
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
             all_codes.append(get_yf_ticker(code))
     
     found_targets = []
-    # 將 batch_size 設為 50，避免一次下載太多導致逾時或錯誤
-    batch_size = 50 
+    batch_size = 50 # 降低批次量以維持穩定
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_count = len(all_codes)
-    
-    # 取得台灣正確日期
-    today_date = get_taiwan_time().date()
     
     for i in range(0, total_count, batch_size):
         batch = all_codes[i:i+batch_size]
@@ -580,12 +577,11 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
         status_text.markdown(f"🔍 **進度:** `{i}/{total_count}` | 🔥 **符合標的:** `{len(found_targets)}` 檔")
         
         try:
-            # 1. 直接下載 1 年份數據（yfinance 在下載多標的時內部已有優化，不需要手動開 thread）
+            # 使用 yfinance 批量下載 (不開多執行緒以防崩潰)
             data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False, threads=False)
             
             for ticker in batch:
                 try:
-                    # 提取該檔股票數據
                     if len(batch) > 1:
                         if ticker not in data or data[ticker].dropna(how='all').empty: continue
                         df = data[ticker].copy()
@@ -593,50 +589,52 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                         df = data.copy()
                     
                     df = df.dropna(subset=['Close'])
-                    if len(df) < 60: continue # 數據太少無法算 KD
+                    if len(df) < 60: continue
                     
-                    # --- [日期修正補丁] ---
-                    # 如果 yfinance 給的最後日期是昨天，強制檢查最後一個價格
-                    # (yfinance 盤後 download 通常最後一筆就是今天收盤)
+                    # 統一欄位名稱
                     df.columns = [str(c).lower().strip() for c in df.columns]
                     if 'adj close' in df.columns: df = df.rename(columns={"adj close": "close"})
-                    
+
+                    # 取得最後兩日價格與量
                     curr_price = df['close'].iloc[-1]
                     prev_close = df['close'].iloc[-2]
                     curr_vol = df['volume'].iloc[-1]
 
-                    # 1. 成交量過濾 (張數 > 500)
+                    # --- [條件篩選] ---
+                    
+                    # 1. 成交量過濾 (> 500張)
                     if curr_vol < (min_volume_limit * 1000): continue
 
-                    # 2. 漲幅過濾 (0% ~ 手動輸入%)
+                    # 2. 漲幅過濾 (0% ~ 用戶輸入%)
                     change_pct = ((curr_price - prev_close) / prev_close) * 100
                     if not (0 <= change_pct <= max_growth_limit): continue
 
-                    # 3. 出量偵測 (當天或前 2-3 天有翻倍量)
-                    def check_volume_burst(target_idx):
-                        if abs(target_idx) + 4 > len(df): return False
-                        v = df['volume'].iloc[target_idx]
-                        avg_v = df['volume'].iloc[target_idx-4 : target_idx-1].mean()
+                    # 3. 出量偵測 (回溯前 2-3 天有無翻倍量)
+                    def check_volume_burst(idx):
+                        if abs(idx) + 4 > len(df): return False
+                        v = df['volume'].iloc[idx]
+                        avg_v = df['volume'].iloc[idx-4 : idx-1].mean()
                         return v > (avg_v * 2.0)
+                    
                     is_volume_burst = check_volume_burst(-1) or check_volume_burst(-2) or check_volume_burst(-3)
 
-                    # 4. 均線與 KD 條件
+                    # 4. 均線與 KD 條件 (長多短回)
                     ma20 = df['close'].rolling(20).mean().iloc[-1]
                     ma200 = df['close'].rolling(200).mean().iloc[-1]
                     ma5 = df['close'].rolling(5).mean().iloc[-1]
                     ma10 = df['close'].rolling(10).mean().iloc[-1]
                     
-                    # 趨勢向上但短線回測
                     cond_trend = curr_price > ma20 and curr_price > ma200
                     cond_retrace = ma5 < ma10 
 
+                    # KD 計算
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
                     df['k'] = rsv.ewm(com=2).mean()
                     df['d'] = df['k'].ewm(com=2).mean()
                     
-                    # 9K 向上突破 9D
+                    # 9K 向上突破 9D (勾選時生效)
                     kd_cross = df['k'].iloc[-2] <= df['d'].iloc[-2] and df['k'].iloc[-1] > df['d'].iloc[-1]
 
                     if cond_trend and cond_retrace:
@@ -650,7 +648,7 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
                             "追蹤": False,
                             "股價代號": sid,
                             "股價名稱": name,
-                            "評分": 0, # 簡化評分以提速
+                            "評分": 0, # 提速考量暫不計算詳細評分
                             "股價": round(curr_price, 2),
                             "漲幅%": round(change_pct, 2),
                             "出量": "✅ 是" if is_volume_burst else "—"
@@ -660,7 +658,7 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
 
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(found_targets)
+    return pd.DataFrame(found_targets))
 
 
     
@@ -711,45 +709,56 @@ with st.sidebar:
     
     st.divider()
     st.subheader("🔭 全市場潛力股挖掘")
-    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉 (日)", value=True)
-    vol_limit = st.number_input("成交量大於 (張)", value=500, step=100)
     
-    # --- 新增：手動輸入漲幅上限 ---
-    growth_limit = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5, help="找出尚未噴發太遠的股票")
+    # 這裡加入 key 讓 session_state 能紀錄數值
+    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉 (日)", value=True, key="use_kd_strict")
+    vol_limit = st.number_input("成交量大於 (張)", value=500, step=100, key="vol_limit")
+    growth_limit = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5, key="growth_limit")
 
     if st.button("🔎 執行全台股掃描", use_container_width=True):
-        # 這裡會執行上面的 run_stock_screener，裡面已經有進度條
+        # 1. 執行選股邏輯
         screen_results = run_stock_screener(
             enable_kd_filter=use_kd_strict, 
             min_volume_limit=vol_limit,
             max_growth_limit=growth_limit
         )
         
+        # 2. 存儲結果
         if not screen_results.empty:
             st.session_state.screen_results = screen_results
-            # 在按鈕下方顯示最終結果數量
-            st.balloons() # 找到股票時噴出氣球慶祝一下
-            st.success(f"✅ 掃描完成！共發現 `{len(screen_results)}` 檔符合條件標的。")
+            st.balloons()
+            st.success(f"✅ 掃描完成！共發現 `{len(screen_results)}` 檔。")
         else:
             st.session_state.screen_results = pd.DataFrame()
-            st.warning("⚠️ 掃描完成，但目前查無符合條件標的。")
+            st.warning("⚠️ 查無符合條件標的。")
 
+    # --- 顯示結果與勾選加入 ---
     if 'screen_results' in st.session_state and not st.session_state.screen_results.empty:
         with st.expander("📊 勾選標的加入狙擊", expanded=True):
-            # 這裡使用數據編輯器，讓使用者手動勾選
             edited_df = st.data_editor(
                 st.session_state.screen_results,
                 column_config={"追蹤": st.column_config.CheckboxColumn(default=False)},
-                disabled=["股價代號", "評分", "股價", "漲幅%", "出量"],
-                hide_index=True, key="screener_editor"
+                disabled=["股價代號", "股價名稱", "評分", "股價", "漲幅%", "出量"],
+                hide_index=True, 
+                key="screener_editor",
+                use_container_width=True
             )
-            if st.button("📥 加入勾選股票"):
+            
+            if st.button("📥 加入勾選股票", use_container_width=True):
                 selected = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
                 if selected:
-                    current = st.session_state.search_codes
-                    st.session_state.search_codes = f"{current}\n{','.join(selected)}".strip()
-                    st.success("已加入清單，記得儲存或執行掃描")
+                    # 抓取現有的狙擊清單
+                    current_list = st.session_state.get('search_codes', "")
+                    # 處理代碼合併，避免格式跑掉
+                    new_list = current_list.strip() + "," + ",".join(selected)
+                    # 去除重複並清理多餘逗號
+                    cleaned_list = ",".join(list(set([c.strip() for c in new_list.split(",") if c.strip()])))
+                    
+                    st.session_state.search_codes = cleaned_list
+                    st.success(f"成功加入 {len(selected)} 檔！")
                     st.rerun()
+                else:
+                    st.warning("請先勾選標的。")
 
 
     st.divider()
