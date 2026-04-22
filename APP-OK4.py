@@ -600,7 +600,7 @@ def perform_scan(manual_trigger=False):
     stock_info = get_stock_info()
     processed_stocks = []
 
-    # 1. 優先渲染大盤分析
+# 1. 優先渲染大盤分析
     m_df = get_stock_data("TAIEX", fm_token)
     if m_df is not None:
         m_df = analyze_strategy(m_df, is_market=True)
@@ -619,12 +619,13 @@ def perform_scan(manual_trigger=False):
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-# 2. 處理個股
+    # 2. 處理個股 (縮排已校準)
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
-for future in future_to_sid:
+        for future in future_to_sid:
             sid = future_to_sid[future]
             try:
+                # --- [try 區塊開始] ---
                 df = future.result()
                 if df is None: 
                     continue
@@ -706,11 +707,12 @@ for future in future_to_sid:
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
+                # --- [try 區塊結束] ---
 
             except Exception as e:
+                # 這裡嚴格垂直對齊 try
                 add_log(sid, "SYSTEM", "ERROR", f"處理個股數據異常: {str(e)}")
                 print(f"Error processing {sid}: {e}")
-                
     # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
     snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
