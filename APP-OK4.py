@@ -509,13 +509,20 @@ def sync_sheets():
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
                 return " ".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
-            return ""
+            return None # 改為回傳 None 以便判斷
+
+        new_search = clean_col('snipe_list')
+        new_inv = clean_col('inventory_list')
         
-        st.session_state.search_codes = clean_col('snipe_list')
-        st.session_state.inventory_codes = clean_col('inventory_list')
+        # 只有在真的有抓到資料時才更新，防止雲端斷線時把本地清單洗掉
+        if new_search is not None:
+            st.session_state.search_codes = new_search
+        if new_inv is not None:
+            st.session_state.inventory_codes = new_inv
+            
         add_log("SYS", "SYSTEM", "INFO", "成功從 Google 表單同步數據")
     except Exception as e:
-        st.error(f"同步失敗: {e}")
+        # 同步失敗時紀錄日誌，但保留原本 st.session_state 裡的代碼
         add_log("SYS", "SYSTEM", "ERROR", f"雲端同步失敗: {str(e)}")
 
 if not st.session_state.first_sync_done:
@@ -575,6 +582,10 @@ with st.sidebar:
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
+    # --- 加法升級：自動監控時先同步雲端清單 ---
+    if not manual_trigger:
+        sync_sheets() 
+    
     today_str = get_taiwan_time().strftime('%Y-%m-%d')
     now = get_taiwan_time()
     st.markdown(f"### 📡 掃描時間：{now.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -777,16 +788,23 @@ def perform_scan(manual_trigger=False):
 # --- 10. 主循環邏輯 ---
 placeholder = st.empty()
 if analyze_btn:
-    with placeholder.container(): perform_scan(manual_trigger=True)
+    with placeholder.container(): 
+        perform_scan(manual_trigger=True)
 elif auto_monitor:
     if is_market_open():
-        with placeholder.container(): perform_scan(manual_trigger=False)
-        st.caption(f"🔄 盤中自動監控中... 下次掃描預計於 {interval} 分鐘後")
-        time.sleep(10) 
+        with placeholder.container(): 
+            perform_scan(manual_trigger=False)
+        
+        # 加法升級：更明確的倒數與同步提示
+        st.info(f"🔄 自動監控中... 已同步 Google 表單清單。下次掃描預計於 {interval} 分鐘後。")
+        time.sleep(interval * 60) # 根據您設定的 slider 間隔暫停
         st.rerun()
     else:
-        with placeholder.container(): perform_scan(manual_trigger=False)
+        # 非開盤時間僅執行一次掃描後停住
+        with placeholder.container(): 
+            perform_scan(manual_trigger=False)
         st.warning("🌙 目前非台灣股市開盤時間 (09:00~13:30)，自動監控已進入休眠。")
 else:
-    with placeholder.container(): perform_scan(manual_trigger=False)
+    with placeholder.container(): 
+        perform_scan(manual_trigger=False)
     st.info("💡 自動監控已關閉。")
