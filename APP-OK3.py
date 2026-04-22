@@ -535,6 +535,89 @@ if not st.session_state.first_sync_done:
     sync_sheets()
     st.session_state.first_sync_done = True
 
+# --- 7.5 全市場選股工具函式 ---
+def get_yf_ticker(code):
+    """將台股代碼轉換為 yfinance 格式"""
+    try:
+        if code in twstock.codes:
+            market = twstock.codes[code].market
+            return f"{code}.TW" if market == '上市' else f"{code}.TWO"
+        return f"{code}.TW"
+    except:
+        return f"{code}.TW"
+
+@st.cache_data(ttl=3600)
+def run_stock_screener():
+    """執行全台股掃描"""
+    all_codes = []
+    # 取得所有上市櫃股票代碼
+    for code, info in twstock.codes.items():
+        if len(code) == 4 and info.type == '股票':
+            all_codes.append(get_yf_ticker(code))
+    
+    found_targets = []
+    batch_size = 50 # 縮小批次以增進穩定性
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i in range(0, len(all_codes), batch_size):
+        batch = all_codes[i:i+batch_size]
+        progress_bar.progress(min(i / len(all_codes), 1.0))
+        status_text.caption(f"正在掃描第 {i} ~ {i+len(batch)} 檔股票...")
+        
+        try:
+            # 使用 yfinance 下載
+            data = yf.download(batch, period="8mo", group_by='ticker', interval="1d", progress=False)
+            
+            for ticker in batch:
+                try:
+                    if len(batch) > 1:
+                        if ticker not in data: continue
+                        df_single = data[ticker].copy()
+                    else:
+                        df_single = data.copy()
+                    
+                    df_single = df_single.dropna()
+                    if len(df_single) < 120: continue
+                    
+                    # 格式轉換以符合 analyze_strategy
+                    df_single = df_single.reset_index()
+                    df_single.columns = [c.lower() for c in df_single.columns]
+                    df_single = df_single.rename(columns={"date": "date", "adj close": "close"})
+                    
+                    # 補齊分析器需要的預估量欄位
+                    df_single['est_volume'] = df_single['volume']
+                    
+                    # 呼叫你原本的策略分析
+                    analyzed_df = analyze_strategy(df_single)
+                    if analyzed_df is None: continue
+                    
+                    last_row = analyzed_df.iloc[-1]
+                    sid = ticker.split('.')[0]
+                    
+                    # 篩選條件：高分或強勢形態，且 5 日均量 > 500 張 (500,000股)
+                    vol_ma5 = analyzed_df['volume'].tail(5).mean()
+                    if (last_row['score'] >= 75 or "🚀" in last_row['pattern'] or "💎" in last_row['pattern']) \
+                       and vol_ma5 > 500000:
+                        
+                        found_targets.append({
+                            "代碼": sid,
+                            "評分": int(last_row['score']),
+                            "形態": last_row['pattern'],
+                            "股價": round(last_row['close'], 2),
+                            "量比": round(last_row['vol_ratio'], 2),
+                            "提醒": last_row['warning']
+                        })
+                except:
+                    continue
+        except:
+            continue
+
+    progress_bar.empty()
+    status_text.empty()
+    return pd.DataFrame(found_targets)
+
 # --- 8. 指揮中心 UI 與 主動詢問功能 ---
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
@@ -551,13 +634,13 @@ with st.sidebar:
     auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
     analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
 
-    # --- 新增：個股即時診斷區塊 ---
+    # --- 個股即時診斷區塊 ---
     st.divider()
     st.subheader("🔍 個股即時診斷")
-    query_sid = st.text_input("輸入代碼 (例如: 2330)", placeholder="輸入後按 Enter 或下方按鈕")
+    query_sid = st.text_input("輸入代碼 (例如: 2330)", key="diag_input")
     quick_diag = st.button("🔎 開始診斷報告", use_container_width=True)
     
-    if quick_diag and query_sid:
+    if (quick_diag or (query_sid and len(query_sid)==4)) and query_sid:
         with st.spinner(f"正在深度診斷 {query_sid}..."):
             df_q = get_stock_data(query_sid, fm_token)
             if df_q is not None:
@@ -566,7 +649,6 @@ with st.sidebar:
                 stock_info = get_stock_info()
                 q_name = stock_info[stock_info["stock_id"] == query_sid]["stock_name"].values[0] if query_sid in stock_info["stock_id"].values else "未知"
                 
-                # 彈出診斷結果視窗
                 st.info(f"### 📊 {query_sid} {q_name} 診斷報告")
                 col_a, col_b = st.columns(2)
                 col_a.metric("當前股價", f"{q_last['close']:.2f}")
@@ -580,11 +662,36 @@ with st.sidebar:
                 """)
                 with st.expander("📈 查看診斷技術圖表"):
                     st.plotly_chart(plot_advanced_chart(df_q, f"診斷報告: {query_sid}"), use_container_width=True)
+
+    # --- 全市場潛力股挖掘 ---
+    st.divider()
+    st.subheader("🔭 全市場潛力股挖掘")
+    st.caption("基於 120-180 天走勢，尋找強勢噴發標的。")
+    if st.button("🔎 執行全台股掃描 (Alpha)", use_container_width=True):
+        with st.spinner("正在掃描全市場 (約需 1 分鐘)..."):
+            screen_results = run_stock_screener()
+            if not screen_results.empty:
+                st.session_state.screen_results = screen_results
+                st.success(f"找到 {len(screen_results)} 檔符合條件標的！")
             else:
-                st.error(f"❌ 無法取得 {query_sid} 的數據，請檢查代碼是否正確。")
+                st.warning("查無符合強勢噴發條件的股票。")
+
+    if 'screen_results' in st.session_state:
+        with st.expander("📊 查看選股結果", expanded=True):
+            res_df = st.session_state.screen_results.sort_values(by="評分", ascending=False)
+            st.dataframe(res_df, use_container_width=True)
+            
+            top_codes = ",".join(res_df['代碼'].astype(str).tolist())
+            if st.button("📋 將結果加入狙擊預備名單"):
+                current_codes = st.session_state.get('search_codes', "")
+                st.session_state.search_codes = f"{current_codes}\n{top_codes}".strip()
+                st.success("已成功匯入！")
+                st.rerun()
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
+
+# --- 接下來銜接你原本的 9. 主要內容顯示區 ---
 
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
