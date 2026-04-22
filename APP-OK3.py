@@ -573,93 +573,106 @@ if not st.session_state.first_sync_done:
     st.session_state.first_sync_done = True
 
 # --- 7.5 搜尋所有股票 ---
-def screen_stocks(use_kd=False, max_pct=5.0, min_vol=500):
-    """
-    選股邏輯：120天走勢、20MA以上、40週MA以上、5MA<10MA、量能與漲幅篩選
-    """
-    all_tw_stocks = twstock.codes
-    target_list = [sid for sid, info in all_tw_stocks.items() 
-                   if info.type == '股票' and (info.market in ['上市', '上櫃'])]
-    
-    # 轉換 yfinance 格式 (台股後綴 .TW 或 .TWO)
-    yf_symbols = [f"{sid}.TW" if all_tw_stocks[sid].market == '上市' else f"{sid}.TWO" for sid in target_list]
-    
-    # 下載數據
-    data = yf.download(yf_symbols, period="250d", interval="1d", group_by='ticker', threads=True)
+@st.cache_data(ttl=60)
+def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_limit=5.0):
+    all_codes = []
+    for code, info in twstock.codes.items():
+        if len(code) == 4 and info.type == '股票':
+            all_codes.append(get_yf_ticker(code))
     
     found_targets = []
-    total_count = len(target_list)
+    batch_size = 100 
     
-    # --- 建立動態進度顯示器 ---
+    # --- 建立動態進度顯示區 ---
     progress_bar = st.progress(0)
-    status_text = st.empty() # 用於顯示 🚀 正在分析 (120/1750): 掃描出 5 檔
+    status_text = st.empty() # 用於動態更新文字狀態
     
-    for i, sid in enumerate(target_list):
-        # 更新即時進度狀態
-        current_num = i + 1
-        found_num = len(found_targets)
-        status_text.markdown(f"🚀 **正在分析 ({current_num}/{total_count}): 掃描出 {found_num} 檔**")
-        progress_bar.progress(current_num / total_count)
+    total_count = len(all_codes)
+    
+    for i in range(0, total_count, batch_size):
+        batch = all_codes[i:i+batch_size]
         
-        ticker = f"{sid}.TW" if all_tw_stocks[sid].market == '上市' else f"{sid}.TWO"
-        if ticker not in data.columns.get_level_values(0): continue
+        # 更新進度條與文字
+        current_progress = min(i / total_count, 1.0)
+        progress_bar.progress(current_progress)
+        status_text.markdown(f"🔍 **掃描進度:** `{i}/{total_count}` | 🔥 **已偵測到標的:** `{len(found_targets)}` 檔")
         
-        df = data[ticker].dropna()
-        if len(df) < 200: continue # 確保有足夠數據計算 40週(200日) MA
+        try:
+            data = yf.download(batch, period="1y", interval="1d", group_by='ticker', progress=False)
             
-        curr_price = df['Close'].iloc[-1]
-        prev_price = df['Close'].iloc[-2]
-        vol_today = df['Volume'].iloc[-1] / 1000  # 換算張數
-        change_pct = ((curr_price - prev_price) / prev_price) * 100
-        
-        # 移動平均線
-        ma5 = df['Close'].rolling(5).mean().iloc[-1]
-        ma10 = df['Close'].rolling(10).mean().iloc[-1]
-        ma20 = df['Close'].rolling(20).mean().iloc[-1]
-        ma200 = df['Close'].rolling(200).mean().iloc[-1]
-        
-        # 篩選條件
-        c1 = curr_price > ma20
-        c2 = curr_price > ma200
-        c3 = ma5 < ma10
-        c4 = vol_today >= min_vol
-        c5 = change_pct < max_pct 
-        
-        # 出量定義：回溯前2~3天突然出現>2倍以上的量
-        is_volume_burst = False
-        for j in range(-3, 0): 
-            prev_v = df['Volume'].iloc[j-1]
-            if prev_v > 0 and (df['Volume'].iloc[j] / prev_v) >= 2.0:
-                is_volume_burst = True
-                break
+            for ticker in batch:
+                try:
+                    if len(batch) > 1:
+                        if ticker not in data or data[ticker].empty: continue
+                        df = data[ticker].copy()
+                    else:
+                        df = data.copy()
+                    
+                    df = df.dropna(subset=['Close'])
+                    if len(df) < 100: continue
+                    
+                    df.columns = [str(c).lower().strip() for c in df.columns]
+                    df = df.rename(columns={"adj close": "close"})
 
-        # KD 篩選
-        kd_pass = True
-        if use_kd:
-            low_9 = df['Low'].rolling(9).min()
-            high_9 = df['High'].rolling(9).max()
-            rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
-            k = rsv.ewm(com=2).mean()
-            d = k.ewm(com=2).mean()
-            kd_pass = k.iloc[-1] > d.iloc[-1] and k.iloc[-2] <= d.iloc[-2]
+                    curr_price = df['close'].iloc[-1]
+                    prev_close = df['close'].iloc[-2]
+                    curr_vol = df['volume'].iloc[-1]
 
-        if all([c1, c2, c3, c4, c5, kd_pass]):
-            # 評分邏輯
-            score = 80 if is_volume_burst else 65
-            name = all_tw_stocks[sid].name
-            
-            # 使用您要求的欄位格式
-            found_targets.append({
-                "追蹤": False, 
-                "股價代號": sid,
-                "股價名稱": name,
-                "評分": score,
-                "股價": round(curr_price, 2),
-                "漲幅%": round(change_pct, 2),
-                "出量": "✅ 是" if is_volume_burst else "—"
-            })
-            
-    # 掃描結束，清除進度顯示
+                    # 條件 1: 成交量
+                    if curr_vol < (min_volume_limit * 1000): continue
+
+                    # 條件 2: 漲幅 0~X%
+                    change_pct = ((curr_price - prev_close) / prev_close) * 100
+                    if not (0 <= change_pct <= max_growth_limit): continue
+
+                    # 條件 3: 出量偵測
+                    def check_volume_burst(target_idx):
+                        if abs(target_idx) + 4 > len(df): return False
+                        v = df['volume'].iloc[target_idx]
+                        avg_v = df['volume'].iloc[target_idx-4 : target_idx-1].mean()
+                        return v > (avg_v * 2.0)
+                    is_volume_burst = check_volume_burst(-1) or check_volume_burst(-2) or check_volume_burst(-3)
+
+                    # 條件 4: 均線與 KD
+                    ma20 = df['close'].rolling(20).mean().iloc[-1]
+                    ma200 = df['close'].rolling(200).mean().iloc[-1]
+                    ma5 = df['close'].rolling(5).mean().iloc[-1]
+                    ma10 = df['close'].rolling(10).mean().iloc[-1]
+
+                    cond_trend = curr_price > ma20 and curr_price > ma200
+                    cond_retrace = ma5 < ma10 
+
+                    low_9 = df['low'].rolling(9).min()
+                    high_9 = df['high'].rolling(9).max()
+                    rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
+                    df['k'] = rsv.ewm(com=2).mean()
+                    df['d'] = df['k'].ewm(com=2).mean()
+                    kd_cross = df['k'].iloc[-2] <= df['d'].iloc[-2] and df['k'].iloc[-1] > df['d'].iloc[-1]
+
+                    if cond_trend and cond_retrace:
+                        if enable_kd_filter and not kd_cross: continue
+                        
+                        sid = ticker.split('.')[0]
+                        stock_info = get_stock_info()
+                        name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
+                        
+                        df['est_volume'] = df['volume']
+                        analyzed_df = analyze_strategy(df)
+                        score = int(analyzed_df.iloc[-1]['score']) if (analyzed_df is not None) else 0
+
+                        found_targets.append({
+                            "追蹤": False,
+                            "股價代號": sid,
+                            "股價名稱": name,
+                            "評分": score,
+                            "股價": round(curr_price, 2),
+                            "漲幅%": round(change_pct, 2),
+                            "出量": "✅ 是" if is_volume_burst else "—"
+                        })
+                except: continue
+        except: continue
+
+    # 掃描結束，清空狀態與進度條
     progress_bar.empty()
     status_text.empty()
     return pd.DataFrame(found_targets)
@@ -713,15 +726,29 @@ with st.sidebar:
                 st.error(f"❌ 無法取得 {query_sid} 的數據，請檢查代碼是否正確。")
 
     st.divider()
-    st.header("🔍 智慧選股系統")
-    # KD 勾選
-    use_kd_val = st.checkbox("加上 KD 金叉篩選 (日)")
-    # 手動輸入成交量門檻
-    min_vol = st.number_input("成交量門檻 (張數 >)", min_value=0, value=500, step=100)
-    # 手動輸入漲幅限制 (找出 < N% 的股票)
-    max_pct = st.number_input("漲幅限制 (找出今日漲幅 < %)", min_value=-10.0, max_value=10.0, value=5.0, step=0.5)
-    # 開始按鈕
-    run_screen = st.button("🔎 開始全市場掃描", use_container_width=True)
+    st.subheader("🔭 全市場潛力股挖掘")
+    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉 (日)", value=True)
+    vol_limit = st.number_input("成交量大於 (張)", value=500, step=100)
+    
+    # --- 新增：手動輸入漲幅上限 ---
+    growth_limit = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5, help="找出尚未噴發太遠的股票")
+
+    if st.button("🔎 執行全台股掃描", use_container_width=True):
+        # 這裡會執行上面的 run_stock_screener，裡面已經有進度條
+        screen_results = run_stock_screener(
+            enable_kd_filter=use_kd_strict, 
+            min_volume_limit=vol_limit,
+            max_growth_limit=growth_limit
+        )
+        
+        if not screen_results.empty:
+            st.session_state.screen_results = screen_results
+            # 在按鈕下方顯示最終結果數量
+            st.balloons() # 找到股票時噴出氣球慶祝一下
+            st.success(f"✅ 掃描完成！共發現 `{len(screen_results)}` 檔符合條件標的。")
+        else:
+            st.session_state.screen_results = pd.DataFrame()
+            st.warning("⚠️ 掃描完成，但目前查無符合條件標的。")
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
@@ -963,38 +990,4 @@ else:
         perform_scan(manual_trigger=False)
     st.info("💡 自動監控已關閉。")
 
-# === 修正後的選股顯示區塊 (請確保這行 if 與下方的 placeholder 平行) ===
-if run_screen:
-    st.divider()
-    st.subheader("📋 符合條件股票清單 (手動篩選區)")
-    
-    results_df = screen_stocks(use_kd=use_kd_val, max_pct=max_pct, min_vol=min_vol)
-    
-    if not results_df.empty:
-        st.info("💡 請在表格第一欄點擊勾選想要追蹤的標的，完成後手動複製代碼至左側『🎯 狙擊清單』。")
-        
-        # 使用 data_editor 呈現表格
-        edited_df = st.data_editor(
-            results_df,
-            column_config={
-                "追蹤": st.column_config.CheckboxColumn(help="勾選欲追蹤的標的", default=False),
-                "股價代號": st.column_config.TextColumn(disabled=True),
-                "股價名稱": st.column_config.TextColumn(disabled=True),
-                "評分": st.column_config.NumberColumn(disabled=True),
-                "股價": st.column_config.NumberColumn(disabled=True),
-                "漲幅%": st.column_config.NumberColumn(disabled=True),
-                "出量": st.column_config.TextColumn(disabled=True),
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="stock_selector_main"
-        )
-        
-        # 顯示勾選結果
-        selected_codes = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
-        if selected_codes:
-            code_string = ", ".join(selected_codes)
-            st.success(f"✅ 您已勾選: `{code_string}`")
-            st.code(code_string, language="text") # 提供一個代碼區塊方便一鍵複製
-    else:
-        st.warning("未找到符合條件的股票，建議放寬漲幅限制或張數門檻。")
+
