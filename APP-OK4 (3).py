@@ -781,7 +781,75 @@ def perform_scan(manual_trigger=False):
         </div>
         <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {score_int}</span></div>
     </div>
-    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
+    <div style="display:grid; grid-template-# --- 建議新增一個渲染函數 (置於 perform_scan 內或上方) ---
+def render_stock_card(item, is_inventory=False):
+    last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
+    score_int = int(last['score'])
+    
+    # 統一等級判斷邏輯
+    if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
+    elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
+    elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
+    elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
+    else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
+
+    # 判斷是否為爆量 (僅針對狙擊清單標示亮點)
+    is_boom = (not is_inventory and "BUY" in last["sig_type"] and last["vol_ratio"] > 1.8)
+    border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
+    
+    title_prefix = "📦" if is_inventory else "🎯"
+    score_label = "健康度" if is_inventory else "戰鬥評分"
+    extra_info = f"(5MA乖離: {last['bias_5']:.2f}%)" if is_inventory else f"(量比: {last['vol_ratio']:.2f}x)"
+    warning_label = "風險狀態" if is_inventory else "關鍵提醒"
+    advice_label = "🛡️ 策略建議" if is_inventory else "💰 資金建議"
+
+    st.markdown(f"""
+<div class="dashboard-box {'highlight-snipe' if is_boom else ''}" style="border-left: 10px solid {border_clr}; margin-bottom:12px; text-align:left; padding: 15px; background: #fdfdfe; border-radius: 8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); color: black;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-size:1.25em;">
+            <b>{title_prefix} {sid} {name}</b> 
+            <span style="font-size:0.7em; background:{tag_clr}; color:{txt_clr}; padding:3px 10px; border-radius:4px; margin-left:10px; vertical-align:middle;">{rank_tag}</span>
+        </div>
+        <div><span style="background:{border_clr}; color:white; padding:5px 15px; border-radius:20px; font-weight:bold; font-size:0.9em;">{score_label}: {score_int}</span></div>
+    </div>
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top:12px; padding:10px; background:#f8f9fa; border-radius:5px;">
+        <div>📍 <b>現價：</b>{last['close']:.2f} <span style="font-size:0.85em; color:#666;">{extra_info}</span></div>
+        <div>⚠️ <b>{warning_label}：</b>{last['warning']}</div>
+    </div>
+    <div style="font-size:0.95em; margin-top:10px; color:#333; line-height:1.6;">
+        <b>💡 形態解讀：</b>{item['pattern_desc']}<br>
+        <b>{advice_label}：</b><span style="color:#d35400; font-weight:bold;">{last['pos_advice']}</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+    
+    # 展開圖表邏輯 (SSS 級自動展開)
+    with st.expander(f"查看 {sid} {name} 分析圖表", expanded=(not is_inventory and "🚀" in pattern)):
+        st.plotly_chart(plot_advanced_chart(df, f"{sid} {name}"), use_container_width=True)
+
+# --- 正式取代原本的 UI 渲染區塊 ---
+
+# 1. 渲染 狙擊目標監控
+st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
+snipe_targets = sorted([s for s in processed_stocks if s["is_snipe"]], key=lambda x: x.get("score", 0), reverse=True)
+
+if not snipe_targets:
+    st.info("🎯 目前狙擊清單尚無數據。")
+else:
+    for item in snipe_targets:
+        render_stock_card(item, is_inventory=False)
+
+st.divider()
+
+# 2. 渲染 庫存持股監控
+st.subheader("📦 庫存持股監控")
+inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
+
+if not inventory_targets:
+    st.write("目前尚無監控中的庫存持股。")
+else:
+    for item in inventory_targets:
+        render_stock_card(item, is_inventory=True)columns: 1fr 1fr; gap: 10px; margin-top:10px; padding:10px; background:white; border-radius:5px;">
         <div>📍 <b>現價：</b>{last['close']:.2f} (5MA乖離: {last['bias_5']:.2f}%)</div>
         <div>⚠️ <b>風險狀態：</b>{last['warning']}</div>
     </div>
