@@ -1,4 +1,3 @@
-
 import streamlit as st
 import twstock
 import pandas as pd
@@ -823,3 +822,4 @@ else:
     with placeholder.container(): 
         perform_scan(manual_trigger=False)
     st.info("💡 自動監控已關閉。")
+
