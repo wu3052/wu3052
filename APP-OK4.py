@@ -705,11 +705,10 @@ def perform_scan(manual_trigger=False):
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
-             except Exception as e:
-             # 加法升級：將錯誤直接報到日誌，方便您知道是哪個 API 出錯
-                 add_log(sid, "N/A", "ERROR", f"數據獲取失敗: {str(e)}")
-                 print(f"Error fetching {sid}: {e}")
-                 return None
+            except Exception as e:
+                # 確保此行與上方的 try 完全對齊
+                print(f"Error processing {sid}: {e}")
+                add_log("SYS", "ERROR", "ERROR", f"處理 {sid} 時發生錯誤: {str(e)}")
 
     # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
