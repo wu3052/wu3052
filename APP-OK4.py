@@ -700,15 +700,17 @@ def perform_scan(manual_trigger=False):
                             ]
                             send_discord_message("\n".join(msg_lines))
                 
+                
                 processed_stocks.append({
                     "df": df, "last": last, "sid": sid, "name": name, 
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
+                
             except Exception as e:
-                # 確保此行與上方的 try 完全對齊
+                # 這裡必須與上方的 try 完全對齊
+                add_log(sid, "SYSTEM", "ERROR", f"處理個股數據異常: {str(e)}")
                 print(f"Error processing {sid}: {e}")
-                add_log("SYS", "ERROR", "ERROR", f"處理 {sid} 時發生錯誤: {str(e)}")
 
     # --- 渲染 狙擊目標監控 ---
     st.subheader("🔥 狙擊目標監控 (按分數強弱排序)")
