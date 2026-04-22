@@ -645,17 +645,47 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500):
 with st.sidebar:
     st.header("🏹 狙擊指揮中心")
     fm_token = st.text_input("FinMind Token", value=st.secrets.get("FINMIND_TOKEN", ""), type="password")
-    st.session_state.enable_discord = st.toggle("📢 開啟 Discord 訊息推送", value=st.session_state.enable_discord)
+    st.session_state.enable_discord = st.toggle("📢 開啟 Discord 推送", value=st.session_state.enable_discord)
     
-    if st.button("🔄 手動同步雲端清單"):
+    if st.button("🔄 同步雲端清單"):
         sync_sheets()
         st.rerun()
         
     st.session_state.search_codes = st.text_area("🎯 狙擊清單", value=st.session_state.search_codes)
     st.session_state.inventory_codes = st.text_area("📦 庫存清單", value=st.session_state.inventory_codes)
-    interval = st.slider("監控間隔 (分鐘)", 1, 30, 5)
-    auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
-    analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
+    auto_monitor = st.checkbox("🔄 開啟盤中自動監控", value=True)
+    analyze_btn = st.button("🚀 執行即時掃描", use_container_width=True)
+
+    st.divider()
+    st.subheader("🔭 全市場潛力股挖掘")
+    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉 (嚴格)", value=True)
+    vol_min = st.number_input("成交量 > (張)", value=500)
+
+    if st.button("🔎 執行全台股掃描", use_container_width=True):
+        with st.spinner("掃描中..."):
+            res = run_stock_screener(enable_kd_filter=use_kd_strict, min_volume_limit=vol_min)
+            st.session_state.screen_results = res
+            if res.empty: st.warning("查無標的")
+
+    if 'screen_results' in st.session_state and not st.session_state.screen_results.empty:
+        with st.expander("📊 勾選標的加入狙擊", expanded=True):
+            # 這裡使用數據編輯器，讓使用者手動勾選
+            edited_df = st.data_editor(
+                st.session_state.screen_results,
+                column_config={"追蹤": st.column_config.CheckboxColumn(default=False)},
+                disabled=["股價代號", "評分", "股價", "漲幅%", "出量"],
+                hide_index=True, key="screener_editor"
+            )
+            if st.button("📥 加入勾選股票"):
+                selected = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
+                if selected:
+                    current = st.session_state.search_codes
+                    st.session_state.search_codes = f"{current}\n{','.join(selected)}".strip()
+                    st.success("已加入清單，記得儲存或執行掃描")
+                    st.rerun()
+
+    st.divider()
+    st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}"))
 
     # --- 個股即時診斷區塊 ---
     st.divider()
