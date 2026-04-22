@@ -558,10 +558,17 @@ def sync_sheets():
         
         def clean_col(name):
             if name in df_sheet.columns:
-                # 這裡改為用逗號或空格分隔，確保格式統一
+                # 1. 抓取該欄位所有有內容的格子（包括 A2 的公式結果和 A3 以下的舊代碼）
                 valid_series = df_sheet[name].astype(str).replace(['nan', 'None', 'NAT', 'nan.0'], np.nan).dropna()
                 valid_series = valid_series[valid_series.str.strip() != ""]
-                return ",".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
+                
+                # 2. 這是關鍵：將所有格子合併起來
+                # 如果 A2 是 "2330,2317"，A3 是 "6129"，合併後會變成 "2330,2317,6129"
+                full_string = ",".join(valid_series.apply(lambda x: x.split('.')[0].strip()))
+                
+                # 3. 再次格式化：把可能出現的空格換成逗號，並去掉多餘逗號
+                clean_string = full_string.replace(" ", ",").replace(",,", ",")
+                return clean_string
             return None
 
         new_search = clean_col('snipe_list')
