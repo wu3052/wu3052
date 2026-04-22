@@ -755,13 +755,21 @@ def perform_scan(manual_trigger=False):
 
     st.divider()
 
-    # --- 渲染 庫存持股監控 ---
+# --- 渲染 庫存持股監控 ---
     st.subheader("📦 庫存持股監控")
     inventory_targets = sorted([s for s in processed_stocks if s["is_inv"]], key=lambda x: x["score"], reverse=True)
     
     for item in inventory_targets:
         last, sid, name, df, pattern = item["last"], item["sid"], item["name"], item["df"], item["pattern"]
         score_int = int(last['score'])
+        
+        # 這裡套用與狙擊清單相同的等級判斷邏輯
+        if "🚀" in pattern: rank_tag, tag_clr, txt_clr = "SSS 級", "#ff4b4b", "white"
+        elif "💎" in pattern: rank_tag, tag_clr, txt_clr = "SS 級", "#ffa500", "white"
+        elif "🕳️" in pattern: rank_tag, tag_clr, txt_clr = "S 級", "#f1c40f", "black"
+        elif "🟡" in pattern: rank_tag, tag_clr, txt_clr = "A 級", "#2ecc71", "black"
+        else: rank_tag, tag_clr, txt_clr = "B 級", "#3498db", "white"
+
         border_clr = "#ff4b4b" if "BUY" in last["sig_type"] else ("#28a745" if "SELL" in last["sig_type"] else "#ccc")
         
         st.markdown(f"""
@@ -769,7 +777,7 @@ def perform_scan(manual_trigger=False):
     <div style="display:flex; justify-content:space-between; align-items:center;">
         <div style="font-size:1.2em;">
             <b>📦 {sid} {name}</b> 
-            <span style="font-size:0.8em; background:#6c757d; color:white; padding:2px 8px; border-radius:4px; margin-left:10px;">持股中</span>
+            <span style="font-size:0.8em; background:{tag_clr}; color:{txt_clr}; padding:2px 8px; border-radius:4px; margin-left:10px;">{rank_tag}</span>
         </div>
         <div><span style="background:{border_clr}; color:white; padding:4px 15px; border-radius:20px; font-weight:bold;">健康度: {score_int}</span></div>
     </div>
