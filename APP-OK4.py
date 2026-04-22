@@ -616,14 +616,16 @@ def perform_scan(manual_trigger=False):
         with st.expander("📊 查看加權指數 (大盤) 詳細分析圖表"):
             st.plotly_chart(plot_advanced_chart(m_df, "TAIEX 加權指數"), use_container_width=True)
 
-    # 2. 處理個股
+    # 2. 處理個股 (嚴格 4 空格縮排校準版)
     with ThreadPoolExecutor(max_workers=3) as executor:
         future_to_sid = {executor.submit(get_stock_data, sid, fm_token): sid for sid in all_codes}
         for future in future_to_sid:
             sid = future_to_sid[future]
             try:
+                # 這裡開始是 try 的內部，縮排為 16 個空格
                 df = future.result()
-                if df is None: continue
+                if df is None:
+                    continue
                 df = analyze_strategy(df, is_market=False)
                 last = df.iloc[-1]
                 name = stock_info[stock_info["stock_id"] == sid]["stock_name"].values[0] if sid in stock_info["stock_id"].values else "未知"
@@ -677,7 +679,7 @@ def perform_scan(manual_trigger=False):
                         
                         if is_discord_on and (manual_trigger or market_is_open):
                             msg_lines = [
-                                f"## {msg_header}", # Discord 標題變大
+                                f"## {msg_header}",
                                 f"### {special_note}" if special_note else "◈ 穩定趨勢追蹤中",
                                 f"📝 **解讀：** {last['pattern_desc']}",
                                 f"## 📈 **標的：** `{sid} {name} {last['close']:.2f}`",
@@ -702,7 +704,9 @@ def perform_scan(manual_trigger=False):
                     "is_inv": is_inv, "is_snipe": is_snipe, "score": int(last["score"]),
                     "warning": last["warning"], "pattern": last["pattern"], "pattern_desc": last["pattern_desc"]
                 })
+
             except Exception as e:
+                # 這裡嚴格對齊 try 的開頭 (12 個空格)
                 print(f"Error processing {sid}: {e}")
 
     # --- 渲染 狙擊目標監控 ---
