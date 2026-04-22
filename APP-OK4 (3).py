@@ -1,4 +1,5 @@
 import streamlit as st
+import twstock
 import pandas as pd
 import numpy as np
 import requests
@@ -149,6 +150,7 @@ def calculate_est_volume(current_vol):
 @st.cache_data(ttl=30 if is_market_open() else 3600)
 def get_stock_data(sid, token):
     try:
+        # 1. 依然從 FinMind 抓取長期的歷史日線數據 (作為基底)
         res = requests.get(BASE_URL, params={
             "dataset": "TaiwanStockPrice", "data_id": sid,
             "start_date": (datetime.now() - timedelta(days=500)).strftime("%Y-%m-%d"),
@@ -163,44 +165,48 @@ def get_stock_data(sid, token):
         df['date'] = pd.to_datetime(df['date'])
         df = df.sort_values("date").reset_index(drop=True)
 
+        # 2. 如果是開盤期間，使用 twstock 獲取「真正即時」的盤中數據
         if is_market_open() or sid == "TAIEX":
-            ticker_str = get_yf_ticker(sid)
-            yt = yf.download(ticker_str, period="5d", interval="1m", progress=False, timeout=15)
-            
-            if not yt.empty:
-                if isinstance(yt.columns, pd.MultiIndex):
-                    yt.columns = yt.columns.get_level_values(0)
+            try:
+                # 取得即時報價
+                realtime_data = twstock.realtime.get(sid)
                 
-                yt.columns = [c.capitalize() for c in yt.columns]
-                last_price = float(yt['Close'].iloc[-1])
-                today_start = get_taiwan_time().replace(hour=9, minute=0, second=0, microsecond=0)
-                today_yt = yt[yt.index >= today_start]
-                
-                if not today_yt.empty:
-                    day_vol = int(today_yt['Volume'].sum())
-                    day_high = float(today_yt['High'].max())
-                    day_low = float(today_yt['Low'].min())
+                if realtime_data and realtime_data['success']:
+                    info = realtime_data['info']
+                    real = realtime_data['realtime']
                     
-                    if df.iloc[-1]['date'].date() == get_taiwan_time().date():
+                    # 取得最新成交價、高、低、量
+                    # 注意：twstock 的量單位通常是「張」，需轉換為「股」以符合 FinMind 格式 (張 * 1000)
+                    last_price = float(real['latest_trade_price']) if real['latest_trade_price'] != '-' else float(real['open'])
+                    day_high = float(real['high']) if real['high'] != '-' else last_price
+                    day_low = float(real['low']) if real['low'] != '-' else last_price
+                    day_vol = int(real['accumulate_trade_volume']) * 1000 
+                    
+                    # 更新或新增今日資料列
+                    today_dt = pd.Timestamp(get_taiwan_time().date())
+                    if df.iloc[-1]['date'].date() == today_dt.date():
                         idx = df.index[-1]
                     else:
                         new_row = df.iloc[-1].copy()
-                        new_row['date'] = pd.Timestamp(get_taiwan_time().date())
+                        new_row['date'] = today_dt
                         df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
                         idx = df.index[-1]
-                        
+                    
                     df.at[idx, 'close'] = last_price
                     df.at[idx, 'high'] = day_high
                     df.at[idx, 'low'] = day_low
                     df.at[idx, 'volume'] = day_vol
                     df.at[idx, 'est_volume'] = calculate_est_volume(day_vol)
                 else:
+                    # 如果 twstock 失敗，降級回 yfinance 或保留原樣
                     df['est_volume'] = df['volume']
-            else:
+            except Exception as e:
+                add_log(sid, "SYS", "ERROR", f"twstock 即時抓取失敗: {e}")
                 df['est_volume'] = df['volume']
         else:
             df['est_volume'] = df['volume']
             
+        # 數據清洗 (保留原本邏輯)
         if df is not None and not df.empty:
             df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
             df['volume'] = df['volume'].fillna(0)
