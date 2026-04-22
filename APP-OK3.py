@@ -716,60 +716,6 @@ with st.sidebar:
                 with st.expander("📈 查看診斷技術圖表"):
                     st.plotly_chart(plot_advanced_chart(df_q, f"診斷報告: {query_sid}"), use_container_width=True)
 
-    # --- 全市場潛力股挖掘 ---
-# --- 這裡開始是側邊欄底部的全市場選股 UI ---
-    st.divider()
-    st.subheader("🔭 全市場潛力股挖掘")
-    st.caption("均線長多短回 + 量縮後出量 + KD金叉 (嚴格篩選)")
-    
-    # 讓使用者手動調整條件
-    use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉標的 (日線)", value=True)
-    vol_limit = st.number_input("成交量大於 (張)", value=500, step=100)
-
-    if st.button("🔎 執行全台股掃描 (進階版)", use_container_width=True):
-        with st.spinner("正在進行嚴格選股掃描，請稍候..."):
-            # 調用選股函式
-            screen_results = run_stock_screener(enable_kd_filter=use_kd_strict, min_volume_limit=vol_limit)
-            
-            if screen_results is not None and not screen_results.empty:
-                st.session_state.screen_results = screen_results
-                st.success(f"找到 {len(screen_results)} 檔符合嚴格條件標的！")
-            else:
-                st.warning("查無符合條件的股票，建議取消 KD 嚴格模式再試一次。")
-
-    # 如果有結果，顯示表格
-if 'screen_results' in st.session_state:
-        with st.expander("📊 查看選股結果 (請勾選欲追蹤標的)", expanded=True):
-            res_df = st.session_state.screen_results
-            
-            if not res_df.empty:
-                # 使用 data_editor 建立可勾選表格
-                edited_df = st.data_editor(
-                    res_df,
-                    column_config={
-                        "追蹤": st.column_config.CheckboxColumn(help="勾選以加入狙擊清單", default=False)
-                    },
-                    disabled=["股價代號", "股價名稱", "評分", "股價", "漲幅%", "出量"],
-                    hide_index=True,
-                    use_container_width=True,
-                    key="stock_editor"
-                )
-
-                if st.button("📥 將勾選標的加入狙擊清單", use_container_width=True):
-                    # 篩選出有勾選的代碼
-                    selected_codes = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
-                    if selected_codes:
-                        new_codes_str = ",".join(selected_codes)
-                        # 更新 Session State 中的清單，並手動觸發一次同步前的合併
-                        current_list = st.session_state.get('search_codes', "")
-                        st.session_state.search_codes = f"{current_list}\n{new_codes_str}".strip()
-                        st.success(f"已將 {len(selected_codes)} 檔標的加入清單！")
-                        time.sleep(1)
-                        st.rerun()
-                    else:
-                        st.warning("請先勾選標的。")
-            else:
-                st.write("查無符合標的。")
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
