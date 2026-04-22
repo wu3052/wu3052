@@ -658,7 +658,7 @@ def run_stock_screener(enable_kd_filter=True, min_volume_limit=500, max_growth_l
 
     progress_bar.empty()
     status_text.empty()
-    return pd.DataFrame(found_targets))
+    return pd.DataFrame(found_targets)
 
 
     
