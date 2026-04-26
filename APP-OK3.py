@@ -706,7 +706,11 @@ with st.sidebar:
                 df_q = analyze_strategy(df_q)
                 q_last = df_q.iloc[-1]
                 stock_info = get_stock_info()
-                q_name = stock_info[stock_info["stock_id"] == query_sid]["stock_name"].values[0] if query_sid in stock_info["stock_id"].values else "未知"
+                q_name = "未知" # 預設值
+                if not stock_info.empty and "stock_id" in stock_info.columns and "stock_name" in stock_info.columns:
+                    matched = stock_info[stock_info["stock_id"] == query_sid]
+                    if not matched.empty:
+                        q_name = matched["stock_name"].values[0]
                 
                 # 彈出診斷結果視窗
                 st.info(f"### 📊 {query_sid} {q_name} 診斷報告")
