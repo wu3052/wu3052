@@ -7,164 +7,108 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
 # =========================================================
 # 系統基礎設定
 # =========================================================
-st.set_page_config(
-    page_title="股票狙擊手 Pro Max V2 - 主力潛伏版",
-    layout="wide",
-    page_icon="🏹"
-)
+st.set_page_config(page_title="狙擊手 Pro Max V2 - 全市場地圖炮", layout="wide", page_icon="📡")
 
-# 終端機風格 CSS 強化版
 st.markdown("""
 <style>
     .main { background-color: #0e1117; color: #fafafa; }
-    .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #444; }
     .terminal-log {
-        background-color: #000;
-        color: #00ff00;
-        padding: 15px;
-        font-family: 'Courier New', monospace;
-        border-radius: 5px;
-        height: 150px;
-        overflow-y: auto;
-        border: 1px solid #333;
-        margin-bottom: 20px;
+        background-color: #000; color: #00ff00; padding: 10px;
+        font-family: 'Courier New', monospace; border-radius: 5px;
+        height: 250px; overflow-y: auto; border: 1px solid #333;
     }
-    .status-card {
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 10px;
-        border-left: 5px solid #ff4b4b;
-        background: #262730;
-    }
+    .stButton>button { width: 100%; border-radius: 20px; background-color: #ff4b4b; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 數據獲取模組
+# 核心引擎功能
 # =========================================================
 
 def get_yf_symbol(code):
-    code = str(code)
     return f"{code}.TWO" if code.startswith(("3", "5", "6", "8")) else f"{code}.TW"
 
 @st.cache_data(ttl=3600)
-def build_stock_pool():
-    pool = []
+def get_all_taiwan_symbols():
+    """獲取全台股清單"""
+    codes = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == "股票":
-            pool.append(code)
-    return sorted(pool)
+            codes.append(code)
+    return sorted(codes)
 
-def get_history_data(code):
+def fetch_and_analyze(code, fm_token):
+    """單股分析核心 (供多線程調用)"""
     try:
         ticker = get_yf_symbol(code)
-        df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
-        if df.empty: return None
+        # 抓取較短時間進行快速初篩
+        df = yf.download(ticker, period="8mo", interval="1d", progress=False, auto_adjust=True)
+        if df.empty or len(df) < 60: return None
+        
         df.columns = [str(c).lower() for c in df.columns]
-        return df.dropna()
-    except: return None
-
-def get_finmind_chip(code, token):
-    """
-    偵測主力潛伏的核心：三大法人買賣超連續性
-    """
-    if not token: return None
-    try:
-        url = "https://api.finmindtrade.com/api/v4/data"
-        params = {
-            "dataset": "InstitutionalInvestorsBuySell",
-            "data_id": code,
-            "start_date": (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d"),
-            "token": token
-        }
-        res = requests.get(url, params=params, timeout=10).json()
-        df_chip = pd.DataFrame(res.get("data", []))
         
-        if df_chip.empty: return None
+        # 排除殭屍股 (5日均量小於 100 張)
+        if df['volume'].tail(5).mean() < 100000: return None
         
-        # 整理外資與投信數據
-        pivot = df_chip.pivot(index='date', columns='name', values='buy_sell').fillna(0)
-        
-        # 計算最近 5 天外資與投信合計
-        recent_5 = pivot.tail(5)
-        total_buy = recent_5.sum().sum()
-        
-        # 判斷是否連續買進 (主力潛伏關鍵指標)
-        is_cont_buy = (recent_5.sum(axis=1) > 0).sum() >= 3 # 5天內有3天以上是買超
-        
-        return {"total_5d": total_buy, "is_cont_buy": is_cont_buy}
-    except: return None
-
-# =========================================================
-# 核心分析引擎 (主力潛伏邏輯強化)
-# =========================================================
-
-def analyze_stock_v2(df, chip_info=None):
-    try:
-        if len(df) < 60: return None
-        
-        # 指標計算
+        # --- 技術指標計算 ---
         df["ma5"] = df["close"].rolling(5).mean()
         df["ma20"] = df["close"].rolling(20).mean()
         df["ma60"] = df["close"].rolling(60).mean()
-        df["vol_ma5"] = df["volume"].rolling(5).mean()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
-        
-        # 波動率 (VCP 邏輯)
-        df["range"] = (df["high"] - df["low"]) / df["close"]
-        df["vcp_tightness"] = df["range"].rolling(10).mean() < df["range"].rolling(40).mean() * 0.8
         
         row = df.iloc[-1]
         prev = df.iloc[-2]
         
-        score = 50 # 基礎分
+        score = 50
         signals = []
         
-        # 1. 主力潛伏判定 - 【量能換手】
-        # 成交量是 20 天平均的 1.2~2 倍，但股價沒動 (跌幅或漲幅小於 1.5%)
-        if (row["volume"] > row["vol_ma20"] * 1.2) and (abs(row["close"] - prev["close"])/prev["close"] < 0.015):
+        # 技術面初篩邏輯
+        # 1. 潛伏換手偵測
+        is_churning = (row["volume"] > row["vol_ma20"] * 1.2) and (abs(row["close"] - prev["close"])/prev["close"] < 0.015)
+        if is_churning: 
             score += 20
-            signals.append("💎 主力換手潛伏")
-
-        # 2. 籌碼判定 - 【法人偷偷買】
-        if chip_info:
-            if chip_info["is_cont_buy"]:
-                score += 25
-                signals.append("🏦 法人連續吸籌")
-            if chip_info["total_5d"] > 0:
-                score += 10
-                signals.append("📈 籌碼趨於集中")
-
-        # 3. VCP 緊縮判定
-        if row["vcp_tightness"]:
-            score += 15
-            signals.append("🤐 波動高度壓縮")
-
-        # 4. 噴發前兆 (均線糾結)
+            signals.append("💎 主力換手")
+            
+        # 2. 均線多頭/糾結
         ma_gap = max(row["ma5"], row["ma20"], row["ma60"]) / min(row["ma5"], row["ma20"], row["ma60"])
-        if ma_gap < 1.03: # 均線距離在 3% 以內
+        if ma_gap < 1.03: 
             score += 15
             signals.append("🧬 均線糾結")
+            
+        # 3. 突破偵測
+        if row["close"] > df["high"].rolling(20).max().shift(1):
+            score += 25
+            signals.append("🚀 突破前高")
 
-        # 5. 突破偵測 (噴發第一根)
-        if row["close"] > df["high"].rolling(20).max().shift(1) and row["volume"] > row["vol_ma5"] * 1.5:
-            score += 30
-            signals.append("🚀 狙擊點：噴發第一根")
+        # --- 第一階段過濾：技術分不到 65 分的不抓籌碼以節省時間/流量 ---
+        if score < 65: return None
 
-        # 綜合位階判定
-        stage = "盤整中"
-        if "狙擊點" in "".join(signals): stage = "發動突破"
-        elif "潛伏" in "".join(signals) or "吸籌" in "".join(signals): stage = "主力潛伏"
-        elif row["ma5"] > row["ma20"] > row["ma60"]: stage = "多頭趨勢"
+        # --- 第二階段：籌碼面 (FinMind) ---
+        if fm_token:
+            try:
+                url = "https://api.finmindtrade.com/api/v4/data"
+                params = {"dataset": "InstitutionalInvestorsBuySell", "data_id": code, 
+                          "start_date": (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"), "token": fm_token}
+                res = requests.get(url, params=params, timeout=5).json()
+                chip_df = pd.DataFrame(res.get("data", []))
+                if not chip_df.empty:
+                    # 判斷近 3 日是否有法人買盤
+                    recent_buy = chip_df.tail(6)['buy_sell'].sum()
+                    if recent_buy > 0:
+                        score += 15
+                        signals.append("🏦 法人進駐")
+            except: pass
 
         return {
+            "code": code,
+            "name": twstock.codes[code].name,
             "score": score,
-            "stage": stage,
             "signals": " | ".join(signals),
             "close": round(float(row["close"]), 2),
             "vol_ratio": round(row["volume"] / row["vol_ma20"], 2)
@@ -172,96 +116,80 @@ def analyze_stock_v2(df, chip_info=None):
     except: return None
 
 # =========================================================
-# Streamlit UI 介面
+# UI 介面實作
 # =========================================================
 
-st.title("🏹 股票狙擊手 Pro Max V2")
-st.subheader("專注「主力潛伏」與「噴發第一根」偵測系統")
+st.title("📡 股票狙擊手 V2：全台股即時掃描")
+st.caption("自動掃描全台 1,700+ 標的，尋找主力潛伏與噴發前兆")
 
 with st.sidebar:
-    st.header("⚙️ 掃描參數")
-    fm_token = st.text_input("FinMind Token", type="password", help="用於獲取三大法人籌碼數據")
-    scan_count = st.number_input("掃描個股數量 (建議 100-300)", 20, 1000, 100)
-    mode = st.selectbox("選股模式", ["全部掃描", "僅看主力潛伏", "僅看突破噴發"])
-    start_btn = st.button("🔍 開始戰情掃描")
+    st.header("⚙️ 地圖炮設定")
+    fm_token = st.text_input("FinMind Token", type="password")
+    thread_count = st.slider("併發執行緒數量", 5, 20, 10, help="越高越快，但容易被 yfinance 封鎖")
+    min_score = st.slider("最低顯示評分", 60, 90, 70)
+    
+    st.divider()
+    start_all_scan = st.button("🔥 開啟全台股地圖炮 (約需 2-3 分鐘)")
 
-log_placeholder = st.empty()
-if 'log_history' not in st.session_state: st.session_state.log_history = []
+# 戰情 log
+log_container = st.empty()
+if 'full_logs' not in st.session_state: st.session_state.full_logs = []
 
-def add_log(msg):
-    now = datetime.now().strftime("%H:%M:%S")
-    st.session_state.log_history.append(f"[{now}] {msg}")
-    if len(st.session_state.log_history) > 5: st.session_state.log_history.pop(0)
-    log_placeholder.markdown(f'<div class="terminal-log">{"<br>".join(st.session_state.log_history)}</div>', unsafe_allow_html=True)
+def write_log(msg):
+    st.session_state.full_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+    if len(st.session_state.full_logs) > 8: st.session_state.full_logs.pop(0)
+    log_container.markdown(f'<div class="terminal-log">{"<br>".join(st.session_state.full_logs)}</div>', unsafe_allow_html=True)
 
 # =========================================================
-# 執行掃描
+# 執行全市場掃描
 # =========================================================
 
-if start_btn:
-    add_log("系統初始化... 讀取台股代碼池...")
-    full_pool = build_stock_pool()
-    target_pool = full_pool[:scan_count]
+if start_all_scan:
+    all_codes = get_all_taiwan_symbols()
+    write_log(f"🚀 初始化完成，準備掃描全台 {len(all_codes)} 檔股票...")
     
     results = []
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    for i, code in enumerate(target_pool):
-        progress_bar.progress((i + 1) / len(target_pool))
+    # 使用 ThreadPoolExecutor 進行多線程掃描
+    with ThreadPoolExecutor(max_workers=thread_count) as executor:
+        futures = {executor.submit(fetch_and_analyze, code, fm_token): code for code in all_codes}
         
-        # 抓取數據
-        df = get_history_data(code)
-        if df is None: continue
-        
-        # 只有評分潛力高的才去抓 FinMind 節省 API (或根據需求調整)
-        chip = None
-        if fm_token:
-            chip = get_finmind_chip(code, fm_token)
-            time.sleep(0.1) # 簡單頻率限制
+        for i, future in enumerate(as_completed(futures)):
+            code = futures[future]
+            try:
+                data = future.result()
+                if data and data['score'] >= min_score:
+                    results.append(data)
+                    write_log(f"🎯 發現強勢股: {data['code']} {data['name']} (評分: {data['score']})")
+            except Exception as e:
+                pass
             
-        analysis = analyze_stock_v2(df, chip)
-        
-        if analysis:
-            # 模式過濾
-            if mode == "僅看主力潛伏" and analysis["stage"] != "主力潛伏": continue
-            if mode == "僅看突破噴發" and analysis["stage"] != "發動突破": continue
-            if analysis["score"] < 60: continue # 過濾弱勢股
-            
-            info = twstock.codes.get(code)
-            analysis["code"] = code
-            analysis["name"] = info.name if info else "Unknown"
-            results.append(analysis)
-            add_log(f"發現目標：{code} {analysis['name']} (評分: {analysis['score']})")
+            # 每掃 50 檔更新一次進度條，避免過度重新渲染
+            if i % 20 == 0:
+                progress = (i + 1) / len(all_codes)
+                progress_bar.progress(progress)
+                status_text.text(f"掃描進度: {i+1} / {len(all_codes)}")
 
-    # 顯示結果
+    write_log("✅ 全市場掃描完成！")
+    
     if results:
         res_df = pd.DataFrame(results).sort_values("score", ascending=False)
         
-        # 分欄顯示數據
-        st.write("### 🎯 掃描戰果報告")
-        st.dataframe(res_df[["code", "name", "score", "stage", "close", "vol_ratio", "signals"]], use_container_width=True)
+        st.write(f"### 🏆 全市場強勢選股清單 (共 {len(res_df)} 檔)")
+        st.dataframe(res_df, use_container_width=True)
         
+        # 視覺化看板
         st.divider()
-        st.write("### 📈 重點標的 K 線分析")
-        for _, row in res_df.head(5).iterrows():
-            with st.expander(f"【{row['stage']}】 {row['code']} {row['name']} - 評分: {row['score']}"):
-                df_plot = get_history_data(row["code"]).tail(100)
+        cols = st.columns(min(len(res_df), 3))
+        for idx, row in res_df.head(6).iterrows():
+            with cols[idx % 3]:
+                st.metric(f"{row['code']} {row['name']}", f"{row['close']} TWD", f"{row['score']} 分")
+                st.caption(f"訊號: {row['signals']}")
                 
-                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-                fig.add_trace(go.Candlestick(x=df_plot.index, open=df_plot['open'], high=df_plot['high'], low=df_plot['low'], close=df_plot['close'], name="K線"), row=1, col=1)
-                
-                # 均線
-                for m in [5, 20, 60]:
-                    ma_line = df_plot['close'].rolling(m).mean()
-                    fig.add_trace(go.Scatter(x=df_plot.index, y=ma_line, name=f"{m}MA", line=dict(width=1)), row=1, col=1)
-                
-                # 成交量
-                fig.add_trace(go.Bar(x=df_plot.index, y=df_plot['volume'], name="成交量", marker_color='orange'), row=2, col=1)
-                
-                fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
-                st.plotly_chart(fig, use_container_width=True)
     else:
-        st.error("❌ 掃描範圍內未發現符合條件的標的，請嘗試增加掃描數量或更換模式。")
+        st.warning("⚠️ 掃描完成，但沒有標的符合您的評分門檻。請調低「最低顯示評分」再試一次。")
 
 else:
-    st.info("💡 請在左側輸入 FinMind Token 並按下『開始戰情掃描』。本系統將自動過濾出具備「大戶吸籌」與「噴發前兆」的台股標的。")
+    st.info("💡 點擊左側按鈕開始掃描全台股。注意：全市場掃描極為耗費系統資源，建議在盤中或盤後數據更新後執行。")
