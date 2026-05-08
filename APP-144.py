@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -8,8 +7,6 @@ import requests
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor
-import time
 
 # =========================================================
 # 基本設定
@@ -29,6 +26,7 @@ BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
 st.markdown("""
 <style>
+
 .main {
     background-color: #f5f5f5;
 }
@@ -46,43 +44,12 @@ st.markdown("""
     box-shadow: 0 2px 10px rgba(0,0,0,0.08);
 }
 
-.rank-sss {
-    background: #ff4b4b;
-    color: white;
-    padding: 3px 10px;
-    border-radius: 20px;
-}
-
-.rank-ss {
-    background: orange;
-    color: white;
-    padding: 3px 10px;
-    border-radius: 20px;
-}
-
-.rank-s {
-    background: #2ecc71;
-    color: white;
-    padding: 3px 10px;
-    border-radius: 20px;
-}
-
-.rank-a {
-    background: #3498db;
-    color: white;
-    padding: 3px 10px;
-    border-radius: 20px;
-}
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
 # 工具函數
 # =========================================================
-
-def get_tw_time():
-    return datetime.utcnow() + timedelta(hours=8)
-
 
 def get_yf_symbol(code):
 
@@ -93,9 +60,8 @@ def get_yf_symbol(code):
 
     return f"{code}.TW"
 
-
 # =========================================================
-# 建立股票池
+# 股票池
 # =========================================================
 
 @st.cache_data(ttl=3600)
@@ -115,9 +81,8 @@ def build_stock_pool():
 
     return sorted(pool)
 
-
 # =========================================================
-# 取得歷史資料
+# 歷史資料
 # =========================================================
 
 @st.cache_data(ttl=14400)
@@ -138,15 +103,11 @@ def get_history_data(code):
         if df.empty:
             return None
 
-        # 修正 MultiIndex 問題
+        # 修正 MultiIndex
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
         df.columns = [str(c).lower() for c in df.columns]
-
-        df = df.rename(columns={
-            "adj close": "adj_close"
-        })
 
         required_cols = [
             "open",
@@ -157,6 +118,7 @@ def get_history_data(code):
         ]
 
         for col in required_cols:
+
             if col not in df.columns:
                 return None
 
@@ -166,37 +128,6 @@ def get_history_data(code):
 
     except:
         return None
-
-
-# =========================================================
-# 即時資料
-# =========================================================
-
-@st.cache_data(ttl=15)
-def get_realtime_data(code):
-
-    try:
-
-        data = twstock.realtime.get(code)
-
-        if not data["success"]:
-            return None
-
-        real = data["realtime"]
-
-        price = real.get("latest_trade_price")
-
-        if price == "-":
-            return None
-
-        return {
-            "price": float(price),
-            "volume": int(real["accumulate_trade_volume"]) * 1000
-        }
-
-    except:
-        return None
-
 
 # =========================================================
 # FinMind 籌碼
@@ -230,9 +161,13 @@ def get_chip_data(code, token):
         if df.empty:
             return None
 
-        foreign = df[df["name"] == "Foreign_Investor"]
+        foreign = df[
+            df["name"] == "Foreign_Investor"
+        ]
 
-        foreign_buy = foreign["buy_sell"].tail(3).sum()
+        foreign_buy = foreign[
+            "buy_sell"
+        ].tail(3).sum()
 
         return {
             "foreign_buy": foreign_buy
@@ -240,7 +175,6 @@ def get_chip_data(code, token):
 
     except:
         return None
-
 
 # =========================================================
 # 技術分析
@@ -261,17 +195,26 @@ def analyze_stock(df):
         # =====================================================
 
         for ma in [5, 10, 20, 60, 200]:
-            df[f"ma{ma}"] = df["close"].rolling(ma).mean()
+
+            df[f"ma{ma}"] = (
+                df["close"]
+                .rolling(ma)
+                .mean()
+            )
 
         # =====================================================
-        # 量能
+        # 成交量
         # =====================================================
 
-        df["vol_ma5"] = df["volume"].rolling(5).mean()
+        df["vol_ma5"] = (
+            df["volume"]
+            .rolling(5)
+            .mean()
+        )
 
         df["vol_ratio"] = (
-            df["volume"] /
-            df["vol_ma5"]
+            df["volume"]
+            / df["vol_ma5"]
         )
 
         # =====================================================
@@ -282,19 +225,36 @@ def analyze_stock(df):
         exp2 = df["close"].ewm(span=26).mean()
 
         df["macd"] = exp1 - exp2
-        df["signal"] = df["macd"].ewm(span=9).mean()
+        df["signal"] = (
+            df["macd"]
+            .ewm(span=9)
+            .mean()
+        )
 
         # =====================================================
         # KD
         # =====================================================
 
-        low_9 = df["low"].rolling(9).min()
-        high_9 = df["high"].rolling(9).max()
+        low_9 = (
+            df["low"]
+            .rolling(9)
+            .min()
+        )
+
+        high_9 = (
+            df["high"]
+            .rolling(9)
+            .max()
+        )
 
         rsv = (
-            (df["close"] - low_9)
+            (
+                df["close"] - low_9
+            )
             /
-            (high_9 - low_9)
+            (
+                high_9 - low_9
+            )
         ) * 100
 
         df["k"] = rsv.ewm(com=2).mean()
@@ -304,12 +264,21 @@ def analyze_stock(df):
         # 平台突破
         # =====================================================
 
-        df["box_high"] = df["high"].rolling(20).max()
+        df["box_high"] = (
+            df["high"]
+            .rolling(20)
+            .max()
+        )
 
         df["break_box"] = (
-            (df["close"] > df["box_high"].shift(1))
+            (
+                df["close"]
+                > df["box_high"].shift(1)
+            )
             &
-            (df["vol_ratio"] > 1.5)
+            (
+                df["vol_ratio"] > 1.5
+            )
         )
 
         # =====================================================
@@ -317,15 +286,27 @@ def analyze_stock(df):
         # =====================================================
 
         df["range"] = (
-            (df["high"] - df["low"])
+            (
+                df["high"]
+                - df["low"]
+            )
             /
             df["close"]
         )
 
         df["vcp"] = (
-            df["range"].rolling(5).mean()
+            (
+                df["range"]
+                .rolling(5)
+                .mean()
+            )
             <
-            df["range"].rolling(20).mean() * 0.7
+            (
+                df["range"]
+                .rolling(20)
+                .mean()
+                * 0.7
+            )
         )
 
         # =====================================================
@@ -333,9 +314,18 @@ def analyze_stock(df):
         # =====================================================
 
         df["vol_contract"] = (
-            df["volume"].rolling(5).mean()
+            (
+                df["volume"]
+                .rolling(5)
+                .mean()
+            )
             <
-            df["volume"].rolling(20).mean() * 0.7
+            (
+                df["volume"]
+                .rolling(20)
+                .mean()
+                * 0.7
+            )
         )
 
         # =====================================================
@@ -353,11 +343,20 @@ def analyze_stock(df):
         # =====================================================
 
         df["washout"] = (
-            (df["low"] < df["low"].shift(1))
+            (
+                df["low"]
+                < df["low"].shift(1)
+            )
             &
-            (df["close"] > df["open"])
+            (
+                df["close"]
+                > df["open"]
+            )
             &
-            (df["volume"] < df["vol_ma5"])
+            (
+                df["volume"]
+                < df["vol_ma5"]
+            )
         )
 
         # =====================================================
@@ -365,9 +364,15 @@ def analyze_stock(df):
         # =====================================================
 
         df["danger"] = (
-            (df["volume"] > df["vol_ma5"] * 2)
+            (
+                df["volume"]
+                > df["vol_ma5"] * 2
+            )
             &
-            (df["close"] < df["open"])
+            (
+                df["close"]
+                < df["open"]
+            )
         )
 
         # =====================================================
@@ -382,38 +387,46 @@ def analyze_stock(df):
         signals = []
 
         # =====================================================
-        # 評分
+        # 評分系統
         # =====================================================
 
         if row["ma5"] > row["ma10"] > row["ma20"]:
+
             score += 15
             signals.append("多頭排列")
 
         if row["close"] > row["ma200"]:
+
             score += 10
             signals.append("站上年線")
 
         if row["break_box"]:
+
             score += 25
             signals.append("平台突破")
 
         if row["vcp"]:
+
             score += 20
             signals.append("VCP")
 
         if row["vol_contract"]:
+
             score += 15
             signals.append("量縮吸籌")
 
         if row["washout"]:
+
             score += 15
             signals.append("洗盤")
 
         if row["rs"] > 1.15:
+
             score += 20
             signals.append("Relative Strength")
 
         if row["macd"] > row["signal"]:
+
             score += 10
             signals.append("MACD翻紅")
 
@@ -424,10 +437,12 @@ def analyze_stock(df):
         )
 
         if kd_cross:
+
             score += 10
             signals.append("KD金叉")
 
         if row["danger"]:
+
             score -= 30
             signals.append("危險爆量")
 
@@ -473,13 +488,11 @@ def analyze_stock(df):
             "stage": stage,
             "signals": " | ".join(signals),
             "close": round(float(row["close"]), 2),
-            "vol_ratio": round(float(row["vol_ratio"]), 2),
-            "break_box": bool(row["break_box"])
+            "vol_ratio": round(float(row["vol_ratio"]), 2)
         }
 
     except:
         return None
-
 
 # =========================================================
 # 畫圖
@@ -538,7 +551,6 @@ def plot_chart(df, title):
 
     return fig
 
-
 # =========================================================
 # UI
 # =========================================================
@@ -566,8 +578,9 @@ with st.sidebar:
         value=True
     )
 
-    start_scan = st.button("🚀 開始掃描")
-
+    start_scan = st.button(
+        "🚀 開始掃描"
+    )
 
 # =========================================================
 # 主程式
@@ -713,9 +726,13 @@ if start_scan:
             if df is None:
                 continue
 
-            # 重新計算均線
             for ma in [5, 10, 20, 60, 200]:
-                df[f"ma{ma}"] = df["close"].rolling(ma).mean()
+
+                df[f"ma{ma}"] = (
+                    df["close"]
+                    .rolling(ma)
+                    .mean()
+                )
 
             with st.expander(
                 f"{code} {name} | 評分 {row['score']}"
@@ -732,4 +749,3 @@ if start_scan:
 else:
 
     st.info("請點擊左側『開始掃描』")
-```
