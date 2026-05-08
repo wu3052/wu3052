@@ -8,188 +8,161 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import time
 
 # =========================================================
-# 系統基礎設定
+# 基本設定
 # =========================================================
-st.set_page_config(page_title="狙擊手 Pro Max V2 - 全市場地圖炮", layout="wide", page_icon="📡")
+st.set_page_config(page_title="狙擊手 V2 - 修復版", layout="wide")
 
+# 介面美化
 st.markdown("""
 <style>
-    .main { background-color: #0e1117; color: #fafafa; }
     .terminal-log {
         background-color: #000; color: #00ff00; padding: 10px;
-        font-family: 'Courier New', monospace; border-radius: 5px;
-        height: 250px; overflow-y: auto; border: 1px solid #333;
+        font-family: 'monospace'; border-radius: 5px;
+        height: 200px; overflow-y: auto; font-size: 12px;
     }
-    .stButton>button { width: 100%; border-radius: 20px; background-color: #ff4b4b; color: white; }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# 核心引擎功能
+# 工具函數
 # =========================================================
 
 def get_yf_symbol(code):
     return f"{code}.TWO" if code.startswith(("3", "5", "6", "8")) else f"{code}.TW"
 
 @st.cache_data(ttl=3600)
-def get_all_taiwan_symbols():
-    """獲取全台股清單"""
-    codes = []
-    for code, info in twstock.codes.items():
-        if len(code) == 4 and info.type == "股票":
-            codes.append(code)
-    return sorted(codes)
+def get_all_codes():
+    return [c for c, i in twstock.codes.items() if len(c) == 4 and i.type == "股票"]
 
-def fetch_and_analyze(code, fm_token):
-    """單股分析核心 (供多線程調用)"""
+def analyze_logic(code, fm_token, min_vol):
     try:
         ticker = get_yf_symbol(code)
-        # 抓取較短時間進行快速初篩
-        df = yf.download(ticker, period="8mo", interval="1d", progress=False, auto_adjust=True)
-        if df.empty or len(df) < 60: return None
+        # 抓取數據 (增加 retry 機制)
+        df = yf.download(ticker, period="6mo", interval="1d", progress=False, auto_adjust=True)
         
+        if df.empty: return ("SKIP", f"{code}: 抓不到資料")
+        
+        # --- 重要：修復 yfinance MultiIndex 問題 ---
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
         df.columns = [str(c).lower() for c in df.columns]
-        
-        # 排除殭屍股 (5日均量小於 100 張)
-        if df['volume'].tail(5).mean() < 100000: return None
-        
+
+        # 檢查成交量 (單位：股) -> 預設 50 張
+        avg_vol = df['volume'].tail(5).mean()
+        if avg_vol < (min_vol * 1000): 
+            return ("SKIP", f"{code}: 成交量過低 ({int(avg_vol/1000)}張)")
+
         # --- 技術指標計算 ---
         df["ma5"] = df["close"].rolling(5).mean()
         df["ma20"] = df["close"].rolling(20).mean()
-        df["ma60"] = df["close"].rolling(60).mean()
         df["vol_ma20"] = df["volume"].rolling(20).mean()
         
         row = df.iloc[-1]
         prev = df.iloc[-2]
         
-        score = 50
+        score = 60  # 提高基礎分，避免門檻太高
         signals = []
-        
-        # 技術面初篩邏輯
-        # 1. 潛伏換手偵測
-        is_churning = (row["volume"] > row["vol_ma20"] * 1.2) and (abs(row["close"] - prev["close"])/prev["close"] < 0.015)
-        if is_churning: 
-            score += 20
-            signals.append("💎 主力換手")
-            
-        # 2. 均線多頭/糾結
-        ma_gap = max(row["ma5"], row["ma20"], row["ma60"]) / min(row["ma5"], row["ma20"], row["ma60"])
-        if ma_gap < 1.03: 
+
+        # 1. 主力吸籌偵測 (量增價穩)
+        if (row["volume"] > row["vol_ma20"]) and (abs(row["close"] - prev["close"])/prev["close"] < 0.02):
             score += 15
-            signals.append("🧬 均線糾結")
-            
-        # 3. 突破偵測
-        if row["close"] > df["high"].rolling(20).max().shift(1):
-            score += 25
-            signals.append("🚀 突破前高")
+            signals.append("💎 主力吸籌")
 
-        # --- 第一階段過濾：技術分不到 65 分的不抓籌碼以節省時間/流量 ---
-        if score < 65: return None
+        # 2. 多頭位階
+        if row["close"] > row["ma20"]:
+            score += 10
+            signals.append("📈 站上月線")
 
-        # --- 第二階段：籌碼面 (FinMind) ---
-        if fm_token:
+        # 3. 突破意圖
+        if row["close"] >= df["high"].tail(10).max() * 0.98:
+            score += 10
+            signals.append("🚀 準備突破")
+
+        # --- 籌碼面 (有 Token 才執行) ---
+        if fm_token and score >= 65:
             try:
                 url = "https://api.finmindtrade.com/api/v4/data"
-                params = {"dataset": "InstitutionalInvestorsBuySell", "data_id": code, 
-                          "start_date": (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d"), "token": fm_token}
-                res = requests.get(url, params=params, timeout=5).json()
-                chip_df = pd.DataFrame(res.get("data", []))
-                if not chip_df.empty:
-                    # 判斷近 3 日是否有法人買盤
-                    recent_buy = chip_df.tail(6)['buy_sell'].sum()
-                    if recent_buy > 0:
-                        score += 15
-                        signals.append("🏦 法人進駐")
+                res = requests.get(url, params={
+                    "dataset": "InstitutionalInvestorsBuySell",
+                    "data_id": code,
+                    "start_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+                    "token": fm_token
+                }, timeout=3).json()
+                chip_data = pd.DataFrame(res.get("data", []))
+                if not chip_data.empty and chip_data['buy_sell'].sum() > 0:
+                    score += 10
+                    signals.append("🏦 法人買超")
             except: pass
 
-        return {
+        return ("OK", {
             "code": code,
             "name": twstock.codes[code].name,
             "score": score,
-            "signals": " | ".join(signals),
             "close": round(float(row["close"]), 2),
-            "vol_ratio": round(row["volume"] / row["vol_ma20"], 2)
-        }
-    except: return None
+            "vol_ratio": round(row["volume"] / row["vol_ma20"], 2),
+            "signals": " | ".join(signals)
+        })
+    except Exception as e:
+        return ("ERROR", f"{code}: {str(e)}")
 
 # =========================================================
-# UI 介面實作
+# UI 介面
 # =========================================================
 
-st.title("📡 股票狙擊手 V2：全台股即時掃描")
-st.caption("自動掃描全台 1,700+ 標的，尋找主力潛伏與噴發前兆")
+st.title("🏹 狙擊手 V2 全台股掃描器 (修復版)")
 
 with st.sidebar:
-    st.header("⚙️ 地圖炮設定")
-    fm_token = st.text_input("FinMind Token", type="password")
-    thread_count = st.slider("併發執行緒數量", 5, 20, 10, help="越高越快，但容易被 yfinance 封鎖")
-    min_score = st.slider("最低顯示評分", 60, 90, 70)
+    st.header("🔍 掃描設定")
+    fm_token = st.text_input("FinMind Token (選填)", type="password")
+    min_vol_input = st.slider("最低 5 日均量 (張)", 0, 500, 50)
+    target_score = st.slider("顯示評分門檻", 50, 90, 70)
+    threads = st.slider("掃描速度 (執行緒)", 1, 20, 10)
     
     st.divider()
-    start_all_scan = st.button("🔥 開啟全台股地圖炮 (約需 2-3 分鐘)")
+    run_btn = st.button("🚀 開始全市場掃描")
 
-# 戰情 log
-log_container = st.empty()
-if 'full_logs' not in st.session_state: st.session_state.full_logs = []
+log_box = st.empty()
+if 'logs' not in st.session_state: st.session_state.logs = []
 
-def write_log(msg):
-    st.session_state.full_logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
-    if len(st.session_state.full_logs) > 8: st.session_state.full_logs.pop(0)
-    log_container.markdown(f'<div class="terminal-log">{"<br>".join(st.session_state.full_logs)}</div>', unsafe_allow_html=True)
+def logger(msg):
+    st.session_state.logs.append(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+    if len(st.session_state.logs) > 10: st.session_state.logs.pop(0)
+    log_box.markdown(f'<div class="terminal-log">{"<br>".join(st.session_state.logs)}</div>', unsafe_allow_html=True)
 
 # =========================================================
-# 執行全市場掃描
+# 執行邏輯
 # =========================================================
 
-if start_all_scan:
-    all_codes = get_all_taiwan_symbols()
-    write_log(f"🚀 初始化完成，準備掃描全台 {len(all_codes)} 檔股票...")
+if run_btn:
+    all_codes = get_all_codes()
+    logger(f"啟動！目標：全台 {len(all_codes)} 檔股票...")
     
-    results = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    final_results = []
+    progress = st.progress(0)
     
-    # 使用 ThreadPoolExecutor 進行多線程掃描
-    with ThreadPoolExecutor(max_workers=thread_count) as executor:
-        futures = {executor.submit(fetch_and_analyze, code, fm_token): code for code in all_codes}
+    # 多線程加速
+    with ThreadPoolExecutor(max_workers=threads) as executor:
+        future_to_code = {executor.submit(analyze_logic, code, fm_token, min_vol_input): code for code in all_codes}
         
-        for i, future in enumerate(as_completed(futures)):
-            code = futures[future]
-            try:
-                data = future.result()
-                if data and data['score'] >= min_score:
-                    results.append(data)
-                    write_log(f"🎯 發現強勢股: {data['code']} {data['name']} (評分: {data['score']})")
-            except Exception as e:
-                pass
+        for i, future in enumerate(as_completed(future_to_code)):
+            status, data = future.result()
             
-            # 每掃 50 檔更新一次進度條，避免過度重新渲染
-            if i % 20 == 0:
-                progress = (i + 1) / len(all_codes)
-                progress_bar.progress(progress)
-                status_text.text(f"掃描進度: {i+1} / {len(all_codes)}")
+            if status == "OK" and data['score'] >= target_score:
+                final_results.append(data)
+                logger(f"🎯 命中標的：{data['code']} {data['name']} ({data['score']}分)")
+            elif status == "ERROR":
+                logger(f"⚠️ 錯誤：{data}")
+            
+            if i % 50 == 0:
+                progress.progress((i + 1) / len(all_codes))
 
-    write_log("✅ 全市場掃描完成！")
+    logger("✅ 掃描任務完成！")
     
-    if results:
-        res_df = pd.DataFrame(results).sort_values("score", ascending=False)
-        
-        st.write(f"### 🏆 全市場強勢選股清單 (共 {len(res_df)} 檔)")
-        st.dataframe(res_df, use_container_width=True)
-        
-        # 視覺化看板
-        st.divider()
-        cols = st.columns(min(len(res_df), 3))
-        for idx, row in res_df.head(6).iterrows():
-            with cols[idx % 3]:
-                st.metric(f"{row['code']} {row['name']}", f"{row['close']} TWD", f"{row['score']} 分")
-                st.caption(f"訊號: {row['signals']}")
-                
+    if final_results:
+        df_res = pd.DataFrame(final_results).sort_values("score", ascending=False)
+        st.write(f"### 🏆 篩選結果 (共 {len(df_res)} 檔)")
+        st.dataframe(df_res, use_container_width=True)
     else:
-        st.warning("⚠️ 掃描完成，但沒有標的符合您的評分門檻。請調低「最低顯示評分」再試一次。")
-
-else:
-    st.info("💡 點擊左側按鈕開始掃描全台股。注意：全市場掃描極為耗費系統資源，建議在盤中或盤後數據更新後執行。")
+        st.error("❌ 依然找不到標的。建議：1. 調低評分門檻至 60。 2. 調低成交量張數。 3. 檢查網路是否連線。")
