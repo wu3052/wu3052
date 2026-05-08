@@ -1,263 +1,528 @@
 import streamlit as st
 import pandas as pd
-import pandas_ta as ta
 import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from FinMind.data import DataLoader
+import yfinance as yf
 import twstock
 import requests
+import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-import time
 
-# --- 系統配置與初始化 ---
-st.set_page_config(page_title="股票狙擊手 Pro Max V2", layout="wide")
+# =========================
+# 基本設定
+# =========================
 
-# 套用終端機風格 CSS
-st.markdown("""
-    <style>
-    .terminal-log {
-        background-color: #0e1117;
-        color: #00ff00;
-        font-family: 'Courier New', Courier, monospace;
-        padding: 10px;
-        border-radius: 5px;
-        height: 200px;
-        overflow-y: auto;
-        border: 1px solid #444;
-    }
-    .pulse-card {
-        padding: 20px;
-        border-radius: 10px;
-        border: 2px solid #ff4b4b;
-        animation: pulse 2s infinite;
-    }
-    @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0.7); }
-        70% { box-shadow: 0 0 0 10px rgba(255, 75, 75, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(255, 75, 75, 0); }
-    }
-    </style>
-    """, unsafe_allow_html=True)
+st.set_page_config(
+    page_title="股票狙擊手 Ultimate Pro",
+    layout="wide",
+    page_icon="🔥"
+)
 
-# --- 核心數據類別 ---
-class SniperEngine:
-    def __init__(self, api_token, discord_url):
-        self.api_token = api_token
-        self.discord_url = discord_url
-        self.dl = DataLoader()
-        if api_token:
-            self.dl.login_token(api_token)
+BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
-    def get_market_status(self):
-        """獲取大盤(加權指數)狀態"""
-        # 這裡簡化以台積電(2330)或主要指數代替大盤邏輯
-        try:
-            df = self.dl.taiwan_stock_daily(stock_id='0050', start_date=(datetime.now() - timedelta(days=100)).strftime('%Y-%m-%d'))
-            current_price = df['close'].iloc[-1]
-            ma20 = df['close'].rolling(20).mean().iloc[-1]
-            score = 80 if current_price > ma20 else 30
-            status = "多頭" if score > 50 else "空頭"
-            return score, status
-        except:
-            return 50, "數據讀取中"
+# =========================
+# 快取資料夾
+# =========================
 
-    def fetch_data(self, stock_id):
-        """縫合歷史與即時數據"""
-        # 1. 歷史數據 (FinMind)
-        start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-        df_hist = self.dl.taiwan_stock_daily(stock_id=stock_id, start_date=start_date)
-        df_hist = df_hist[['date', 'open', 'max', 'min', 'close', 'Trading_Volume']]
-        df_hist.columns = ['date', 'open', 'high', 'low', 'close', 'volume']
-        df_hist['date'] = pd.to_datetime(df_hist['date'])
-        
-        # 2. 即時數據 (twstock) - 僅在盤中生效
-        try:
-            realtime_data = twstock.realtime.get(stock_id)
-            if realtime_data['success']:
-                rt = realtime_data['info']
-                now_price = float(realtime_data['realtime']['latest_trade_price'])
-                # 簡易縫合邏輯
-                last_row = {
-                    'date': datetime.now(),
-                    'open': float(realtime_data['realtime']['open']),
-                    'high': float(realtime_data['realtime']['high']),
-                    'low': float(realtime_data['realtime']['low']),
-                    'close': now_price,
-                    'volume': int(realtime_data['realtime']['accumulated_trade_volume']) * 1000
-                }
-                df_hist = pd.concat([df_hist, pd.DataFrame([last_row])], ignore_index=True)
-        except:
-            pass
-        
-        return df_hist
+CACHE_EXPIRE_HOURS = 6
 
-    def calculate_indicators(self, df):
-        """F-003: 技術指標運算體系"""
-        # 均線族
-        for ma in [5, 10, 20, 55, 60, 144, 200]:
-            df[f'MA{ma}'] = ta.sma(df['close'], length=ma)
-        
-        # MACD
-        macd = ta.macd(df['close'])
-        df = pd.concat([df, macd], axis=1)
-        
-        # VCP 壓縮度 (HL Range)
-        df['volatility'] = (df['high'] - df['low']) / df['close']
-        df['vcp_check'] = df['volatility'].rolling(10).mean()
-        
-        # ATR (倉位建議)
-        df['ATR'] = ta.atr(df['high'], df['low'], df['close'], length=14)
-        
+# =========================
+# 工具函數
+# =========================
+
+def get_tw_time():
+    return datetime.utcnow() + timedelta(hours=8)
+
+
+def get_yf_symbol(code):
+    code = str(code)
+
+    if code.startswith(("3", "5", "6", "8")):
+        return f"{code}.TWO"
+
+    return f"{code}.TW"
+
+
+# =========================
+# 建立強勢股票池
+# =========================
+
+@st.cache_data(ttl=3600)
+def build_stock_pool():
+
+    pool = []
+
+    for code, info in twstock.codes.items():
+
+        if len(code) != 4:
+            continue
+
+        if info.type != "股票":
+            continue
+
+        pool.append(code)
+
+    return pool
+
+
+# =========================
+# 取得歷史資料（低耗能）
+# =========================
+
+@st.cache_data(ttl=14400)
+def get_history_data(code):
+
+    try:
+
+        ticker = get_yf_symbol(code)
+
+        df = yf.download(
+            ticker,
+            period="1y",
+            interval="1d",
+            progress=False
+        )
+
+        if df.empty:
+            return None
+
+        df.columns = [c.lower() for c in df.columns]
+
+        df = df.rename(columns={
+            "adj close": "adj_close"
+        })
+
+        df = df.dropna()
+
         return df
 
-    def analyze_strategy(self, df, market_score):
-        """F-004: 綜合評分系統"""
-        score = 50
-        signals = []
-        
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # 大盤避險原則
-        if market_score < 40:
-            return 20, ["⚠️ 大盤風險高，建議避險暫緩"]
+    except:
+        return None
 
-        # 1. 均線邏輯
-        if last['close'] > last['MA5']: score += 12
-        if last['MA5'] > last['MA10'] > last['MA20']: score += 15
-        
-        # 2. 突破偵測 (噴發第一根)
-        if last['close'] > last['MA20'] and prev['close'] <= prev['MA20'] and last['volume'] > prev['volume'] * 1.5:
-            score += 25
-            signals.append("🚀 噴發第一根")
-            
-        # 3. VCP 壓縮判定
-        if last['vcp_check'] < prev['vcp_check'] * 0.9:
-            score += 10
-            signals.append("💎 鑽石眼 (波動壓縮)")
 
-        # 4. 扣分邏輯
-        if last['close'] < last['MA10']: score -= 20
-        
-        # 倉位建議 (基於 ATR)
-        risk_per_share = last['ATR'] * 2
-        position_size = "10%" if score > 70 else "5%"
-        
-        return score, signals, position_size
+# =========================
+# 即時資料（盤中）
+# =========================
 
-# --- UI 介面實作 ---
+@st.cache_data(ttl=15)
+def get_realtime_data(code):
 
-# 側邊欄控制區
+    try:
+
+        data = twstock.realtime.get(code)
+
+        if not data["success"]:
+            return None
+
+        real = data["realtime"]
+
+        return {
+            "price": float(real["latest_trade_price"] or 0),
+            "volume": int(real["accumulate_trade_volume"] or 0) * 1000
+        }
+
+    except:
+        return None
+
+
+# =========================
+# 技術分析
+# =========================
+
+def analyze_stock(df):
+
+    if df is None:
+        return None
+
+    if len(df) < 200:
+        return None
+
+    # =====================
+    # 均線
+    # =====================
+
+    for ma in [5, 10, 20, 60, 200]:
+        df[f"ma{ma}"] = df["close"].rolling(ma).mean()
+
+    # =====================
+    # 量能
+    # =====================
+
+    df["vol_ma5"] = df["volume"].rolling(5).mean()
+
+    df["vol_ratio"] = (
+        df["volume"] /
+        df["vol_ma5"]
+    )
+
+    # =====================
+    # MACD
+    # =====================
+
+    exp1 = df["close"].ewm(span=12).mean()
+    exp2 = df["close"].ewm(span=26).mean()
+
+    df["macd"] = exp1 - exp2
+
+    df["signal"] = df["macd"].ewm(span=9).mean()
+
+    # =====================
+    # KD
+    # =====================
+
+    low_9 = df["low"].rolling(9).min()
+    high_9 = df["high"].rolling(9).max()
+
+    rsv = (df["close"] - low_9) / (high_9 - low_9) * 100
+
+    df["k"] = rsv.ewm(com=2).mean()
+    df["d"] = df["k"].ewm(com=2).mean()
+
+    # =====================
+    # 平台突破
+    # =====================
+
+    df["box_high"] = df["high"].rolling(20).max()
+
+    df["break_box"] = (
+        (df["close"] > df["box_high"].shift(1))
+        &
+        (df["vol_ratio"] > 1.5)
+    )
+
+    # =====================
+    # VCP
+    # =====================
+
+    df["range"] = (
+        (df["high"] - df["low"])
+        /
+        df["close"]
+    )
+
+    df["vcp"] = (
+        df["range"].rolling(5).mean()
+        <
+        df["range"].rolling(20).mean() * 0.7
+    )
+
+    # =====================
+    # 量縮吸籌
+    # =====================
+
+    df["vol_contract"] = (
+        df["volume"].rolling(5).mean()
+        <
+        df["volume"].rolling(20).mean() * 0.7
+    )
+
+    # =====================
+    # Relative Strength
+    # =====================
+
+    df["rs"] = (
+        df["close"]
+        /
+        df["close"].shift(20)
+    )
+
+    # =====================
+    # 洗盤
+    # =====================
+
+    df["washout"] = (
+        (df["low"] < df["low"].shift(1))
+        &
+        (df["close"] > df["open"])
+        &
+        (df["volume"] < df["vol_ma5"])
+    )
+
+    # =====================
+    # 危險訊號
+    # =====================
+
+    df["danger"] = (
+        (df["volume"] > df["vol_ma5"] * 2)
+        &
+        (df["close"] < df["open"])
+    )
+
+    # =====================
+    # 最新資料
+    # =====================
+
+    row = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    score = 0
+
+    signals = []
+
+    # =====================
+    # 評分系統
+    # =====================
+
+    if row["ma5"] > row["ma10"] > row["ma20"]:
+        score += 15
+        signals.append("多頭排列")
+
+    if row["close"] > row["ma200"]:
+        score += 10
+        signals.append("站上年線")
+
+    if row["break_box"]:
+        score += 25
+        signals.append("平台突破")
+
+    if row["vcp"]:
+        score += 20
+        signals.append("VCP")
+
+    if row["vol_contract"]:
+        score += 15
+        signals.append("量縮吸籌")
+
+    if row["washout"]:
+        score += 15
+        signals.append("洗盤")
+
+    if row["rs"] > 1.15:
+        score += 20
+        signals.append("Relative Strength")
+
+    if row["macd"] > row["signal"]:
+        score += 10
+        signals.append("MACD翻紅")
+
+    kd_cross = (
+        prev["k"] <= prev["d"]
+        and
+        row["k"] > row["d"]
+    )
+
+    if kd_cross:
+        score += 10
+        signals.append("KD金叉")
+
+    if row["danger"]:
+        score -= 30
+        signals.append("危險爆量")
+
+    # =====================
+    # 階段判斷
+    # =====================
+
+    stage = "觀察"
+
+    if row["vol_contract"] and row["vcp"]:
+        stage = "吸籌"
+
+    if row["break_box"]:
+        stage = "發動"
+
+    if row["ma5"] > row["ma10"] > row["ma20"]:
+        stage = "主升"
+
+    if row["danger"]:
+        stage = "出貨"
+
+    # =====================
+    # 等級
+    # =====================
+
+    rank = "B"
+
+    if score >= 90:
+        rank = "SSS"
+
+    elif score >= 80:
+        rank = "SS"
+
+    elif score >= 70:
+        rank = "S"
+
+    elif score >= 60:
+        rank = "A"
+
+    return {
+        "score": score,
+        "rank": rank,
+        "stage": stage,
+        "signals": signals,
+        "close": round(row["close"], 2),
+        "vol_ratio": round(row["vol_ratio"], 2),
+        "break_box": bool(row["break_box"])
+    }
+
+
+# =========================
+# FinMind 籌碼分析
+# =========================
+
+@st.cache_data(ttl=43200)
+def get_chip_data(code, token):
+
+    try:
+
+        res = requests.get(
+            BASE_URL,
+            params={
+                "dataset": "InstitutionalInvestorsBuySell",
+                "data_id": code,
+                "start_date": (
+                    datetime.now() - timedelta(days=30)
+                ).strftime("%Y-%m-%d"),
+                "token": token
+            },
+            timeout=10
+        ).json()
+
+        data = res.get("data", [])
+
+        if not data:
+            return None
+
+        df = pd.DataFrame(data)
+
+        foreign = df[
+            df["name"] == "Foreign_Investor"
+        ]
+
+        foreign_buy = foreign["buy_sell"].tail(3).sum()
+
+        return {
+            "foreign_buy": foreign_buy
+        }
+
+    except:
+        return None
+
+
+# =========================
+# UI
+# =========================
+
+st.title("🔥 股票狙擊手 Ultimate Pro")
+
 with st.sidebar:
-    st.header("🎛️ 狙擊手控制台")
-    api_token = st.text_input("FinMind Token", type="password")
-    webhook_url = st.text_input("Discord Webhook URL", type="password")
-    
-    st.divider()
-    auto_refresh = st.toggle("Auto Refresh (60s)")
-    discord_notify = st.checkbox("開啟 Discord 通知")
-    
-    target_stocks = st.text_area("監控清單 (代碼以逗號隔開)", "2330,2317,2454,3037,1513,2308")
-    stock_list = [s.strip() for s in target_stocks.split(",")]
-    
-    scan_btn = st.button("🚀 開始全線掃描", use_container_width=True)
 
-# 實例化引擎
-engine = SniperEngine(api_token, webhook_url)
+    st.header("系統設定")
 
-# 主要顯示區域
-st.title("🏹 股票狙擊手 Pro Max V2")
+    finmind_token = st.text_input(
+        "FinMind Token",
+        type="password"
+    )
 
-# F-001: 市場概況
-m_score, m_status = engine.get_market_status()
-col1, col2, col3 = st.columns(3)
-col1.metric("大盤戰情評分", f"{m_score} 分", delta="多方占優" if m_score > 50 else "空方警戒")
-col2.metric("當前市場位階", m_status)
-col3.metric("監控個股數量", len(stock_list))
+    max_scan = st.slider(
+        "掃描股票數量",
+        100,
+        2000,
+        500
+    )
 
-# 戰情日誌
-st.subheader("📡 實時戰情日誌")
-log_container = st.empty()
-if 'logs' not in st.session_state:
-    st.session_state.logs = []
+    only_strong = st.checkbox(
+        "只顯示 S 級以上",
+        value=True
+    )
 
-def update_log(msg):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    st.session_state.logs.append(f"[{timestamp}] {msg}")
-    if len(st.session_state.logs) > 8: st.session_state.logs.pop(0)
-    log_content = "<br>".join(st.session_state.logs)
-    log_container.markdown(f'<div class="terminal-log">{log_content}</div>', unsafe_allow_html=True)
+    start_scan = st.button("🚀 開始掃描")
 
-# 掃描邏輯
-if scan_btn:
-    update_log("系統啟動：開始執行多線程掃描...")
-    
+
+# =========================
+# 開始掃描
+# =========================
+
+if start_scan:
+
+    stock_pool = build_stock_pool()[:max_scan]
+
+    progress = st.progress(0)
+
     results = []
-    
-    # 這裡演示單股詳細分析，實際可用 ThreadPoolExecutor 優化
-    for symbol in stock_list:
+
+    # =====================
+    # 第一輪：粗篩
+    # =====================
+
+    for idx, code in enumerate(stock_pool):
+
+        progress.progress((idx + 1) / len(stock_pool))
+
         try:
-            df = engine.fetch_data(symbol)
-            df = engine.calculate_indicators(df)
-            score, signals, pos = engine.analyze_strategy(df, m_score)
-            
-            results.append({
-                "代碼": symbol,
-                "評分": score,
-                "訊號": " | ".join(signals),
-                "建議倉位": pos,
-                "df": df
-            })
-            
-            if score > 70:
-                update_log(f"🔥 發現目標！ {symbol} 評分: {score} - {signals}")
-                if discord_notify and webhook_url:
-                    requests.post(webhook_url, json={"content": f"🎯 【狙擊訊號】{symbol} | 評分: {score} | 訊號: {signals}"})
-            else:
-                update_log(f"掃描中: {symbol} 正常")
-        except Exception as e:
-            update_log(f"❌ {symbol} 數據處理錯誤: {str(e)}")
 
-    # 顯示狙擊卡片
-    st.divider()
-    high_score_stocks = [r for r in results if r['評分'] > 65]
-    if high_score_stocks:
-        st.subheader("🎯 優先狙擊目標")
-        cols = st.columns(len(high_score_stocks))
-        for i, stock in enumerate(high_score_stocks):
-            with cols[i]:
-                st.markdown(f"""
-                <div class="pulse-card">
-                    <h3>{stock['代碼']}</h3>
-                    <h2 style='color:#ff4b4b'>{stock['評分']} 分</h2>
-                    <p>{stock['訊號']}</p>
-                    <strong>建議倉位: {stock['建議倉位']}</strong>
-                </div>
-                """, unsafe_allow_html=True)
+            df = get_history_data(code)
 
-    # F-005: 視覺化圖表
-    st.divider()
-    st.subheader("📊 關鍵位戰情圖表")
-    for stock in results:
-        with st.expander(f"查看 {stock['代碼']} 詳細分析圖表 (評分: {stock['評分']})"):
-            df = stock['df'].tail(100)
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-            
-            # K 線與均線
-            fig.add_trace(go.Candlestick(x=df['date'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="K線"), row=1, col=1)
-            for ma in [5, 20, 60]:
-                fig.add_trace(go.Scatter(x=df['date'], y=df[f'MA{ma}'], name=f'MA{ma}', line=dict(width=1.5)), row=1, col=1)
-            
-            # MACD
-            colors = ['red' if val >= 0 else 'green' for val in df['MACDh_12_26_9']]
-            fig.add_trace(go.Bar(x=df['date'], y=df['MACDh_12_26_9'], marker_color=colors, name="MACD"), row=2, col=1)
-            
-            fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True)
+            if df is None:
+                continue
 
-# 自動重新整理邏輯
-if auto_refresh:
-    time.sleep(60)
-    st.rerun()
+            result = analyze_stock(df)
+
+            if result is None:
+                continue
+
+            if result["score"] < 50:
+                continue
+
+            # =================
+            # 第二輪：FinMind
+            # =================
+
+            chip = None
+
+            if result["score"] >= 75 and finmind_token:
+                chip = get_chip_data(code, finmind_token)
+
+                if chip:
+
+                    if chip["foreign_buy"] > 0:
+                        result["score"] += 10
+                        result["signals"].append("外資買超")
+
+            result["code"] = code
+
+            stock = twstock.codes.get(code)
+
+            result["name"] = stock.name if stock else "未知"
+
+            results.append(result)
+
+        except:
+            continue
+
+    # =====================
+    # 排序
+    # =====================
+
+    results = sorted(
+        results,
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    df_result = pd.DataFrame(results)
+
+    if only_strong:
+
+        df_result = df_result[
+            df_result["score"] >= 70
+        ]
+
+    st.success(f"完成掃描，共找到 {len(df_result)} 檔")
+
+    st.dataframe(
+        df_result[[
+            "code",
+            "name",
+            "score",
+            "rank",
+            "stage",
+            "close",
+            "vol_ratio",
+            "signals"
+        ]],
+        use_container_width=True
+    )
+
+
+
