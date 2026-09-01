@@ -744,9 +744,9 @@ with st.sidebar:
             else:
                 st.error(f"❌ 無法取得 {query_sid} 的數據，請檢查代碼是否正確。")
 
-st.divider()
+    st.divider()
     st.subheader("🔭 全市場潛力股挖掘")
-    use_macd_25ma = st.checkbox("🎯 MACD 回踩 0 軸 + 25MA 支持", value=True) # 新增勾選項
+    use_macd_25ma = st.checkbox("🎯 MACD 回踩 0 軸 + 25MA 支持", value=True)
     use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉 (日)", value=False)
     vol_limit = st.number_input("成交量大於 (張)", value=500, step=100)
     growth_limit = st.number_input("當日漲幅小於 (%)", value=6.0, step=0.5, help="找出剛帶量起漲的股票")
@@ -754,7 +754,7 @@ st.divider()
     if st.button("🔎 執行全台股掃描", use_container_width=True):
         screen_results = run_stock_screener(
             enable_kd_filter=use_kd_strict, 
-            enable_macd_25ma_filter=use_macd_25ma, # 傳入新參數
+            enable_macd_25ma_filter=use_macd_25ma,
             min_volume_limit=vol_limit,
             max_growth_limit=growth_limit
         )
@@ -766,6 +766,7 @@ st.divider()
         else:
             st.session_state.screen_results = pd.DataFrame()
             st.warning("⚠️ 掃描完成，目前無符合該形態之標的。")
+
     if 'screen_results' in st.session_state:
         # 使用 expander 摺疊，避免側邊欄被拉得太長
         with st.expander("📊 查看選股結果 (請勾選)", expanded=True):
@@ -787,11 +788,13 @@ st.divider()
                 if st.button("📥 將勾選標的加入狙擊清單", use_container_width=True):
                     selected_codes = edited_df[edited_df["追蹤"] == True]["股價代號"].tolist()
                     if selected_codes:
-                        new_codes_str = ",".join(selected_codes)
-                        current_list = st.session_state.get('search_codes', "")
-                        # 邏輯優化：確保合併時不會出現多餘逗號
-                        combined = f"{current_list},{new_codes_str}".strip(",")
-                        st.session_state.search_codes = combined
+                        current_list_str = st.session_state.get('search_codes', "")
+                        existing_codes = [c.strip() for c in current_list_str.replace("\n", ",").split(",") if c.strip()]
+                        
+                        # 合併並自動去重
+                        updated_codes = list(dict.fromkeys(existing_codes + selected_codes))
+                        st.session_state.search_codes = ",".join(updated_codes)
+                        
                         st.success(f"已加入 {len(selected_codes)} 檔標的！")
                         time.sleep(1)
                         st.rerun()
@@ -802,7 +805,6 @@ st.divider()
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
-
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
     # --- 加法升級：自動監控時先同步雲端清單 ---
