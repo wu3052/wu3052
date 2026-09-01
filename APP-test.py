@@ -572,9 +572,16 @@ if not st.session_state.first_sync_done:
     sync_sheets()
     st.session_state.first_sync_done = True
 
-# --- 7.5 全市場潛力股挖掘 (新增 MACD+25MA 形態篩選) ---
+# --- 7.5 全市場潛力股挖掘 (支援動態均線 + 帶量漲停後量縮回踩篩選) ---
 @st.cache_data(ttl=60)
-def run_stock_screener(enable_kd_filter=True, enable_macd_25ma_filter=True, min_volume_limit=500, max_growth_limit=5.0):
+def run_stock_screener(
+    enable_kd_filter=False, 
+    enable_macd_ma_filter=True, 
+    enable_limit_up_pullback_filter=False,
+    ma_days=25,
+    min_volume_limit=500, 
+    max_growth_limit=5.0
+):
     all_codes = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
@@ -622,43 +629,49 @@ def run_stock_screener(enable_kd_filter=True, enable_macd_25ma_filter=True, min_
                     if not (0 <= change_pct <= max_growth_limit): continue
 
                     # 指標計算
-                    # 1. 25日均線
-                    df['ma25'] = df['close'].rolling(25).mean()
-                    ma25_curr = df['ma25'].iloc[-1]
+                    # 1. 動態 MA 均線計算
+                    ma_col_name = f'ma_{ma_days}'
+                    df[ma_col_name] = df['close'].rolling(ma_days).mean()
+                    ma_curr = df[ma_col_name].iloc[-1]
                     
                     # 2. MACD 計算 (12, 26, 9)
                     exp1 = df['close'].ewm(span=12, adjust=False).mean()
                     exp2 = df['close'].ewm(span=26, adjust=False).mean()
                     df['dif'] = exp1 - exp2
                     df['macd_signal'] = df['dif'].ewm(span=9, adjust=False).mean()
-                    df['macd_hist'] = df['dif'] - df['macd_signal']
 
                     dif_curr = df['dif'].iloc[-1]
                     sig_curr = df['macd_signal'].iloc[-1]
                     dif_prev = df['dif'].iloc[-2]
                     sig_prev = df['macd_signal'].iloc[-2]
 
-                    # 3. 成交量與 K 線
+                    # 3. 成交量與 K 線特徵
                     df['vol_ma5'] = df['volume'].rolling(5).mean()
+                    vol_ma5_curr = df['vol_ma5'].iloc[-1]
                     vol_ratio = curr_vol / df['vol_ma5'].iloc[-2] if df['vol_ma5'].iloc[-2] > 0 else 1.0
                     is_red_candle = curr_price > df['open'].iloc[-1]
 
-                    # --- 核心形態判定：MACD 上穿/回踩 0 軸 + 25日線支持 ---
-                    # (1) 25日線支持：價格站上或回踩 25MA 附近止跌
-                    cond_25ma_support = (df['low'].iloc[-1] <= ma25_curr * 1.015) and (curr_price >= ma25_curr * 0.985)
-                    
-                    # (2) MACD 在 0 軸附近金叉/黏合，且有轉強跡象
-                    near_zero_axis = abs(dif_curr) < (curr_price * 0.02) # DIF 貼近 0 軸 (相對價格 2% 範圍內)
+                    # --- 核心形態 1：MACD 上穿/回踩 0 軸 + 指定 MA 支持 ---
+                    cond_ma_support = (df['low'].iloc[-1] <= ma_curr * 1.015) and (curr_price >= ma_curr * 0.985)
+                    near_zero_axis = abs(dif_curr) < (curr_price * 0.02)
                     macd_gold_cross = (dif_prev <= sig_prev and dif_curr > sig_curr) or (abs(dif_curr - sig_curr) < (curr_price * 0.005))
                     cond_macd_pattern = near_zero_axis and macd_gold_cross
-                    
-                    # (3) 帶量陽線突破
                     cond_volume_break = is_red_candle and (vol_ratio >= 1.3 or change_pct >= 2.0)
 
-                    # 綜合條件
-                    cond_macd_25ma_strategy = cond_25ma_support and cond_macd_pattern and cond_volume_break
+                    cond_macd_ma_strategy = cond_ma_support and cond_macd_pattern and cond_volume_break
 
-                    # 原始 KD 條件 (可選)
+                    # --- 核心形態 2：前 20 天帶量漲停 + 近期量縮回踩指定 MA ---
+                    df['daily_pct'] = df['close'].pct_change() * 100
+                    df['is_limit_up_volume'] = (df['daily_pct'] >= 9.5) & (df['volume'] > df['vol_ma5'] * 1.5)
+                    
+                    # 取前 20 個交易日 (不含今天) 是否有帶量漲停
+                    has_recent_limit_up = df['is_limit_up_volume'].iloc[-21:-1].any()
+                    
+                    # 量縮回踩判定：當前成交量小於 5日均量 (縮量)，且價格在 MA 附近獲得支撐
+                    is_volume_contracted = curr_vol < vol_ma5_curr
+                    cond_limit_up_pullback = has_recent_limit_up and is_volume_contracted and cond_ma_support
+
+                    # 4. 原始 KD 條件 (可選)
                     low_9 = df['low'].rolling(9).min()
                     high_9 = df['high'].rolling(9).max()
                     rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
@@ -666,8 +679,10 @@ def run_stock_screener(enable_kd_filter=True, enable_macd_25ma_filter=True, min_
                     df['d'] = df['k'].ewm(com=2).mean()
                     kd_cross = df['k'].iloc[-2] <= df['d'].iloc[-2] and df['k'].iloc[-1] > df['d'].iloc[-1]
 
-                    # 篩選開關控制
-                    if enable_macd_25ma_filter and not cond_macd_25ma_strategy:
+                    # 篩選開關控制 (符合任一勾選策略即通過，或雙重滿足)
+                    if enable_macd_ma_filter and not cond_macd_ma_strategy:
+                        continue
+                    if enable_limit_up_pullback_filter and not cond_limit_up_pullback:
                         continue
                     if enable_kd_filter and not kd_cross:
                         continue
@@ -680,6 +695,10 @@ def run_stock_screener(enable_kd_filter=True, enable_macd_25ma_filter=True, min_
                     analyzed_df = analyze_strategy(df)
                     score = int(analyzed_df.iloc[-1]['score']) if (analyzed_df is not None) else 0
 
+                    signal_tag = []
+                    if cond_macd_ma_strategy: signal_tag.append("🔥 0軸+MA突破")
+                    if cond_limit_up_pullback: signal_tag.append("🎯 漲停量縮回踩")
+
                     found_targets.append({
                         "追蹤": False,
                         "股價代號": sid,
@@ -687,7 +706,7 @@ def run_stock_screener(enable_kd_filter=True, enable_macd_25ma_filter=True, min_
                         "評分": score,
                         "股價": round(curr_price, 2),
                         "漲幅%": round(change_pct, 2),
-                        "出量": "🔥 放量陽線" if cond_volume_break else "—"
+                        "特徵訊號": " | ".join(signal_tag) if signal_tag else "—"
                     })
                 except: continue
         except: continue
@@ -712,7 +731,7 @@ with st.sidebar:
     auto_monitor = st.checkbox("🔄 開啟全自動盤中監控", value=True)
     analyze_btn = st.button("🚀 立即執行掃描", use_container_width=True)
 
-    # --- 新增：個股即時診斷區塊 ---
+    # --- 個股即時診斷區塊 ---
     st.divider()
     st.subheader("🔍 個股即時診斷")
     query_sid = st.text_input("輸入代碼 (例如: 2330)", placeholder="輸入後按 Enter 或下方按鈕")
@@ -746,15 +765,24 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🔭 全市場潛力股挖掘")
-    use_macd_25ma = st.checkbox("🎯 MACD 回踩 0 軸 + 25MA 支持", value=True)
+    
+    # 均線天數自訂輸入框
+    target_ma = st.number_input("📌 支撐均線天數 (MA)", value=25, min_value=5, max_value=240, step=1)
+    
+    # 篩選條件勾選項
+    use_macd_ma = st.checkbox(f"🎯 MACD 回踩 0 軸 + {target_ma}MA 支持", value=True)
+    use_limit_up_pullback = st.checkbox(f"🚀 前20天帶量漲停 + 量縮回踩 {target_ma}MA", value=False)
     use_kd_strict = st.checkbox("🎯 僅顯示 KD 金叉 (日)", value=False)
+    
     vol_limit = st.number_input("成交量大於 (張)", value=500, step=100)
-    growth_limit = st.number_input("當日漲幅小於 (%)", value=6.0, step=0.5, help="找出剛帶量起漲的股票")
+    growth_limit = st.number_input("當日漲幅小於 (%)", value=6.0, step=0.5, help="找出剛帶量起漲或拉回整理的股票")
 
     if st.button("🔎 執行全台股掃描", use_container_width=True):
         screen_results = run_stock_screener(
             enable_kd_filter=use_kd_strict, 
-            enable_macd_25ma_filter=use_macd_25ma,
+            enable_macd_ma_filter=use_macd_ma,
+            enable_limit_up_pullback_filter=use_limit_up_pullback,
+            ma_days=int(target_ma),
             min_volume_limit=vol_limit,
             max_growth_limit=growth_limit
         )
@@ -762,24 +790,22 @@ with st.sidebar:
         if not screen_results.empty:
             st.session_state.screen_results = screen_results
             st.balloons()
-            st.success(f"✅ 掃描完成！共發現 `{len(screen_results)}` 檔符合【MACD 0軸 + 25MA】條件標的。")
+            st.success(f"✅ 掃描完成！共發現 `{len(screen_results)}` 檔符合策略標的。")
         else:
             st.session_state.screen_results = pd.DataFrame()
             st.warning("⚠️ 掃描完成，目前無符合該形態之標的。")
 
     if 'screen_results' in st.session_state:
-        # 使用 expander 摺疊，避免側邊欄被拉得太長
         with st.expander("📊 查看選股結果 (請勾選)", expanded=True):
             res_df = st.session_state.screen_results
             
             if not res_df.empty:
-                # 使用 data_editor
                 edited_df = st.data_editor(
                     res_df,
                     column_config={
                         "追蹤": st.column_config.CheckboxColumn(help="勾選以加入狙擊清單", default=False)
                     },
-                    disabled=["股價代號", "股價名稱", "評分", "股價", "漲幅%", "出量"],
+                    disabled=["股價代號", "股價名稱", "評分", "股價", "漲幅%", "特徵訊號"],
                     hide_index=True,
                     use_container_width=True,
                     key="stock_editor"
@@ -791,11 +817,10 @@ with st.sidebar:
                         current_list_str = st.session_state.get('search_codes', "")
                         existing_codes = [c.strip() for c in current_list_str.replace("\n", ",").split(",") if c.strip()]
                         
-                        # 合併並自動去重
                         updated_codes = list(dict.fromkeys(existing_codes + selected_codes))
                         st.session_state.search_codes = ",".join(updated_codes)
                         
-                        st.success(f"已加入 {len(selected_codes)} 檔標的！")
+                        st.success(f"已成功加入 {len(selected_codes)} 檔標的！")
                         time.sleep(1)
                         st.rerun()
                     else:
@@ -805,6 +830,7 @@ with st.sidebar:
 
     st.divider()
     st.info(f"系統時間: {get_taiwan_time().strftime('%H:%M:%S')}\n市場狀態: {'🔴開盤中' if is_market_open() else '🟢已收盤'}")
+    
 # --- 9. 執行掃描邏輯 ---
 def perform_scan(manual_trigger=False):  
     # --- 加法升級：自動監控時先同步雲端清單 ---
