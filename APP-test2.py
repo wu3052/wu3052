@@ -10,12 +10,13 @@ from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
-st.set_page_config(page_title="台股潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
     .main { background-color: #F8F9FA; }
     div.block-container { padding-top: 2rem; padding-bottom: 2rem; }
+    .stSelectbox, .stSlider, .stNumberInput { margin-bottom: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -23,16 +24,15 @@ if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
 # --- 2. 資料獲取函式 (FinMind 180天數據 + yfinance 備份) ---
-def get_finmind_data(stock_id, token=""):
+def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = (pd.Timestamp.today() - pd.Timedelta(days=260)).strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=250)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
     parameters = {
         "dataset": "TaiwanStockPrice",
         "data_id": str(stock_id),
         "start_date": start_date,
         "end_date": today,
-        "token": token
     }
     try:
         response = requests.get(url, params=parameters, timeout=5)
@@ -52,7 +52,7 @@ def get_finmind_data(stock_id, token=""):
     # 備份：使用 yfinance 抓取 180 天以上數據
     ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
     try:
-        df = yf.download(ticker, period="1y", interval="1d", progress=False)
+        df = yf.download(ticker, period="250d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
@@ -60,24 +60,22 @@ def get_finmind_data(stock_id, token=""):
     except:
         return None
 
-def get_taiwan_stock_list(market_scope="上市上櫃"):
+def get_taiwan_stock_list():
     stock_data = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
-            if market_scope == "上市" and info.market != "上市": continue
-            if market_scope == "上櫃" and info.market != "上櫃": continue
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、橘色實線形態與一年新高黑線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、橘色實線型態與一年新高黑線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
-    # 取最近 180 天顯示
-    df_k = df_k.tail(180)
+    # 取最近 180 天數據
+    df_k = df_k.tail(180).copy()
     
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
     
-    # 計算一年新高 (取 240 天或現有資料中的最高價)
+    # 計算一年新高 (取整體數據的最高價或近250日最高)
     year_high = df_k['High'].max()
 
     # 計算 MACD
@@ -110,18 +108,22 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     # 形態趨勢線（橘色實線）
     fig.add_trace(plotly_go.Scatter(
         x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
-        line=dict(color='#FF9F43', width=2), 
+        line=dict(color='#FF9F43', width=2),
         name="形態趨勢線"
     ), row=1, col=1)
 
-    # 股價創一年新高水平線 (黑線)
-    fig.add_hline(
-        y=year_high, line_dash="solid",
-        line=dict(color="#000000", width=1.5),
-        annotation_text=f"一年新高: {year_high:.2f}",
-        annotation_position="top left",
+    # 股價創一年新高處劃一條水平線 (黑線)
+    fig.add_shape(
+        type="line", x0=df_k.index[0], x1=df_k.index[-1],
+        y0=year_high, y1=year_high,
+        line=dict(color="#000000", width=1.5, dash="dash"),
         row=1, col=1
     )
+    fig.add_trace(plotly_go.Scatter(
+        x=[df_k.index[-1]], y=[year_high],
+        mode="text", text=[f" 一年新高: {year_high:.2f}"],
+        textposition="top left", showlegend=False
+    ), row=1, col=1)
 
     # 2. 中間成交量
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
@@ -147,7 +149,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     fig.update_layout(
         title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
         template="plotly_white",
-        height=620,
+        height=600,
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -155,13 +157,12 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     return fig
 
 # --- 4. 高效多執行緒全市場掃描函式 ---
-def fetch_and_analyze_single_stock(row, search_period, limit_up_filter, 
-                                    enable_macd_25ma, macd_ma_period,
+def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-                                    enable_kd_cross, min_vol, max_growth, fm_token):
+                                    enable_kd_cross, min_vol, max_growth):
     sid = row['code']
-    df = get_finmind_data(sid, fm_token)
-    if df is None or len(df) < search_period:
+    df = get_finmind_data(sid)
+    if df is None or len(df) < 60:
         return None
         
     df = df.dropna(subset=['Close'])
@@ -174,15 +175,10 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
     if change_pct > max_growth: return None
 
     df['daily_change'] = df['Close'].pct_change() * 100
-    recent_df = df.iloc[-search_period:]
+    recent_df = df.iloc[-60:]
     limit_up_count = (recent_df['daily_change'] >= 9.5).sum()
 
-    if limit_up_filter != "不限":
-        target_cnt = 5 if "5次以上" in limit_up_filter else int(limit_up_filter.replace("次", ""))
-        if "5次以上" in limit_up_filter and limit_up_count < 5: return None
-        elif "5次以上" not in limit_up_filter and limit_up_count != target_cnt: return None
-
-    # 策略 A
+    # 策略 1: MACD 回踩 0 軸 + 自訂 MA 支持
     cond_a = True
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
@@ -196,7 +192,7 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
         cond_macd = (abs(dif.iloc[-1]) < (curr_price * 0.02)) and (dif.iloc[-1] > signal.iloc[-1])
         cond_a = cond_ma and cond_macd
 
-    # 策略 B
+    # 策略 2: 前 N 天帶量漲停 + 量縮回踩自訂 MA
     cond_b = True
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
@@ -210,7 +206,7 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
         
         cond_b = had_limit_up_vol and is_vol_shrink and is_touch_ma
 
-    # 策略 C
+    # 策略 3: 日 KD 金叉
     cond_c = True
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
@@ -226,18 +222,17 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
         "股票代號": sid,
         "股票名稱": row['name'],
         "當日漲幅(%)": round(change_pct, 2),
-        f"近{search_period}日漲停次數": int(limit_up_count),
+        "近N日漲停次數": int(limit_up_count),
         "成交量(張)": int(curr_vol / 1000),
         "收盤價": round(curr_price, 2)
     }
 
 def run_quick_screener_parallel(
-    market_scope, search_period, limit_up_filter, 
     enable_macd_25ma, macd_ma_period,
     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-    enable_kd_cross, min_vol, max_growth, fm_token
+    enable_kd_cross, min_vol, max_growth
 ):
-    df_stocks = get_taiwan_stock_list(market_scope)
+    df_stocks = get_taiwan_stock_list()
     found_targets = []
     total_count = len(df_stocks)
     
@@ -249,10 +244,9 @@ def run_quick_screener_parallel(
         futures = {
             executor.submit(
                 fetch_and_analyze_single_stock, 
-                row, search_period, limit_up_filter, 
-                enable_macd_25ma, macd_ma_period,
+                row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-                enable_kd_cross, min_vol, max_growth, fm_token
+                enable_kd_cross, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
         
@@ -260,7 +254,7 @@ def run_quick_screener_parallel(
             completed += 1
             if completed % 15 == 0 or completed == total_count:
                 progress_bar.progress(min(completed / total_count, 1.0))
-                status_text.markdown(f"🔍 **掃描進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
+                status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
             
             res = future.result()
             if res:
@@ -272,37 +266,29 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側版面配置 (保留獨立搜索與即時 K 線圖診斷)
+# 5. 左側精簡控制台 (僅保留獨立搜索與個股即時K線診斷)
 # ==========================================
 with st.sidebar:
-    st.title("🎯 潛力股挖掘與診斷控制台")
+    st.title("⚡ 快速潛力股挖掘")
     st.divider()
 
-    fm_token = st.text_input("FinMind Token (選填)", value="", type="password", help="輸入後數據載入速度更快且更穩定")
-    
-    search_period = st.select_slider("1. 搜尋週期 (天數)", options=[20, 60, 90, 120, 240], value=60)
-    market_scope = st.selectbox("2. 搜索範圍", ["上市上櫃", "上市", "上櫃"])
-    limit_up_filter = st.selectbox("3. 近期漲停次數", ["不限", "0次", "1次", "2次", "3次", "4次", "5次", "5次以上"])
-
-    st.divider()
-    st.subheader("⚡ 快速潛力股挖掘 (獨立搜索)")
-    
     enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支持", value=True)
-    macd_ma_period = st.number_input("MACD 搭配均線數值", min_value=1, max_value=240, value=20)
+    macd_ma_period = st.number_input("MACD 搭配均線數值", min_value=1, max_value=240, value=25)
 
     enable_limit_up_pullback = st.checkbox("2. 前 N 天帶量漲停 + 量縮回踩 MA", value=False)
     col_p1, col_p2 = st.columns(2)
     with col_p1:
         limit_up_days = st.number_input("前 N 天", min_value=1, max_value=60, value=20)
     with col_p2:
-        limit_up_ma_period = st.number_input("回踩 MA", min_value=1, max_value=240, value=20)
+        limit_up_ma_period = st.number_input("回踩 MA", min_value=1, max_value=240, value=25)
 
     enable_kd_cross = st.checkbox("3. 僅顯示 KD 金叉 (日)", value=False)
 
+    st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
     max_growth = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5)
 
-    btn_quick_search = st.button("🚀 執行全市場快速搜索", use_container_width=True, type="primary")
+    btn_quick_search = st.button("🚀 執行快速潛力股挖掘", use_container_width=True, type="primary")
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
@@ -311,11 +297,16 @@ with st.sidebar:
 
 
 # ==========================================
-# 6. 右側主畫面：個股即時診斷 K 線圖呈現
+# 6. 右側主畫面區塊
 # ==========================================
+st.title("📈 台股智慧選股與即時 K 線診斷系統")
+st.caption("已依需求全面精簡，提供極速多執行緒掃描與一年的新高水平線檢視。")
+st.divider()
+
+# 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
-        df_diag = get_finmind_data(diag_code, fm_token)
+        df_diag = get_finmind_data(diag_code)
         if df_diag is not None and not df_diag.empty:
             st.success(f"📊 股票代號 {diag_code} 即時 K 線圖診斷報告")
             fig_diag = plot_beautified_chart(df_diag, f"{diag_code} 即時診斷", macd_ma_period)
@@ -323,25 +314,24 @@ if diag_btn and diag_code:
         else:
             st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
 
-# ==========================================
-# 7. 搜尋結果與高質感 K 線圖展示 (白色背景簡潔風格)
-# ==========================================
-st.subheader("📋 搜尋股票結果清單與詳細 K 線圖")
+st.subheader("📋 搜尋股票結果清單")
 
 if btn_quick_search:
     with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
         res_df = run_quick_screener_parallel(
-            market_scope, search_period, limit_up_filter,
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-            enable_kd_cross, min_vol, max_growth, fm_token
+            enable_kd_cross, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
 
 res_table = st.session_state.screener_results
 if not res_table.empty:
     st.success(f"🎉 掃描完成！共找到 `{len(res_table)}` 檔符合條件的優質標的：")
-    st.dataframe(res_table, use_container_width=True)
+    
+    # 呈現指定欄位: 股票代號、股票名稱、當日漲幅(%)、近N日漲停次數、成交量(張)
+    display_cols = ["股票代號", "股票名稱", "當日漲幅(%)", "近N日漲停次數", "成交量(張)"]
+    st.dataframe(res_table[display_cols], use_container_width=True)
 
     st.divider()
     st.subheader("📈 下拉選擇標的查看詳細美化 K 線圖")
@@ -353,7 +343,7 @@ if not res_table.empty:
 
     if selected_stock:
         with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
-            df_k = get_finmind_data(selected_stock, fm_token)
+            df_k = get_finmind_data(selected_stock)
             if df_k is not None and not df_k.empty:
                 stock_name = res_table[res_table['股票代號']==selected_stock]['股票名稱'].values[0]
                 fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name}", macd_ma_period)
@@ -361,4 +351,4 @@ if not res_table.empty:
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側調整條件並點擊「執行全市場快速搜索」，即可快速產出符合條件的潛力股與美化 K 線圖。")
+    st.info("👈 請於左側調整條件並點擊「執行快速潛力股挖掘」，系統將即時展示掃描進度與符合清單。")
