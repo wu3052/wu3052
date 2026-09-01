@@ -66,7 +66,7 @@ def get_finmind_stock_data(stock_id, token=""):
             df = df.dropna(subset=['Close'])
             return df.tail(180) # 確保精準取最後 180 天
     except Exception as e:
-        st.error(f-資料擷取失敗: {e})
+        st.error(f"資料擷取失敗: {e}")
     return None
 
 # 取得台股清單輔助函式
