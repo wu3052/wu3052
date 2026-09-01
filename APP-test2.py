@@ -1,14 +1,11 @@
-import streamlit as st
-import twstock
+import time
 import pandas as pd
 import numpy as np
-import requests
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
+import streamlit as st
+import yfinance as yf
+import twstock
+import plotly.graph_objects as plotly_go
 from streamlit_drawable_canvas import st_canvas
-import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
 
 # --- 全域頁面設定 (Dark Theme) ---
 st.set_page_config(page_title="DUAL-MA CANVAS 雙均線與形態選股系統", layout="wide")
