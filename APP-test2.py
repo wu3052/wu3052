@@ -36,11 +36,10 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 初始化 Session State
 if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
-# --- 2. 資料獲取函式 (支援 FinMind 與 YFinance 備份) ---
+# --- 2. 資料獲取函式 (FinMind 180天數據 + yfinance 備份) ---
 def get_finmind_data(stock_id, token=""):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=220)).strftime('%Y-%m-%d')
@@ -87,7 +86,77 @@ def get_taiwan_stock_list(market_scope="上市上櫃"):
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 高效多執行緒全市場掃描函式 ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量與實線橘色形態) ---
+def plot_beautified_chart(df_k, stock_title, ma_num):
+    ma_col_name = f'MA{ma_num}'
+    df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
+    
+    # 計算 MACD
+    exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
+    df_k['DIF'] = exp1 - exp2
+    df_k['MACD_Signal'] = df_k['DIF'].ewm(span=9, adjust=False).mean()
+    df_k['MACD_Hist'] = df_k['DIF'] - df_k['MACD_Signal']
+
+    # 建立 3 子圖 (K線 + 成交量 + MACD)
+    fig = make_subplots(
+        rows=3, cols=1, shared_xaxes=True, 
+        vertical_spacing=0.03, 
+        row_heights=[0.6, 0.2, 0.2]
+    )
+
+    # 1. 頂部 K 線圖與自訂紫色均線
+    fig.add_trace(plotly_go.Candlestick(
+        x=df_k.index, open=df_k['Open'], high=df_k['High'],
+        low=df_k['Low'], close=df_k['Close'], name="K線",
+        increasing_line_color='#EF5350', decreasing_line_color='#26A69A'
+    ), row=1, col=1)
+
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index, y=df_k[ma_col_name], 
+        line=dict(color='#8A2BE2', width=2), 
+        name=f"{ma_col_name} (均線)"
+    ), row=1, col=1)
+
+    # 形態趨勢線（橘色實線）
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
+        line=dict(color='#FF9F43', width=2),  # 修正為實線
+        name="形態趨勢線"
+    ), row=1, col=1)
+
+    # 2. 中間成交量
+    colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
+    fig.add_trace(plotly_go.Bar(
+        x=df_k.index, y=df_k['Volume'] / 1000, 
+        marker_color=colors, name="成交量(張)"
+    ), row=2, col=1)
+
+    # 3. 底部 MACD
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index, y=df_k['DIF'], line=dict(color='#2196F3', width=1.5), name="DIF"
+    ), row=3, col=1)
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index, y=df_k['MACD_Signal'], line=dict(color='#FF9800', width=1.5), name="MACD"
+    ), row=3, col=1)
+    
+    macd_colors = ['#EF5350' if val >= 0 else '#26A69A' for val in df_k['MACD_Hist']]
+    fig.add_trace(plotly_go.Bar(
+        x=df_k.index, y=df_k['MACD_Hist'], marker_color=macd_colors, name="MACD Histogram"
+    ), row=3, col=1)
+
+    # 白色簡潔風格背景設定
+    fig.update_layout(
+        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
+        template="plotly_white",
+        height=600,
+        margin=dict(l=20, r=20, t=40, b=20),
+        xaxis_rangeslider_visible=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig
+
+# --- 4. 高效多執行緒全市場掃描函式 ---
 def fetch_and_analyze_single_stock(row, search_period, limit_up_filter, 
                                     enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
@@ -102,12 +171,10 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
     prev_close = df['Close'].iloc[-2] if len(df) > 1 else curr_price
     curr_vol = df['Volume'].iloc[-1]
 
-    # 基礎量價過濾
     if curr_vol < (min_vol * 1000): return None
     change_pct = ((curr_price - prev_close) / prev_close) * 100
     if change_pct > max_growth: return None
 
-    # 近 N 日漲停次數 (台股漲幅 >= 9.5%)
     df['daily_change'] = df['Close'].pct_change() * 100
     recent_df = df.iloc[-search_period:]
     limit_up_count = (recent_df['daily_change'] >= 9.5).sum()
@@ -117,7 +184,7 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
         if "5次以上" in limit_up_filter and limit_up_count < 5: return None
         elif "5次以上" not in limit_up_filter and limit_up_count != target_cnt: return None
 
-    # 策略 A: MACD 回踩 0 軸 + 自訂 MA
+    # 策略 A
     cond_a = True
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
@@ -131,7 +198,7 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
         cond_macd = (abs(dif.iloc[-1]) < (curr_price * 0.02)) and (dif.iloc[-1] > signal.iloc[-1])
         cond_a = cond_ma and cond_macd
 
-    # 策略 B: 前 N 天帶量漲停 + 量縮回踩自訂 MA
+    # 策略 B
     cond_b = True
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
@@ -145,7 +212,7 @@ def fetch_and_analyze_single_stock(row, search_period, limit_up_filter,
         
         cond_b = had_limit_up_vol and is_vol_shrink and is_touch_ma
 
-    # 策略 C: 日 KD 金叉
+    # 策略 C
     cond_c = True
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
@@ -207,7 +274,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 4. 左側版面配置 (往下移避免遮擋，層級分明)
+# 5. 左側版面配置 (往下移避免遮擋，層級分明)
 # ==========================================
 with st.sidebar:
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
@@ -241,13 +308,13 @@ with st.sidebar:
     btn_quick_search = st.button("🚀 執行全市場快速搜索", use_container_width=True, type="primary")
 
     st.divider()
-    st.subheader("🩺 6. 個股即時診斷")
+    st.subheader("🩺 個股即時 K 線圖診斷")
     diag_code = st.text_input("輸入股票代號", placeholder="例如: 2330")
-    diag_btn = st.button("🔎 開始診斷", use_container_width=True)
+    diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
 
 
 # ==========================================
-# 5. 右側版面設置 (畫布下移、滿版、精簡按鈕)
+# 6. 右側版面設置 (畫布下移、滿版寬廣、刪除多餘按鈕)
 # ==========================================
 st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
@@ -266,7 +333,7 @@ with top_c4:
 stroke_color = "#FF9F43" if "①" in layer_mode else "#9E579D"
 stroke_width = 3 if "①" in layer_mode else 2
 
-st.markdown("<p style='text-align:center; color:#718096; font-size:13px; margin: 5px 0;'>💡 繪圖區塊已滿版：請在下方畫布繪製你的雙線形態與均線軌跡</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center; color:#718096; font-size:13px; margin: 5px 0;'>💡 繪圖區塊已滿版寬廣：請在下方畫布繪製你的雙線形態與均線軌跡</p>", unsafe_allow_html=True)
 
 # 滿版 Canvas 畫布
 canvas_result = st_canvas(
@@ -274,18 +341,14 @@ canvas_result = st_canvas(
     stroke_width=stroke_width,
     stroke_color=stroke_color,
     background_color="#FFFFFF",
-    height=340,
+    height=360,
     width=None,
     drawing_mode="freedraw",
     key="klyne_full_canvas",
 )
 
-# 畫布下方操作列 (已刪除不必要的按鈕)
-btn_c1, btn_c2 = st.columns([4, 1])
-with btn_c1:
-    btn_draw_search = st.button("🎨 請畫完形態與均線 (搜索股票)", type="primary", use_container_width=True)
-with btn_c2:
-    st.button("📤 匯出設定", use_container_width=True)
+# 畫布下方操作列 (已移除「清除當前線」、「清空」與「上傳K線圖識別」)
+btn_draw_search = st.button("🎨 請畫完形態與均線 (執行形態搜索)", type="primary", use_container_width=True)
 
 # 3 步驟指引卡片
 st.markdown("<div style='margin-top:15px;'></div>", unsafe_allow_html=True)
@@ -293,38 +356,27 @@ guide_c1, guide_c2, guide_c3 = st.columns(3)
 with guide_c1:
     st.markdown("""<div class="step-card"><div class="step-title">✏️ 1. 繪製形態</div>先畫橘色 K 線形態，再切換紫色均線。</div>""", unsafe_allow_html=True)
 with guide_c2:
-    st.markdown("""<div class="step-card"><div class="step-title">⚙️ 2. 自訂均線</div>於上方欄位輸入數值（預設 20）。</div>""", unsafe_allow_html=True)
+    st.markdown("""<div class="step-card"><div class="step-title">⚙️ 2. 自訂均線</div>於上方欄位輸入均線數值（預設 20）。</div>""", unsafe_allow_html=True)
 with guide_c3:
     st.markdown("""<div class="step-card"><div class="step-title">📊 3. 點擊搜索</div>點擊按鈕，下方自動展示清單與精美圖表。</div>""", unsafe_allow_html=True)
 
 st.divider()
 
 # ==========================================
-# 6. 個股即時診斷邏輯實作
+# 7. 個股即時 K 線圖診斷邏輯實作 (FinMind 180天 + 美化白色背景)
 # ==========================================
 if diag_btn and diag_code:
-    with st.spinner(f"正在深度診斷 {diag_code}..."):
+    with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code, fm_token)
         if df_diag is not None and not df_diag.empty:
-            c_last = df_diag['Close'].iloc[-1]
-            c_prev = df_diag['Close'].iloc[-2]
-            pct = ((c_last - c_prev)/c_prev)*100
-            
-            st.success(f"📊 股票代號 {diag_code} 即時診斷報告")
-            m1, m2, m3 = st.columns(3)
-            m1.metric("當前收盤價", f"{c_last:.2f}")
-            m2.metric("日漲跌幅", f"{pct:+.2f}%")
-            m3.metric("成交張數", f"{int(df_diag['Volume'].iloc[-1]/1000):,}")
-            
-            # 簡易戰鬥評分與建議
-            ma20 = df_diag['Close'].rolling(20).mean().iloc[-1]
-            advice = "📈 站穩 20 日均線之上，多方格局延續，可持續關注回踩點。" if c_last > ma20 else "⚠️ 目前位於 20 日均線之下，短線偏弱，建議守穩支撐再行介入。"
-            st.info(f"**💡 智能戰略建議：** {advice}")
+            st.success(f"📊 股票代號 {diag_code} 即時 K 線圖診斷報告")
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} 即時診斷", custom_ma_num)
+            st.plotly_chart(fig_diag, use_container_width=True)
         else:
             st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
 
 # ==========================================
-# 7. 搜尋結果與高質感 K 線圖展示 (白色背景簡潔風格)
+# 8. 搜尋結果與高質感 K 線圖展示 (白色背景簡潔風格)
 # ==========================================
 st.subheader("📋 搜尋股票結果清單")
 
@@ -355,77 +407,12 @@ if not res_table.empty:
     )
 
     if selected_stock:
-        with st.spinner(f"正在載入 {selected_stock} 的 180 天歷史數據與指標..."):
+        with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
             df_k = get_finmind_data(selected_stock, fm_token)
             if df_k is not None and not df_k.empty:
-                # 計算均線 (使用用戶自訂數值)
-                ma_col_name = f'MA{custom_ma_num}'
-                df_k[ma_col_name] = df_k['Close'].rolling(custom_ma_num).mean()
-                
-                # 計算 MACD
-                exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
-                exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
-                df_k['DIF'] = exp1 - exp2
-                df_k['MACD_Signal'] = df_k['DIF'].ewm(span=9, adjust=False).mean()
-                df_k['MACD_Hist'] = df_k['DIF'] - df_k['MACD_Signal']
-
-                # 建立簡潔美化的白色風格 Plotly 子圖 (K線 + 成交量 + MACD)
-                fig = make_subplots(
-                    rows=3, cols=1, shared_xaxes=True, 
-                    vertical_spacing=0.03, 
-                    row_heights=[0.6, 0.2, 0.2]
-                )
-
-                # 1. 頂部 K 線圖與自訂紫色均線
-                fig.add_trace(plotly_go.Candlestick(
-                    x=df_k.index, open=df_k['Open'], high=df_k['High'],
-                    low=df_k['Low'], close=df_k['Close'], name="K線",
-                    increasing_line_color='#EF5350', decreasing_line_color='#26A69A'
-                ), row=1, col=1)
-
-                fig.add_trace(plotly_go.Scatter(
-                    x=df_k.index, y=df_k[ma_col_name], 
-                    line=dict(color='#8A2BE2', width=2), 
-                    name=f"{ma_col_name} (自訂均線)"
-                ), row=1, col=1)
-
-                # 模擬加入形態對比提示線 (橘色)
-                fig.add_trace(plotly_go.Scatter(
-                    x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
-                    line=dict(color='#FF9F43', width=2, dash='dash'),
-                    name="形態趨勢參考"
-                ), row=1, col=1)
-
-                # 2. 中間成交量
-                colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
-                fig.add_trace(plotly_go.Bar(
-                    x=df_k.index, y=df_k['Volume'] / 1000, 
-                    marker_color=colors, name="成交量(張)"
-                ), row=2, col=1)
-
-                # 3. 底部 MACD
-                fig.add_trace(plotly_go.Scatter(
-                    x=df_k.index, y=df_k['DIF'], line=dict(color='#2196F3', width=1.5), name="DIF"
-                ), row=3, col=1)
-                fig.add_trace(plotly_go.Scatter(
-                    x=df_k.index, y=df_k['MACD_Signal'], line=dict(color='#FF9800', width=1.5), name="MACD"
-                ), row=3, col=1)
-                
-                macd_colors = ['#EF5350' if val >= 0 else '#26A69A' for val in df_k['MACD_Hist']]
-                fig.add_trace(plotly_go.Bar(
-                    x=df_k.index, y=df_k['MACD_Hist'], marker_color=macd_colors, name="MACD Histogram"
-                ), row=3, col=1)
-
-                # 版面美化與白色簡潔主題設定
-                fig.update_layout(
-                    template="plotly_white",
-                    height=650,
-                    margin=dict(l=20, r=20, t=30, b=20),
-                    xaxis_rangeslider_visible=False,
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
+                stock_name = res_table[res_table['股票代號']==selected_stock]['股票名稱'].values[0]
+                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name}", custom_ma_num)
+                st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
