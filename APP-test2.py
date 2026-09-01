@@ -5,7 +5,7 @@ import numpy as np
 import requests
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from streamlit_drawable_canvas import st_canvas
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
