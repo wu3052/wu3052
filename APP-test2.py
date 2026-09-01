@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import yfinance as yf
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import twstock
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
