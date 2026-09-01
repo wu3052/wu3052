@@ -8,31 +8,14 @@ import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from streamlit_drawable_canvas import st_canvas
 
-# --- 1. 頁面配置與美化 CSS ---
-st.set_page_config(page_title="Klyne 雙線形態與高階選股系統", layout="wide", initial_sidebar_state="expanded")
+# --- 1. 頁面配置與簡潔美化 CSS ---
+st.set_page_config(page_title="台股潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
     .main { background-color: #F8F9FA; }
     div.block-container { padding-top: 2rem; padding-bottom: 2rem; }
-    .stSelectbox, .stSlider, .stNumberInput { margin-bottom: 4px; }
-    .step-card {
-        background-color: #FFFFFF;
-        border: 1px solid #E2E8F0;
-        border-radius: 8px;
-        padding: 14px;
-        color: #4A5568;
-        font-size: 13px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-    }
-    .step-title {
-        color: #1A202C;
-        font-weight: bold;
-        font-size: 15px;
-        margin-bottom: 6px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -42,7 +25,7 @@ if 'screener_results' not in st.session_state:
 # --- 2. 資料獲取函式 (FinMind 180天數據 + yfinance 備份) ---
 def get_finmind_data(stock_id, token=""):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = (pd.Timestamp.today() - pd.Timedelta(days=220)).strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=260)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
     parameters = {
         "dataset": "TaiwanStockPrice",
@@ -66,10 +49,10 @@ def get_finmind_data(stock_id, token=""):
     except:
         pass
     
-    # 備份：使用 yfinance 抓取 180 天數據
+    # 備份：使用 yfinance 抓取 180 天以上數據
     ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
     try:
-        df = yf.download(ticker, period="180d", interval="1d", progress=False)
+        df = yf.download(ticker, period="1y", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
@@ -86,11 +69,17 @@ def get_taiwan_stock_list(market_scope="上市上櫃"):
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量與實線橘色形態) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、橘色實線形態與一年新高黑線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
+    # 取最近 180 天顯示
+    df_k = df_k.tail(180)
+    
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
     
+    # 計算一年新高 (取 240 天或現有資料中的最高價)
+    year_high = df_k['High'].max()
+
     # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
@@ -121,9 +110,18 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     # 形態趨勢線（橘色實線）
     fig.add_trace(plotly_go.Scatter(
         x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
-        line=dict(color='#FF9F43', width=2),  # 修正為實線
+        line=dict(color='#FF9F43', width=2), 
         name="形態趨勢線"
     ), row=1, col=1)
+
+    # 股價創一年新高水平線 (黑線)
+    fig.add_hline(
+        y=year_high, line_dash="solid",
+        line=dict(color="#000000", width=1.5),
+        annotation_text=f"一年新高: {year_high:.2f}",
+        annotation_position="top left",
+        row=1, col=1
+    )
 
     # 2. 中間成交量
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
@@ -149,7 +147,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     fig.update_layout(
         title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
         template="plotly_white",
-        height=600,
+        height=620,
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -274,11 +272,10 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側版面配置 (往下移避免遮擋，層級分明)
+# 5. 左側版面配置 (保留獨立搜索與即時 K 線圖診斷)
 # ==========================================
 with st.sidebar:
-    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-    st.title("🎯 篩選條件控制台")
+    st.title("🎯 潛力股挖掘與診斷控制台")
     st.divider()
 
     fm_token = st.text_input("FinMind Token (選填)", value="", type="password", help="輸入後數據載入速度更快且更穩定")
@@ -314,71 +311,22 @@ with st.sidebar:
 
 
 # ==========================================
-# 6. 右側版面設置 (畫布下移、滿版寬廣、刪除多餘按鈕)
-# ==========================================
-st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
-
-# 頂部控制列 (左右佈局，防止遮擋)
-top_c1, top_c2, top_c3, top_c4 = st.columns([1.5, 1.5, 1.5, 2])
-
-with top_c1:
-    only_pattern = st.toggle("僅看形態", value=False)
-with top_c2:
-    chart_k_period = st.selectbox("週期選單", ["日線", "周線", "15分", "30分", "60分"], label_visibility="collapsed")
-with top_c3:
-    layer_mode = st.radio("圖層切換", ["① 形態", "② 均線"], horizontal=True, label_visibility="collapsed")
-with top_c4:
-    custom_ma_num = st.number_input("當前均線數值", min_value=1, max_value=240, value=20, label_visibility="collapsed")
-
-stroke_color = "#FF9F43" if "①" in layer_mode else "#9E579D"
-stroke_width = 3 if "①" in layer_mode else 2
-
-st.markdown("<p style='text-align:center; color:#718096; font-size:13px; margin: 5px 0;'>💡 繪圖區塊已滿版寬廣：請在下方畫布繪製你的雙線形態與均線軌跡</p>", unsafe_allow_html=True)
-
-# 滿版 Canvas 畫布
-canvas_result = st_canvas(
-    fill_color="rgba(0, 0, 0, 0)",
-    stroke_width=stroke_width,
-    stroke_color=stroke_color,
-    background_color="#FFFFFF",
-    height=360,
-    width=None,
-    drawing_mode="freedraw",
-    key="klyne_full_canvas",
-)
-
-# 畫布下方操作列 (已移除「清除當前線」、「清空」與「上傳K線圖識別」)
-btn_draw_search = st.button("🎨 請畫完形態與均線 (執行形態搜索)", type="primary", use_container_width=True)
-
-# 3 步驟指引卡片
-st.markdown("<div style='margin-top:15px;'></div>", unsafe_allow_html=True)
-guide_c1, guide_c2, guide_c3 = st.columns(3)
-with guide_c1:
-    st.markdown("""<div class="step-card"><div class="step-title">✏️ 1. 繪製形態</div>先畫橘色 K 線形態，再切換紫色均線。</div>""", unsafe_allow_html=True)
-with guide_c2:
-    st.markdown("""<div class="step-card"><div class="step-title">⚙️ 2. 自訂均線</div>於上方欄位輸入均線數值（預設 20）。</div>""", unsafe_allow_html=True)
-with guide_c3:
-    st.markdown("""<div class="step-card"><div class="step-title">📊 3. 點擊搜索</div>點擊按鈕，下方自動展示清單與精美圖表。</div>""", unsafe_allow_html=True)
-
-st.divider()
-
-# ==========================================
-# 7. 個股即時 K 線圖診斷邏輯實作 (FinMind 180天 + 美化白色背景)
+# 6. 右側主畫面：個股即時診斷 K 線圖呈現
 # ==========================================
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code, fm_token)
         if df_diag is not None and not df_diag.empty:
             st.success(f"📊 股票代號 {diag_code} 即時 K 線圖診斷報告")
-            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} 即時診斷", custom_ma_num)
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} 即時診斷", macd_ma_period)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
             st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
 
 # ==========================================
-# 8. 搜尋結果與高質感 K 線圖展示 (白色背景簡潔風格)
+# 7. 搜尋結果與高質感 K 線圖展示 (白色背景簡潔風格)
 # ==========================================
-st.subheader("📋 搜尋股票結果清單")
+st.subheader("📋 搜尋股票結果清單與詳細 K 線圖")
 
 if btn_quick_search:
     with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
@@ -389,9 +337,6 @@ if btn_quick_search:
             enable_kd_cross, min_vol, max_growth, fm_token
         )
         st.session_state.screener_results = res_df
-
-if btn_draw_search:
-    st.info("🎯 畫布形態比對中：正在辨識您繪製的雙線趨勢與均線斜率...")
 
 res_table = st.session_state.screener_results
 if not res_table.empty:
@@ -411,9 +356,9 @@ if not res_table.empty:
             df_k = get_finmind_data(selected_stock, fm_token)
             if df_k is not None and not df_k.empty:
                 stock_name = res_table[res_table['股票代號']==selected_stock]['股票名稱'].values[0]
-                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name}", custom_ma_num)
+                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name}", macd_ma_period)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側調整條件並點擊「執行全市場快速搜索」，或在右側畫布繪製形態後進行搜索。")
+    st.info("👈 請於左側調整條件並點擊「執行全市場快速搜索」，即可快速產出符合條件的潛力股與美化 K 線圖。")
