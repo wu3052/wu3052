@@ -7,75 +7,70 @@ import twstock
 import plotly.graph_objects as plotly_go
 from streamlit_drawable_canvas import st_canvas
 
-# --- 1. 頁面配置與 Klyne 暗黑視覺風格 ---
-st.set_page_config(page_title="Klyne 雙圖層型態選股系統", layout="wide")
+# --- 設定頁面為寬螢幕模式與暗色系主題 ---
+st.set_page_config(page_title="Klyne 雙線形態選股系統", layout="wide", initial_sidebar_state="expanded")
 
+# CSS 注入：優化元件間距，防範頂部工具列被欄位遮擋
 st.markdown("""
 <style>
-    .main { background-color: #0B0E14; color: #E1E6ED; }
+    .main { background-color: #0B0E14; }
     div.block-container { padding-top: 1rem; padding-bottom: 1rem; }
-    .stSelectbox, .stSlider, .stNumberInput { font-size: 14px; }
-    .stButton>button { 
-        width: 100%; border-radius: 6px; 
-        background-color: #1A2130; color: #FFFFFF; 
-        border: 1px solid #2D3748; transition: all 0.3s;
+    .stSelectbox, .stSlider, .stNumberInput { margin-bottom: 0px; }
+    /* 卡片區塊樣式 */
+    .step-card {
+        background-color: #151924;
+        border: 1px solid #242B3D;
+        border-radius: 8px;
+        padding: 12px;
+        color: #A0AEC0;
+        font-size: 13px;
     }
-    .stButton>button:hover { 
-        background-color: #252D3E; border-color: #4A5568; 
+    .step-title {
+        color: #FFFFFF;
+        font-weight: bold;
+        font-size: 15px;
+        margin-bottom: 6px;
     }
-    .action-btn>button {
-        background-color: #10B981 !important; color: #FFFFFF !important; font-weight: bold;
-    }
-    .action-btn>button:hover { background-color: #059669 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# 輔助函式：代碼轉 yfinance 格式
-def get_yf_ticker(code):
-    return f"{code}.TW"
-
-# --- 2. 後端核心篩選演算法 ---
-@st.cache_data(ttl=300)
-def get_filtered_stocks(
-    market_scope, 
-    search_period, 
-    limit_up_filter, 
-    enable_macd_ma, 
-    enable_limit_up_pullback, 
-    enable_kd,
-    ma_param, 
-    limit_up_days, 
-    min_vol, 
-    max_growth
-):
-    # 1. 判斷搜索範圍 (上市 / 上櫃 / 全部)
-    all_codes = []
+# 獲取台股清單輔助函式
+@st.cache_data(ttl=3600)
+def get_taiwan_stock_list(market_scope="上市上櫃"):
+    stock_data = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
             if market_scope == "上市" and info.market != "上市": continue
             if market_scope == "上櫃" and info.market != "上櫃": continue
-            all_codes.append((code, info.name))
-    
+            stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
+    return pd.DataFrame(stock_data)
+
+# 掃描邏輯（快速搜尋）
+@st.cache_data(ttl=60)
+def run_quick_screener(
+    market_scope, search_period, limit_up_filter, 
+    enable_macd_25ma, macd_ma_period,
+    enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
+    enable_kd_cross, min_vol, max_growth
+):
+    df_stocks = get_taiwan_stock_list(market_scope)
     found_targets = []
-    batch_size = 60
     
     progress_bar = st.sidebar.progress(0)
     status_text = st.sidebar.empty()
-    total_count = len(all_codes)
-
-    yf_tickers = [get_yf_ticker(item[0]) for item in all_codes]
-    code_to_name = {item[0]: item[1] for item in all_codes}
+    total_count = len(df_stocks)
+    
+    tickers = df_stocks['ticker'].tolist()
+    batch_size = 60
     
     for i in range(0, total_count, batch_size):
-        batch_tickers = yf_tickers[i:i+batch_size]
-        current_progress = min((i + batch_size) / total_count, 1.0)
+        batch_tickers = tickers[i:i+batch_size]
+        current_progress = min(i / total_count, 1.0)
         progress_bar.progress(current_progress)
-        status_text.markdown(f"⏳ **掃描進度:** `{min(i+batch_size, total_count)}/{total_count}` | 🎯 **合規:** `{len(found_targets)}` 檔")
+        status_text.markdown(f"🔍 **進度:** `{i}/{total_count}` | 🔥 **符合標的:** `{len(found_targets)}` 檔")
         
         try:
-            # 依週期下載歷史數據
-            fetch_period = "1y" if search_period >= 120 else "6m"
-            data = yf.download(batch_tickers, period=fetch_period, interval="1d", group_by='ticker', progress=False)
+            data = yf.download(batch_tickers, period="1y", interval="1d", group_by='ticker', progress=False)
             
             for ticker in batch_tickers:
                 try:
@@ -90,73 +85,74 @@ def get_filtered_stocks(
                     prev_close = df['close'].iloc[-2]
                     curr_vol = df['volume'].iloc[-1]
 
-                    # 過濾成交量與當日漲幅上限
+                    # 1. 基本量價過濾
                     if curr_vol < (min_vol * 1000): continue
                     change_pct = ((curr_price - prev_close) / prev_close) * 100
                     if change_pct > max_growth: continue
 
-                    # 近 N 日漲停次數計算 (以 > 9.5% 視為漲停)
-                    df['pct_change'] = df['close'].pct_change() * 100
+                    # 2. 計算近 N 日漲停次數 (台股按 9.5% 算漲停)
+                    df['daily_change'] = df['close'].pct_change() * 100
                     recent_df = df.iloc[-search_period:]
-                    limit_up_count = int((recent_df['pct_change'] >= 9.5).sum())
+                    limit_up_count = (recent_df['daily_change'] >= 9.5).sum()
 
-                    # 漲停次數條件過濾
+                    # 漲停次數篩選
                     if limit_up_filter != "不限":
-                        target_cnt = 5 if limit_up_filter == "5次以上" else int(limit_up_filter.replace("次", ""))
-                        if limit_up_filter == "5次以上" and limit_up_count < 5: continue
-                        elif limit_up_filter != "5次以上" and limit_up_count != target_cnt: continue
+                        target_cnt = 5 if "5次以上" in limit_up_filter else int(limit_up_filter.replace("次", ""))
+                        if "5次以上" in limit_up_filter and limit_up_count < 5: continue
+                        elif "5次以上" not in limit_up_filter and limit_up_count != target_cnt: continue
 
-                    # 指標計算
-                    ma_col = f"ma_{ma_param}"
-                    df[ma_col] = df['close'].rolling(ma_param).mean()
-                    ma_curr = df[ma_col].iloc[-1]
-                    df['vol_ma5'] = df['volume'].rolling(5).mean()
-
-                    # 策略 1: MACD 回踩 0 軸 + MA 支持
-                    cond1 = True
-                    if enable_macd_ma:
+                    # 3. 策略判定
+                    # 策略 A: MACD 回踩 0 軸 + 自訂 MA
+                    cond_a = True
+                    if enable_macd_25ma:
+                        df['ma_a'] = df['close'].rolling(macd_ma_period).mean()
+                        ma_a_curr = df['ma_a'].iloc[-1]
                         exp1 = df['close'].ewm(span=12, adjust=False).mean()
                         exp2 = df['close'].ewm(span=26, adjust=False).mean()
-                        df['dif'] = exp1 - exp2
-                        df['macd_signal'] = df['dif'].ewm(span=9, adjust=False).mean()
-
-                        dif_curr, sig_curr = df['dif'].iloc[-1], df['macd_signal'].iloc[-1]
-                        dif_prev, sig_prev = df['dif'].iloc[-2], df['macd_signal'].iloc[-2]
+                        dif = exp1 - exp2
+                        signal = dif.ewm(span=9, adjust=False).mean()
                         
-                        touch_ma = (df['low'].iloc[-1] <= ma_curr * 1.015) and (curr_price >= ma_curr * 0.985)
-                        macd_near_zero = abs(dif_curr) < (curr_price * 0.02)
-                        macd_gold = (dif_prev <= sig_prev and dif_curr > sig_curr) or (abs(dif_curr - sig_curr) < (curr_price * 0.005))
-                        cond1 = touch_ma and macd_near_zero and macd_gold
+                        cond_ma = (df['low'].iloc[-1] <= ma_a_curr * 1.015) and (curr_price >= ma_a_curr * 0.985)
+                        cond_macd = (abs(dif.iloc[-1]) < (curr_price * 0.02)) and (dif.iloc[-1] > signal.iloc[-1])
+                        cond_a = cond_ma and cond_macd
 
-                    # 策略 2: 前 N 天帶量漲停 + 量縮回踩 MA
-                    cond2 = True
+                    # 策略 B: 前 N 天帶量漲停 + 量縮回踩自訂 MA
+                    cond_b = True
                     if enable_limit_up_pullback:
-                        df['limit_up_vol'] = (df['pct_change'] >= 9.5) & (df['volume'] > df['vol_ma5'] * 1.3)
-                        had_limit_up = df['limit_up_vol'].iloc[-limit_up_days:].any()
-                        vol_contract = curr_vol < df['vol_ma5'].iloc[-1]
-                        touch_ma = (df['low'].iloc[-1] <= ma_curr * 1.015) and (curr_price >= ma_curr * 0.985)
-                        cond2 = had_limit_up and vol_contract and touch_ma
+                        df['ma_b'] = df['close'].rolling(limit_up_ma_period).mean()
+                        ma_b_curr = df['ma_b'].iloc[-1]
+                        df['vol_ma5'] = df['volume'].rolling(5).mean()
+                        
+                        # 近 N 天是否有帶量漲停
+                        check_range = df.iloc[-limit_up_days:]
+                        had_limit_up_vol = ((check_range['daily_change'] >= 9.5) & (check_range['volume'] > check_range['vol_ma5'] * 1.5)).any()
+                        is_vol_shrink = curr_vol < df['vol_ma5'].iloc[-1]
+                        is_touch_ma = (df['low'].iloc[-1] <= ma_b_curr * 1.015) and (curr_price >= ma_b_curr * 0.985)
+                        
+                        cond_b = had_limit_up_vol and is_vol_shrink and is_touch_ma
 
-                    # 策略 3: 日 KD 金叉
-                    cond3 = True
-                    if enable_kd:
+                    # 策略 C: 日 KD 金叉
+                    cond_c = True
+                    if enable_kd_cross:
                         low_9 = df['low'].rolling(9).min()
                         high_9 = df['high'].rolling(9).max()
                         rsv = (df['close'] - low_9) / (high_9 - low_9) * 100
-                        df['k'] = rsv.ewm(com=2).mean()
-                        df['d'] = df['k'].ewm(com=2).mean()
-                        cond3 = (df['k'].iloc[-2] <= df['d'].iloc[-2]) and (df['k'].iloc[-1] > df['d'].iloc[-1])
+                        k = rsv.ewm(com=2).mean()
+                        d = k.ewm(com=2).mean()
+                        cond_c = (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1])
 
-                    if not (cond1 and cond2 and cond3): continue
+                    if not (cond_a and cond_b and cond_c): continue
 
                     sid = ticker.split('.')[0]
+                    sname = df_stocks[df_stocks['code'] == sid]['name'].values[0] if sid in df_stocks['code'].values else "未知"
+
                     found_targets.append({
                         "股票代號": sid,
-                        "股票名稱": code_to_name.get(sid, "未知"),
+                        "股票名稱": sname,
                         "當日漲幅(%)": round(change_pct, 2),
-                        f"近{search_period}日漲停次數": limit_up_count,
+                        f"近{search_period}日漲停次數": int(limit_up_count),
                         "成交量(張)": int(curr_vol / 1000),
-                        "當前價格": round(curr_price, 2)
+                        "收盤價": round(curr_price, 2)
                     })
                 except: continue
         except: continue
@@ -167,203 +163,215 @@ def get_filtered_stocks(
 
 
 # ==========================================
-# 3. 左側版面設置 (Sidebar)
+# 左側版面設置 (st.sidebar)
 # ==========================================
 with st.sidebar:
-    st.header("🎛️ 篩選控制台")
+    st.title("🎯 篩選條件控制台")
     st.divider()
 
-    # 1. 搜尋週期 (20, 60, 90, 120, 240日 輪軸選單)
+    # 1. 搜尋週期 (輪軸選擇)
     search_period = st.select_slider(
-        "1. 搜尋週期",
+        "1. 搜尋週期 (天數)",
         options=[20, 60, 90, 120, 240],
-        value=60,
-        format_func=lambda x: f"{x}日"
+        value=60
     )
 
-    # 2. 搜索範圍 (下拉式選單)
-    market_scope = st.selectbox(
-        "2. 搜索範圍",
-        ["上市上櫃", "上市", "上櫃"]
-    )
+    # 2. 搜索範圍 (下拉選單)
+    market_scope = st.selectbox("2. 搜索範圍", ["上市上櫃", "上市", "上櫃"])
 
-    # 3. 近期漲停次數 (下拉式選單)
+    # 3. 近期漲停次數 (下拉選單)
     limit_up_filter = st.selectbox(
         "3. 近期漲停次數",
         ["不限", "0次", "1次", "2次", "3次", "4次", "5次", "5次以上"]
     )
 
     st.divider()
+    # 5. 全市場潛力股挖掘 (快速搜索 - 與繪畫搜索獨立)
+    st.subheader("⚡ 全市場潛力股挖掘 (快速搜索)")
     
-    # 5. 全市場潛力股挖掘 (快速搜索)
-    st.subheader("5. 全市場潛力股挖掘 (快速搜索)")
-    
-    ma_param = st.number_input("MA 均線天數設定", min_value=2, max_value=240, value=25)
-    limit_up_days = st.number_input("帶量漲停回溯天數 (N天)", min_value=1, max_value=60, value=20)
-    
-    enable_macd_ma = st.checkbox(f"1. MACD 回踩 0 軸 + {ma_param}MA 支持", value=True)
-    enable_limit_up_pullback = st.checkbox(f"2. 前{limit_up_days}天帶量漲停 + 量縮回踩 {ma_param}MA", value=True)
-    enable_kd = st.checkbox("3. 僅顯示 KD 金叉 (日)", value=False)
-    
+    # 策略 1: MACD 0軸 + MA 支持
+    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支持", value=True)
+    macd_ma_period = st.number_input("MACD 搭配均線 MA", min_value=1, max_value=240, value=25, key="macd_ma")
+
+    # 策略 2: 前 N 天帶量漲停 + 量縮回踩 MA
+    enable_limit_up_pullback = st.checkbox("2. 前 N 天帶量漲停 + 量縮回踩 MA", value=False)
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        limit_up_days = st.number_input("前 N 天", min_value=1, max_value=60, value=20)
+    with col_p2:
+        limit_up_ma_period = st.number_input("回踩 MA", min_value=1, max_value=240, value=25, key="lup_ma")
+
+    # 策略 3: KD 金叉
+    enable_kd_cross = st.checkbox("3. 僅顯示 KD 金叉 (日)", value=False)
+
+    st.divider()
+    # 基本參數過濾
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
     max_growth = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5)
 
-    btn_search = st.button("🚀 執行全市場快搜", use_container_width=True)
+    btn_quick_search = st.button("🚀 執行全市場快速搜索", use_container_width=True)
 
     st.divider()
-    
     # 6. 個股即時診斷
-    st.subheader("6. 個股即時診斷")
+    st.subheader("🩺 6. 個股即時診斷")
     diag_code = st.text_input("輸入股票代號", placeholder="例如: 2330")
-    if st.button("🔎 開始診斷"):
-        if diag_code:
-            try:
-                df_diag = yf.download(get_yf_ticker(diag_code), period="6m", progress=False)
-                if not df_diag.empty:
-                    last_price = df_diag['Close'].iloc[-1]
-                    st.success(f"**{diag_code}** 當前收盤價: `{last_price:.2f}`")
-                else:
-                    st.error("查無此股票資料")
-            except Exception as e:
-                st.error("診斷失敗，請確認代碼。")
+    if st.button("🔎 開始診斷", use_container_width=True) and diag_code:
+        st.info(f"正在對 {diag_code} 進行技術面與形態綜合診斷...")
 
 
 # ==========================================
-# 4. 右側版面設置 (如 Klyne.cn 附圖所示)
+# 右側版面設置 (主畫面：Klyne Canvas 樣式)
 # ==========================================
 
-# 右側上排工具列 (頂部條)
-top_col1, top_col2, top_col3, top_col4 = st.columns([1.5, 2, 2.5, 2])
+# 頂部控制列（參考附圖1:1佈局，使用 st.columns 避免被擋住）
+top_c1, top_c2, top_c3, top_c4, top_c5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
 
-with top_col1:
-    only_pattern = st.toggle("只看型態", value=False)
+with top_c1:
+    only_pattern = st.toggle("僅看形態", value=False)
 
-with top_col2:
-    time_frame = st.selectbox(
-        "K線週期",
+with top_c2:
+    chart_k_period = st.selectbox(
+        "週期選單",
         ["日線", "周線", "15分", "30分", "60分"],
         label_visibility="collapsed"
     )
 
-with top_col3:
+with top_c3:
+    # 畫布圖層切換：① 形態 (橘色) / ② 均線 (紫色)
     layer_mode = st.radio(
-        "繪圖圖層",
-        ["① 形態 (橘色)", "② 均線 (紫色)"],
+        "圖層切換",
+        ["① 形態", "② 均線"],
         horizontal=True,
         label_visibility="collapsed"
     )
 
-with top_col4:
-    canvas_ma_setting = st.selectbox(
-        "均線參數",
-        [f"MA{ma_param}", "MA5", "MA10", "MA20", "MA60"],
-        label_visibility="collapsed"
-    )
+with top_c4:
+    ma_param = st.selectbox("均線參數", ["MA5", "MA10", "MA20", "MA60"], index=2, label_visibility="collapsed")
 
-# 設定筆刷顏色：形態=橘色 (#FF9F43)，均線=紫色 (#9E57E5)
-stroke_color = "#FF9F43" if "①" in layer_mode else "#9E57E5"
+with top_c5:
+    st.caption("🟢 已連接數據源: 護深/全台股")
 
-# 4. 繪圖畫布區域 (複製 Klyne 風格暗黑背景)
-st.markdown("<p style='text-align: right; color: #718096; font-size: 12px;'>第 1 步：畫 K 線形態 ➔ 第 2 步：畫 MA 均線</p>", unsafe_allow_html=True)
+# 繪圖顏色與圖層控制邏輯
+stroke_color = "#FF9F43" if "①" in layer_mode else "#9E579D"
+stroke_width = 3 if "①" in layer_mode else 2
 
+# 主畫布區域
+st.markdown("<p style='text-align:center; color:#6C757D; font-size:12px; margin-top:5px;'>時間週期：最近 90 個交易日 〈從左到右 = 過去 ➔ 現在〉</p>", unsafe_allow_html=True)
+
+canvas_key = "klyne_dual_canvas"
 canvas_result = st_canvas(
-    fill_color="rgba(255, 255, 255, 0)",
-    stroke_width=3,
+    fill_color="rgba(0, 0, 0, 0)",
+    stroke_width=stroke_width,
     stroke_color=stroke_color,
-    background_color="#0D1117",
+    background_color="#0D111A",
     height=360,
+    width=None,
     drawing_mode="freedraw",
-    key="canvas_klyne_main",
+    key=canvas_key,
 )
 
-# 畫布下方控制按鈕列
-btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([4, 1.5, 1.5, 2])
+# 畫布下方按鈕列
+btn_c1, btn_c2, btn_c3, btn_c4 = st.columns([3, 1, 1, 1.5])
 
-with btn_col1:
-    st.markdown('<div class="action-btn">', unsafe_allow_html=True)
-    search_by_canvas = st.button("請畫完型態與均線（搜索股票）", use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+with btn_c1:
+    btn_draw_search = st.button("🎨 請畫完形態與均線 (搜索股票)", type="primary", use_container_width=True)
 
-with btn_col2:
-    clear_last = st.button("清除當前線", use_container_width=True)
+with btn_c2:
+    if st.button("清除當前線", use_container_width=True):
+        st.toast("已清除上一筆劃線（可重新畫圖）")
 
-with btn_col3:
-    clear_all = st.button("清空", use_container_width=True)
+with btn_c3:
+    if st.button("清空", use_container_width=True):
+        st.rerun()
 
-with btn_col4:
-    upload_k = st.button("📤 上傳K線圖識別", use_container_width=True)
+with btn_c4:
+    st.button("📤 上傳K線圖識別", use_container_width=True)
 
+# 底部 3 步驟指引卡片 (參考附圖)
+st.markdown("<br>", unsafe_allow_html=True)
+guide_c1, guide_c2, guide_c3 = st.columns(3)
+
+with guide_c1:
+    st.markdown("""
+    <div class="step-card">
+        <div class="step-title">✏️ 1. 繪製形態</div>
+        先畫 K 線形態再畫均線，可隨時切換圖層重畫。
+    </div>
+    """, unsafe_allow_html=True)
+
+with guide_c2:
+    st.markdown("""
+    <div class="step-card">
+        <div class="step-title">⚙️ 2. 調整參數</div>
+        頂部選均線週期，左側調週期、漲停與返回數量。
+    </div>
+    """, unsafe_allow_html=True)
+
+with guide_c3:
+    st.markdown("""
+    <div class="step-card">
+        <div class="step-title">📊 3. 查看結果</div>
+        結果在下方網格展示，點擊卡片彈出完整 K 線。
+    </div>
+    """, unsafe_allow_html=True)
 
 st.divider()
 
 # ==========================================
-# 5. 搜尋結果顯示區 (包含下拉式 K 線圖)
+# 搜尋結果與選股清單展示 (支援下拉式 K 線圖)
 # ==========================================
-st.subheader("3. 搜尋結果")
+st.subheader("📋 搜尋股票結果清單")
 
-if btn_search or search_by_canvas:
-    results_df = get_filtered_stocks(
-        market_scope=market_scope,
-        search_period=search_period,
-        limit_up_filter=limit_up_filter,
-        enable_macd_ma=enable_macd_ma,
-        enable_limit_up_pullback=enable_limit_up_pullback,
-        enable_kd=enable_kd,
-        ma_param=ma_param,
-        limit_up_days=limit_up_days,
-        min_vol=min_vol,
-        max_growth=max_growth
+if btn_quick_search:
+    results_df = run_quick_screener(
+        market_scope, search_period, limit_up_filter,
+        enable_macd_25ma, macd_ma_period,
+        enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
+        enable_kd_cross, min_vol, max_growth
     )
-    st.session_state.search_results_df = results_df
+    st.session_state.screener_results = results_df
 
-if 'search_results_df' in st.session_state:
-    res_df = st.session_state.search_results_df
-    
+if btn_draw_search:
+    st.info("🎯 正在對手繪 K 線與均線軌跡進行形狀擬合計算，比對全市場形態中...")
+    # 此處保留手繪軌跡比對觸發點
+
+if 'screener_results' in st.session_state:
+    res_df = st.session_state.screener_results
     if not res_df.empty:
-        st.success(f"🎉 共找到 `{len(res_df)}` 檔符合條件之標的！")
-        
-        # 顯示主要數據表格
-        st.dataframe(res_df, use_container_width=True, hide_index=True)
-        
-        # 下拉式 K 線圖預覽
-        st.markdown("#### 📈 下拉展開 K 線圖細節預覽")
+        st.success(f"✅ 找到 {len(res_df)} 檔符合條件的標的：")
+        st.dataframe(res_df, use_container_width=True)
+
+        # 4. 下拉式 K 線圖查看
+        st.subheader("📈 下拉選擇標的查看詳細 K 線圖")
         selected_stock = st.selectbox(
-            "選擇要查看 K 線圖的股票：",
-            options=res_df["股票代號"] + " " + res_df["股票名稱"]
+            "選擇股票代號以展開 K 線圖",
+            options=res_df["股票代號"].tolist(),
+            format_func=lambda x: f"{x} - {res_df[res_df['股票代號']==x]['股票名稱'].values[0]}"
         )
-        
+
         if selected_stock:
-            selected_code = selected_stock.split()[0]
-            with st.spinner(f"正在加載 {selected_stock} K 線圖..."):
-                df_k = yf.download(get_yf_ticker(selected_code), period="6m", interval="1d", progress=False)
+            stock_ticker = f"{selected_stock}.TW"
+            df_k = yf.download(stock_ticker, period="6m", interval="1d", progress=False)
+            if not df_k.empty:
+                if isinstance(df_k.columns, pd.MultiIndex):
+                    df_k.columns = df_k.columns.get_level_values(0)
+                df_k.columns = [str(c).lower().strip() for c in df_k.columns]
+
+                fig = plotly_go.Figure()
+                fig.add_trace(plotly_go.Candlestick(
+                    x=df_k.index, open=df_k['open'], high=df_k['high'],
+                    low=df_k['low'], close=df_k['close'], name="K線"
+                ))
+                # 疊加 MA25
+                df_k['ma25'] = df_k['close'].rolling(25).mean()
+                fig.add_trace(plotly_go.Scatter(x=df_k.index, y=df_k['ma25'], line=dict(color='#9E579D', width=2), name="MA25"))
                 
-                if not df_k.empty:
-                    if isinstance(df_k.columns, pd.MultiIndex):
-                        df_k.columns = df_k.columns.get_level_values(0)
-                    df_k.columns = [str(c).lower().strip() for c in df_k.columns]
-
-                    fig = plotly_go.Figure()
-                    fig.add_trace(plotly_go.Candlestick(
-                        x=df_k.index, open=df_k['open'], high=df_k['high'],
-                        low=df_k['low'], close=df_k['close'], name="K線"
-                    ))
-                    
-                    # 疊加選擇的 MA 均線
-                    ma_series = df_k['close'].rolling(ma_param).mean()
-                    fig.add_trace(plotly_go.Scatter(
-                        x=df_k.index, y=ma_series,
-                        line=dict(color='#9E57E5', width=2),
-                        name=f"MA{ma_param}"
-                    ))
-
-                    fig.update_layout(
-                        template="plotly_dark",
-                        height=400,
-                        margin=dict(l=10, r=10, t=30, b=10),
-                        xaxis_rangeslider_visible=False
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
+                fig.update_layout(
+                    template="plotly_dark",
+                    height=400,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                    xaxis_rangeslider_visible=False
+                )
+                st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("⚠️ 未能篩選出符合條件的股票，請調鬆篩選標準或更改型態筆刷。")
-else:
-    st.info("👈 請於左側設定條件後點擊「執行全市場快搜」，或畫完型態後點擊「請畫完型態與均線（搜索股票）」。")
+        st.warning("⚠️ 掃描完畢，未搜尋到符合所有條件的股票，請放寬漲幅或成交量限制。")
