@@ -5,18 +5,18 @@ import streamlit as st
 import yfinance as yf
 import twstock
 import plotly.graph_objects as plotly_go
+from plotly.subplots import make_subplots
 from streamlit_drawable_canvas import st_canvas
 
 # --- 設定頁面為寬螢幕模式與暗色系主題 ---
-st.set_page_config(page_title="Klyne 雙線形態選股系統", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Klyne 雙線形態選股系統 Pro", layout="wide", initial_sidebar_state="expanded")
 
-# CSS 注入：優化元件間距，防範頂部工具列被欄位遮擋
+# CSS 樣式微調：對齊圖二樣式與避開頁面擋住問題
 st.markdown("""
 <style>
     .main { background-color: #0B0E14; }
     div.block-container { padding-top: 1rem; padding-bottom: 1rem; }
     .stSelectbox, .stSlider, .stNumberInput { margin-bottom: 0px; }
-    /* 卡片區塊樣式 */
     .step-card {
         background-color: #151924;
         border: 1px solid #242B3D;
@@ -123,7 +123,6 @@ def run_quick_screener(
                         ma_b_curr = df['ma_b'].iloc[-1]
                         df['vol_ma5'] = df['volume'].rolling(5).mean()
                         
-                        # 近 N 天是否有帶量漲停
                         check_range = df.iloc[-limit_up_days:]
                         had_limit_up_vol = ((check_range['daily_change'] >= 9.5) & (check_range['volume'] > check_range['vol_ma5'] * 1.5)).any()
                         is_vol_shrink = curr_vol < df['vol_ma5'].iloc[-1]
@@ -220,54 +219,52 @@ with st.sidebar:
 
 
 # ==========================================
-# 右側版面設置 (主畫面：Klyne Canvas 樣式)
+# 右側版面設置 (主畫面：Klyne Canvas 樣式圖二對齊)
 # ==========================================
 
-# 頂部控制列（參考附圖1:1佈局，使用 st.columns 避免被擋住）
-top_c1, top_c2, top_c3, top_c4, top_c5 = st.columns([1.2, 1.2, 1.2, 1.2, 1.2])
+# 頂部控制列（1:1 復刻圖二）
+top_c1, top_c2, top_c3, top_c4, top_c5 = st.columns([1.2, 1.2, 1.5, 1.2, 1.5])
 
 with top_c1:
     only_pattern = st.toggle("僅看形態", value=False)
 
 with top_c2:
     chart_k_period = st.selectbox(
-        "週期選單",
+        "週期",
         ["日線", "周線", "15分", "30分", "60分"],
         label_visibility="collapsed"
     )
 
 with top_c3:
-    # 畫布圖層切換：① 形態 (橘色) / ② 均線 (紫色)
     layer_mode = st.radio(
-        "圖層切換",
+        "圖層選擇",
         ["① 形態", "② 均線"],
         horizontal=True,
         label_visibility="collapsed"
     )
 
 with top_c4:
-    ma_param = st.selectbox("均線參數", ["MA5", "MA10", "MA20", "MA60"], index=2, label_visibility="collapsed")
+    ma_param_selected = st.selectbox("均線參數", [5, 10, 20, 25, 60, 120], index=3, label_visibility="collapsed")
 
 with top_c5:
-    st.caption("🟢 已連接數據源: 護深/全台股")
+    st.markdown("<div style='color:#00E676; text-align:right; font-size:13px; padding-top:5px;'>🟢 已連接數據源: 全台股/滬深</div>", unsafe_allow_html=True)
 
-# 繪圖顏色與圖層控制邏輯
+# 色彩邏輯：形態 (橘色 #FF9F43) / 均線 (紫色 #9E579D)
 stroke_color = "#FF9F43" if "①" in layer_mode else "#9E579D"
 stroke_width = 3 if "①" in layer_mode else 2
 
-# 主畫布區域
 st.markdown("<p style='text-align:center; color:#6C757D; font-size:12px; margin-top:5px;'>時間週期：最近 90 個交易日 〈從左到右 = 過去 ➔ 現在〉</p>", unsafe_allow_html=True)
 
-canvas_key = "klyne_dual_canvas"
+# 右側繪畫視窗 (對齊圖二黑底樣式)
 canvas_result = st_canvas(
     fill_color="rgba(0, 0, 0, 0)",
     stroke_width=stroke_width,
     stroke_color=stroke_color,
     background_color="#0D111A",
-    height=360,
+    height=350,
     width=None,
     drawing_mode="freedraw",
-    key=canvas_key,
+    key="klyne_canvas_v2",
 )
 
 # 畫布下方按鈕列
@@ -278,7 +275,7 @@ with btn_c1:
 
 with btn_c2:
     if st.button("清除當前線", use_container_width=True):
-        st.toast("已清除上一筆劃線（可重新畫圖）")
+        st.toast("已清除畫線，可重新繪製")
 
 with btn_c3:
     if st.button("清空", use_container_width=True):
@@ -287,7 +284,7 @@ with btn_c3:
 with btn_c4:
     st.button("📤 上傳K線圖識別", use_container_width=True)
 
-# 底部 3 步驟指引卡片 (參考附圖)
+# 底部 3 步驟指引卡片
 st.markdown("<br>", unsafe_allow_html=True)
 guide_c1, guide_c2, guide_c3 = st.columns(3)
 
@@ -318,7 +315,7 @@ with guide_c3:
 st.divider()
 
 # ==========================================
-# 搜尋結果與選股清單展示 (支援下拉式 K 線圖)
+# 搜尋結果與詳細 K 線圖 (包含 K線 + 橘色形態 + 紫色均線 + 成交量 + MACD)
 # ==========================================
 st.subheader("📋 搜尋股票結果清單")
 
@@ -332,8 +329,7 @@ if btn_quick_search:
     st.session_state.screener_results = results_df
 
 if btn_draw_search:
-    st.info("🎯 正在對手繪 K 線與均線軌跡進行形狀擬合計算，比對全市場形態中...")
-    # 此處保留手繪軌跡比對觸發點
+    st.info("🎯 正在將手繪軌跡與全市場個股進行多維度型態匹配...")
 
 if 'screener_results' in st.session_state:
     res_df = st.session_state.screener_results
@@ -341,37 +337,103 @@ if 'screener_results' in st.session_state:
         st.success(f"✅ 找到 {len(res_df)} 檔符合條件的標的：")
         st.dataframe(res_df, use_container_width=True)
 
-        # 4. 下拉式 K 線圖查看
+        # 下拉選擇標的查看詳細 K 線圖 (包含 橘色型態/紫色均線/成交量/MACD)
         st.subheader("📈 下拉選擇標的查看詳細 K 線圖")
         selected_stock = st.selectbox(
-            "選擇股票代號以展開 K 線圖",
+            "選擇股票代號以展開完整圖表",
             options=res_df["股票代號"].tolist(),
             format_func=lambda x: f"{x} - {res_df[res_df['股票代號']==x]['股票名稱'].values[0]}"
         )
 
         if selected_stock:
             stock_ticker = f"{selected_stock}.TW"
-            df_k = yf.download(stock_ticker, period="6m", interval="1d", progress=False)
+            df_k = yf.download(stock_ticker, period="1y", interval="1d", progress=False)
+            
             if not df_k.empty:
+                # yfinance 資料層級壓平處理
                 if isinstance(df_k.columns, pd.MultiIndex):
                     df_k.columns = df_k.columns.get_level_values(0)
                 df_k.columns = [str(c).lower().strip() for c in df_k.columns]
 
-                fig = plotly_go.Figure()
+                # 計算指標
+                # 1. 均線 (使用頂部選單或篩選條件的 MA，預設 紫色)
+                active_ma_period = macd_ma_period if enable_macd_25ma else ma_param_selected
+                df_k['target_ma'] = df_k['close'].rolling(active_ma_period).mean()
+
+                # 2. 橘色形態高低點包絡線/價格趨勢
+                df_k['pattern_line'] = df_k['close'].rolling(5).mean()
+
+                # 3. MACD 指標
+                exp1 = df_k['close'].ewm(span=12, adjust=False).mean()
+                exp2 = df_k['close'].ewm(span=26, adjust=False).mean()
+                df_k['dif'] = exp1 - exp2
+                df_k['macd_sig'] = df_k['dif'].ewm(span=9, adjust=False).mean()
+                df_k['macd_hist'] = df_k['dif'] - df_k['macd_sig']
+
+                # 建立 3 層多子圖 (Subplots)
+                fig = make_subplots(
+                    rows=3, cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.03,
+                    subplot_titles=(f"{selected_stock} 技術 K 線圖與趨勢 (橘色形態 + 紫色 {active_ma_period}MA)", "成交量 (張)", "MACD (12, 26, 9)"),
+                    row_heights=[0.55, 0.20, 0.25]
+                )
+
+                # --- 1. 主 K 線圖 ---
                 fig.add_trace(plotly_go.Candlestick(
                     x=df_k.index, open=df_k['open'], high=df_k['high'],
                     low=df_k['low'], close=df_k['close'], name="K線"
-                ))
-                # 疊加 MA25
-                df_k['ma25'] = df_k['close'].rolling(25).mean()
-                fig.add_trace(plotly_go.Scatter(x=df_k.index, y=df_k['ma25'], line=dict(color='#9E579D', width=2), name="MA25"))
+                ), row=1, col=1)
+
+                # 橘色形態線 (黃/橘色 #FF9F43)
+                fig.add_trace(plotly_go.Scatter(
+                    x=df_k.index, y=df_k['pattern_line'],
+                    line=dict(color='#FF9F43', width=2),
+                    name="橘色形態趨勢"
+                ), row=1, col=1)
+
+                # 紫色均线 (#9E579D)
+                fig.add_trace(plotly_go.Scatter(
+                    x=df_k.index, y=df_k['target_ma'],
+                    line=dict(color='#9E579D', width=2.5),
+                    name=f"紫色 {active_ma_period}MA"
+                ), row=1, col=1)
+
+                # --- 2. 成交量圖 ---
+                colors = ['#FF4B4B' if c >= o else '#28A745' for c, o in zip(df_k['close'], df_k['open'])]
+                fig.add_trace(plotly_go.Bar(
+                    x=df_k.index, y=df_k['volume'] / 1000,
+                    marker_color=colors, name="成交量(張)"
+                ), row=2, col=1)
+
+                # --- 3. MACD 圖 ---
+                fig.add_trace(plotly_go.Scatter(
+                    x=df_k.index, y=df_k['dif'],
+                    line=dict(color='#00D8FF', width=1.5), name="DIF"
+                ), row=3, col=1)
                 
+                fig.add_trace(plotly_go.Scatter(
+                    x=df_k.index, y=df_k['macd_sig'],
+                    line=dict(color='#FFD700', width=1.5), name="MACD Signal"
+                ), row=3, col=1)
+
+                hist_colors = ['#FF4B4B' if h >= 0 else '#28A745' for h in df_k['macd_hist']]
+                fig.add_trace(plotly_go.Bar(
+                    x=df_k.index, y=df_k['macd_hist'],
+                    marker_color=hist_colors, name="MACD 柱狀體"
+                ), row=3, col=1)
+
+                # 佈局與主題設定
                 fig.update_layout(
                     template="plotly_dark",
-                    height=400,
-                    margin=dict(l=10, r=10, t=30, b=10),
-                    xaxis_rangeslider_visible=False
+                    height=700,
+                    margin=dict(l=15, r=15, t=40, b=15),
+                    xaxis_rangeslider_visible=False,
+                    showlegend=True
                 )
+                
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("❌ 無法取得該股票的 K 線數據，請檢查數據源或重試。")
     else:
-        st.warning("⚠️ 掃描完畢，未搜尋到符合所有條件的股票，請放寬漲幅或成交量限制。")
+        st.warning("⚠️ 掃描完畢，未搜尋到符合所有條件的股票。")
