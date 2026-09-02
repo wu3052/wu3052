@@ -66,7 +66,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、動態低點連線與首根漲停支撐) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、動態最低價趨勢線、首根漲停開盤價支撐) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -102,6 +102,14 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
+    # 動態計算形態趨勢線（橘色實線 - 近期每天股價最低價連成線，取近 30 交易日或全部）
+    trend_slice = df_k.iloc[-30:].copy()
+    fig.add_trace(plotly_go.Scatter(
+        x=trend_slice.index, y=trend_slice['Low'],
+        line=dict(color='#FFA500', width=2),
+        name="最低價趨勢線"
+    ), row=1, col=1)
+
     # 紅色突破頸線 (水平實線)
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
@@ -114,42 +122,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         mode="text", text=[f" 突破頸線: {recent_neckline:.2f}"],
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
-
-    # 動態計算近期低點走勢（低點連低點）的形態趨勢線（橘色實線）
-    if len(df_k) >= 40:
-        recent_slice = df_k.iloc[-40:].copy()
-        # 以每 10 天或局部區間尋找顯著低點來做動態趨勢線擬合
-        window_size = 12
-        t_indices = []
-        t_lows = []
-        for i in range(0, len(recent_slice) - 5, window_size):
-            sub = recent_slice.iloc[i:i+window_size]
-            min_idx = sub['Low'].idxmin()
-            min_val = sub['Low'].min()
-            if min_idx not in t_indices:
-                t_indices.append(min_idx)
-                t_lows.append(min_val)
-        
-        # 確保加入最後一個區間或近期最低點作為收斂
-        last_min_idx = recent_slice.iloc[-15:]['Low'].idxmin()
-        last_min_val = recent_slice.iloc[-15:]['Low'].min()
-        if last_min_idx not in t_indices:
-            t_indices.append(last_min_idx)
-            t_lows.append(last_min_val)
-
-        if len(t_indices) >= 2:
-            # 排序時間軸
-            combined_pts = sorted(zip(t_indices, t_lows), key=lambda x: x[0])
-            line_x = [p[0] for p in combined_pts]
-            line_y = [p[1] for p in combined_pts]
-
-            fig.add_trace(plotly_go.Scatter(
-                x=line_x, y=line_y,
-                mode='lines+markers',
-                line=dict(color='#FFA500', width=2),
-                marker=dict(size=6, color='#FFA500'),
-                name="形態趨勢線(低接低)"
-            ), row=1, col=1)
 
     # 首根漲停開盤價支撐標記 (水藍色虛線)
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
@@ -172,9 +144,9 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             row=1, col=1
         )
         fig.add_trace(plotly_go.Scatter(
-            x=[first_limit_idx], y=[open_price_val],
-            mode="text", text=[f" 首根漲停開盤價: {open_price_val:.2f}"],
-            textposition="top center", showlegend=False
+            x=[df_k.index[-1]], y=[open_price_val],
+            mode="text", text=[f" 首根漲停開盤價支撐: {open_price_val:.2f}"],
+            textposition="top right", showlegend=False
         ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
@@ -458,7 +430,7 @@ with st.sidebar:
 
     enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False)
 
-    enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=True)
+    enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=False)
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         first_limit_days = st.number_input("前 N 天 (首根漲停)", min_value=1, max_value=60, value=30)
@@ -484,7 +456,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、動態形態低點趨勢線與首根漲停支撐標記。")
+st.caption("支援 8 大模組組合篩選、動態最低價趨勢線與首根漲停開盤價支撐標記。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
@@ -540,7 +512,7 @@ if not res_table.empty:
                 stock_name = r_row['股票名稱']
                 combo_tag = r_row['組合邏輯名稱']
                 
-                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=enable_first_limit_pullback, first_limit_days=first_limit_days)
+                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
