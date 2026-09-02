@@ -66,13 +66,12 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色VCP圓弧底、首根漲停開盤價與一年新高黑線) ---
-def plot_beautified_chart(df_k, stock_title, ma_num):
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色VCP圓弧底、首根漲停開盤價標記與一年新高黑線) ---
+def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
-    df_k['daily_change'] = df_k['Close'].pct_change() * 100
     
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
@@ -132,22 +131,38 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         name="VCP 波動收縮圓弧底"
     ), row=1, col=1)
 
-    # 標示起漲第一根漲停的開盤價（藍色虛線）
-    recent_60_plot = df_k.tail(60)
-    lu_mask_plot = recent_60_plot['daily_change'] >= 9.5
-    if lu_mask_plot.any():
-        first_lu_idx_plot = lu_mask_plot.idxmax()
-        first_lu_open_val = df_k.loc[first_lu_idx_plot, 'Open']
+    # 若需要標示出前N天出現的首根漲停開盤價
+    df_k['daily_change'] = df_k['Close'].pct_change() * 100
+    is_limit_up = df_k['daily_change'] >= 9.5
+    
+    # 尋找近 first_limit_days 內的首根漲停
+    check_window = df_k.iloc[-first_limit_days:]
+    first_limit_idx = None
+    for idx, row in check_window.iterrows():
+        if row['daily_change'] >= 9.5:
+            # 檢查這之前的一陣子是否有漲停，若無則為首根
+            loc_in_full = df_k.index.get_loc(idx)
+            prior_slice = df_k.iloc[max(0, loc_in_full-15):loc_in_full]
+            if not (prior_slice['daily_change'] >= 9.5).any():
+                first_limit_idx = idx
+                break
+
+    if first_limit_idx is not None:
+        open_price_val = df_k.loc[first_limit_idx, 'Open']
+        # 繪製一條水平線代表首根漲停開盤價支撐
         fig.add_shape(
-            type="line", x0=df_k.index[0], x1=df_k.index[-1],
-            y0=first_lu_open_val, y1=first_lu_open_val,
-            line=dict(color="#1E90FF", width=1.5, dash="dashdot"),
+            type="line", x0=first_limit_idx, x1=df_k.index[-1],
+            y0=open_price_val, y1=open_price_val,
+            line=dict(color="#1E90FF", width=2, dash="dash"),
             row=1, col=1
         )
         fig.add_trace(plotly_go.Scatter(
-            x=[df_k.index[-1]], y=[first_lu_open_val],
-            mode="text", text=[f" 首根漲停開盤價: {first_lu_open_val:.2f}"],
-            textposition="top right", showlegend=False
+            x=[first_limit_idx], y=[open_price_val],
+            mode="markers+text",
+            marker=dict(size=10, color="#1E90FF", symbol="triangle-up"),
+            text=[f" 首根漲停開盤價: {open_price_val:.2f}"],
+            textposition="top center",
+            name="首根漲停開盤價"
         ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
@@ -197,7 +212,8 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-                                    enable_breakout, enable_vcp, enable_first_limit_open_support,
+                                    enable_breakout, enable_vcp,
+                                    enable_first_limit_pullback, first_limit_days, first_limit_range,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
@@ -292,18 +308,34 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_vcp_contraction:
             matched_strategies.append("VCP波動收縮")
 
-    # 策略 7: 首根漲停開盤價支撐
-    if enable_first_limit_open_support:
-        limit_up_mask = recent_df['daily_change'] >= 9.5
-        if limit_up_mask.any():
-            first_lu_idx = limit_up_mask.idxmax()
-            first_lu_open = df.loc[first_lu_idx, 'Open']
-            is_supported = (df['Low'].iloc[-1] <= first_lu_open * 1.015) and (curr_price >= first_lu_open * 0.985)
-            if is_supported:
+    # 策略 7: 首根漲停開盤價支撐回踩
+    if enable_first_limit_pullback:
+        check_window = df.iloc[-first_limit_days:]
+        first_limit_open = None
+        for idx, r in check_window.iterrows():
+            if r['daily_change'] >= 9.5:
+                loc_in_full = df.index.get_loc(idx)
+                prior_slice = df.iloc[max(0, loc_in_full-15):loc_in_full]
+                if not (prior_slice['daily_change'] >= 9.5).any():
+                    first_limit_open = r['Open']
+                    break
+        
+        if first_limit_open is not None:
+            # 量縮與回踩開盤價正負指定%數範圍
+            vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
+            is_vol_shrink = curr_vol < vol_ma5
+            lower_bound = first_limit_open * (1 - first_limit_range / 100.0)
+            upper_bound = first_limit_open * (1 + first_limit_range / 100.0)
+            is_near_open = (df['Low'].iloc[-1] <= upper_bound) and (curr_price >= lower_bound)
+            
+            if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
     # 收集勾選的策略清單
-    total_enabled_flags = sum([enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_open_support])
+    total_enabled_flags = sum([
+        enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
+        enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback
+    ])
     if total_enabled_flags == 0:
         return None
 
@@ -331,7 +363,8 @@ def run_quick_screener_parallel(
     enable_macd_25ma, macd_ma_period,
     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-    enable_breakout, enable_vcp, enable_first_limit_open_support,
+    enable_breakout, enable_vcp,
+    enable_first_limit_pullback, first_limit_days, first_limit_range,
     logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
@@ -349,7 +382,8 @@ def run_quick_screener_parallel(
                 row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                 enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-                enable_breakout, enable_vcp, enable_first_limit_open_support,
+                enable_breakout, enable_vcp,
+                enable_first_limit_pullback, first_limit_days, first_limit_range,
                 logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
@@ -389,20 +423,25 @@ with st.sidebar:
     enable_limit_up_pullback = st.checkbox("2. 前 N 天帶量漲停 + 量縮回踩 MA", value=False)
     col_p1, col_p2 = st.columns(2)
     with col_p1:
-        limit_up_days = st.number_input("前 N 天", min_value=1, max_value=60, value=20)
+        limit_up_days = st.number_input("前 N 天 (策略2)", min_value=1, max_value=60, value=20)
     with col_p2:
-        limit_up_ma_period = st.number_input("回踩 MA", min_value=1, max_value=240, value=25)
+        limit_up_ma_period = st.number_input("回踩 MA (策略2)", min_value=1, max_value=240, value=25)
 
     enable_kd_cross = st.checkbox("3. 僅顯示 KD 金叉 (日)", value=False)
 
-    enable_tangle_steady = st.checkbox("4. 均線糾結 + 量穩價縮", value=True)
+    enable_tangle_steady = st.checkbox("4. 均線糾結 + 量穩價縮", value=False)
     tangle_ma_period = st.number_input("糾結基準長 MA 數值", min_value=1, max_value=240, value=20)
 
     enable_breakout = st.checkbox("5. 突破切線 (注意追高風險)", value=False)
 
-    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=True, help="價格波動和成交量一次比一次小，形成最小阻力。")
+    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="價格波動和成交量一次比一次小，形成最小阻力。")
 
-    enable_first_limit_open_support = st.checkbox("7. 首根漲停開盤價支撐", value=False, help="回測近60日第一根漲停板的開盤價支撐位。")
+    enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=True)
+    col_f1, col_f2 = st.columns(2)
+    with col_f1:
+        first_limit_days = st.number_input("前 N 天 (首根漲停)", min_value=1, max_value=60, value=30)
+    with col_f2:
+        first_limit_range = st.number_input("回踩容許區間(%)", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
@@ -420,7 +459,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 7 大模組組合篩選、紅色突破頸線、棕色 VCP 圓弧底、首根漲停開盤價支撐線與組合邏輯標記。")
+st.caption("支援 7 大模組組合篩選、首根漲停開盤價支撐標記、紅色突破頸線與組合邏輯標記。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
@@ -433,7 +472,7 @@ if diag_btn and diag_code:
             s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
             
             st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
-            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period)
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
             st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
@@ -446,7 +485,8 @@ if btn_quick_search:
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
             enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-            enable_breakout, enable_vcp, enable_first_limit_open_support,
+            enable_breakout, enable_vcp,
+            enable_first_limit_pullback, first_limit_days, first_limit_range,
             logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
@@ -474,7 +514,7 @@ if not res_table.empty:
                 stock_name = r_row['股票名稱']
                 combo_tag = r_row['組合邏輯名稱']
                 
-                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period)
+                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=enable_first_limit_pullback, first_limit_days=first_limit_days)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
