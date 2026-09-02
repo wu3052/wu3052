@@ -382,12 +382,15 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
-    # 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
+# 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
     if enable_shakeout_breakout:
         df[f'shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
+        # 前段時間曾有量縮或跌破前低洗盤（近20日內低點曾跌破再收上，或成交量相對萎縮）
+        # 今日（最後一天）：出量（大於近期均量）且收盤價站上指定MA，且前一日收盤價小於或等於MA（代表第一天站上）
         vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
         is_volume_expand = curr_vol > vol_ma_20 * 1.3
         
+        # 前幾日有量縮洗盤特徵（例如近10天內有量縮低點或跌破前波）
         recent_vol_slice = df['Volume'].iloc[-15:-1]
         is_prior_shrink = (recent_vol_slice.min() < vol_ma_20 * 0.8)
         
