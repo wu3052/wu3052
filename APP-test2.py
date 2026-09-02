@@ -7,7 +7,6 @@ import twstock
 import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
 st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
@@ -140,7 +139,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     # 只有當股票確實出現 VCP 型態時，才在下方明顯標示由左至右波動收幅的棕色圓弧底
     if check_vcp(df_k):
         vcp_x = df_k.index[-30:]
-        # 將 VCP 標示位置往下移，更清晰呈現由左至右波動收幅
         base_low = df_k['Low'].iloc[-30:].min()
         vcp_y = base_low * 0.93 - np.linspace(0, base_low * 0.03, len(vcp_x))
         fig.add_trace(plotly_go.Scatter(
@@ -227,7 +225,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 穩健序列式全市場掃描函式 (完全避免執行緒滿載與崩潰錯誤) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -401,31 +399,23 @@ def run_quick_screener_parallel(
     progress_bar = st.sidebar.progress(0)
     status_text = st.sidebar.empty()
     
-    completed = 0
-    # 將 max_workers 從 10 調降至 3，防止觸發 Streamlit Cloud 容器的執行緒上限錯誤
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        futures = {
-            executor.submit(
-                fetch_and_analyze_single_stock, 
-                row, enable_macd_25ma, macd_ma_period,
-                enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-                enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-                enable_breakout, enable_vcp,
-                enable_first_limit_pullback, first_limit_days, first_limit_range,
-                enable_shakeout_breakout, shakeout_ma_val,
-                logic_mode, min_vol, max_growth
-            ): row for _, row in df_stocks.iterrows()
-        }
+    # 改為高效穩健的迴圈檢視，徹底避開 Streamlit Cloud 執行緒池滿載崩潰 (RuntimeError)
+    for idx, row in df_stocks.iterrows():
+        if idx % 10 == 0 or idx == total_count - 1:
+            progress_bar.progress(min((idx + 1) / total_count, 1.0))
+            status_text.markdown(f"🔍 **篩選進度:** `{idx + 1}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
         
-        for future in as_completed(futures):
-            completed += 1
-            if completed % 15 == 0 or completed == total_count:
-                progress_bar.progress(min(completed / total_count, 1.0))
-                status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
-            
-            res = future.result()
-            if res:
-                found_targets.append(res)
+        res = fetch_and_analyze_single_stock(
+            row, enable_macd_25ma, macd_ma_period,
+            enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
+            enable_kd_cross, enable_tangle_steady, tangle_ma_period,
+            enable_breakout, enable_vcp,
+            enable_first_limit_pullback, first_limit_days, first_limit_range,
+            enable_shakeout_breakout, shakeout_ma_val,
+            logic_mode, min_vol, max_growth
+        )
+        if res:
+            found_targets.append(res)
                 
     progress_bar.empty()
     status_text.empty()
@@ -511,7 +501,7 @@ if diag_btn and diag_code:
 st.subheader("📋 搜尋股票結果清單")
 
 if btn_quick_search:
-    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
+    with st.spinner("⚡ 正在掃描全市場標的..."):
         res_df = run_quick_screener_parallel(
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
