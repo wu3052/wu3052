@@ -286,7 +286,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略) ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略，安全控制執行緒以防堆疊溢位或執行緒上限) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -464,9 +464,12 @@ def run_quick_screener_parallel(
     status_text = st.sidebar.empty()
     
     completed = 0
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {
-            executor.submit(
+    # 使用保守的 max_workers=2 以防在雲端環境觸發執行緒上限 (RuntimeError: can't start new thread)
+    max_workers = 2
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for _, row in df_stocks.iterrows():
+            f = executor.submit(
                 fetch_and_analyze_single_stock, 
                 row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
@@ -475,18 +478,20 @@ def run_quick_screener_parallel(
                 enable_first_limit_pullback, first_limit_days, first_limit_range,
                 enable_shrink_wash_break, shrink_ma_period,
                 logic_mode, min_vol, max_growth
-            ): row for _, row in df_stocks.iterrows()
-        }
+            )
+            futures.append((f, row))
         
-        for future in as_completed(futures):
+        for future, row in futures:
             completed += 1
             if completed % 15 == 0 or completed == total_count:
                 progress_bar.progress(min(completed / total_count, 1.0))
                 status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
-            
-            res = future.result()
-            if res:
-                found_targets.append(res)
+            try:
+                res = future.result()
+                if res:
+                    found_targets.append(res)
+            except Exception:
+                pass
                 
     progress_bar.empty()
     status_text.empty()
