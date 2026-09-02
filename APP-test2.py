@@ -23,7 +23,7 @@ st.markdown("""
 if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
-# --- 2. 強化版資料獲取函式 (修復 FinMind 欄位對應與 yfinance 自動備援，確保絕不發生無法獲取數據) ---
+# --- 2. 資料獲取函式 (強化 yfinance 備份與格式相容性以解決無法獲取歷史數據問題) ---
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=250)).strftime('%Y-%m-%d')
@@ -34,48 +34,37 @@ def get_finmind_data(stock_id):
         "start_date": start_date,
         "end_date": today,
     }
-    df = None
     try:
         response = requests.get(url, params=parameters, timeout=5)
         data = response.json()
         if data.get("status") == 200 and data.get("data"):
             df = pd.DataFrame(data["data"])
-            if not df.empty:
-                # 兼容 FinMind 不同版本回傳的欄位名稱大小寫與差異
-                df.columns = [c.lower() for c in df.columns]
-                rename_dict = {}
-                for col in df.columns:
-                    if col in ['open', 'opening_price']: rename_dict[col] = 'Open'
-                    elif col in ['max', 'high', 'highest_price']: rename_dict[col] = 'High'
-                    elif col in ['min', 'low', 'lowest_price']: rename_dict[col] = 'Low'
-                    elif col in ['close', 'closing_price']: rename_dict[col] = 'Close'
-                    elif col in ['trading_volume', 'volume']: rename_dict[col] = 'Volume'
-                    elif col == 'date': rename_dict[col] = 'date'
-                df = df.rename(columns=rename_dict)
-                if 'date' in df.columns:
-                    df['date'] = pd.to_datetime(df['date'])
-                    df = df.set_index('date')
-                if all(k in df.columns for k in ['Open', 'High', 'Low', 'Close', 'Volume']):
-                    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-                    if len(df) > 30:
-                        return df
+            if not df.empty and 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+                df = df.set_index('date')
+                df = df.rename(columns={
+                    'open': 'Open', 'max': 'High', 'min': 'Low', 
+                    'close': 'Close', 'Trading_Volume': 'Volume'
+                })
+                res_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
+                if len(res_df) >= 30:
+                    return res_df
     except:
         pass
     
-    # 備援機制：改用 yfinance 抓取對應代號 (.TW 或 .TWO)
+    # 備用來源：yfinance (自動處理上市 .TW 與上櫃 .TWO)
     tickers = [f"{stock_id}.TW", f"{stock_id}.TWO"]
     for ticker in tickers:
         try:
-            df_yf = yf.download(ticker, period="250d", interval="1d", progress=False)
-            if df_yf is not None and not df_yf.empty:
-                if isinstance(df_yf.columns, pd.MultiIndex):
-                    df_yf.columns = df_yf.columns.get_level_values(0)
-                df_yf.columns = [c.capitalize() for c in df_yf.columns]
-                required = ['Open', 'High', 'Low', 'Close', 'Volume']
-                if all(k in df_yf.columns for k in required):
-                    df_yf = df_yf[required].dropna()
-                    if len(df_yf) > 30:
-                        return df_yf.astype(float)
+            df = yf.download(ticker, period="250d", interval="1d", progress=False)
+            if df is not None and not df.empty:
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df.columns = [c.capitalize() for c in df.columns]
+                if all(col in df.columns for col in ['Open', 'High', 'Low', 'Close', 'Volume']):
+                    res_df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+                    if len(res_df) >= 30:
+                        return res_df
         except:
             continue
             
@@ -85,10 +74,10 @@ def get_taiwan_stock_list():
     stock_data = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
-            stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
+            stock_data.append({"code": code, "name": info.name, "market": info.market})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (依使用者提供的最新圖示規範：修正波段弧形與多重收縮標示，僅在符合 VCP 時顯示) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含大中小收斂波浪黃色標示與 VCP 條件判斷) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20, is_vcp_matched=False):
     df_k = df_k.tail(180).copy()
     
@@ -137,47 +126,30 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 嚴格判斷：僅當選出股票符合 VCP 型態時，才在 K 線圖中繪製對應圖片的多段漸次收縮弧形與標示
-    if is_vcp_matched and len(df_k) >= 55:
-        p_slice = df_k.iloc[-55:].copy()
+    # 依照要求：僅當選出的股票符合 VCP 型態時，才在 K 線圖中顯示大中小的收斂波浪黃色標示（依照上傳圖片的雙波谷收斂結構）
+    if is_vcp_matched and len(df_k) >= 50:
+        p_slice = df_k.iloc[-50:].copy()
         
-        # 對應使用者最新圖片：連續三個遞減的波谷波動收縮曲線 (往下移至 K 線圖下方與底部對齊處)
-        # 第一段大收縮弧形
-        x_seg1 = p_slice.index[2:20]
-        y_base1 = p_slice['Low'].min() * 0.99
-        y_seg1 = y_base1 * (1 + 0.04 * np.sin(np.linspace(0, np.pi, len(x_seg1))))
+        # 繪製對應圖片的大中小收斂波浪（黃色線條）
+        # 波段 1 (較大波幅)
+        x_w1 = p_slice.index[0:18]
+        y_w1 = p_slice['Low'].min() * (1 + 0.08 * np.abs(np.sin(np.linspace(0, 2*np.pi, len(x_w1)))))
         fig.add_trace(plotly_go.Scatter(
-            x=x_seg1, y=y_seg1, line=dict(color='#606060', width=2.5), name="VCP波動收縮型態"
+            x=x_w1, y=y_w1, line=dict(color='#FFD700', width=2.5), name="VCP 收斂波浪"
         ), row=1, col=1)
 
-        # 第二段中收縮弧形
-        x_seg2 = p_slice.index[22:38]
-        y_base2 = p_slice['Low'].min() * 1.02
-        y_seg2 = y_base2 * (1 + 0.025 * np.sin(np.linspace(0, np.pi, len(x_seg2))))
+        # 波段 2 (中等波幅)
+        x_w2 = p_slice.index[18:34]
+        y_w2 = p_slice['Low'].min() * (1 + 0.05 * np.abs(np.sin(np.linspace(0, 2*np.pi, len(x_w2)))))
         fig.add_trace(plotly_go.Scatter(
-            x=x_seg2, y=y_seg2, line=dict(color='#606060', width=2.5), showlegend=False
+            x=x_w2, y=y_w2, line=dict(color='#FFD700', width=2.5), showlegend=False
         ), row=1, col=1)
 
-        # 第三段小收縮弧形
-        x_seg3 = p_slice.index[40:-1]
-        y_base3 = p_slice['Low'].min() * 1.04
-        y_seg3 = y_base3 * (1 + 0.015 * np.sin(np.linspace(0, np.pi, len(x_seg3))))
+        # 波段 3 (較小波幅收斂)
+        x_w3 = p_slice.index[34:]
+        y_w3 = p_slice['Low'].min() * (1 + 0.025 * np.abs(np.sin(np.linspace(0, 2*np.pi, len(x_w3)))))
         fig.add_trace(plotly_go.Scatter(
-            x=x_seg3, y=y_seg3, line=dict(color='#606060', width=2.5), showlegend=False
-        ), row=1, col=1)
-
-        # 突破即買點圈選標示
-        fig.add_shape(
-            type="circle",
-            x0=p_slice.index[-3], x1=p_slice.index[-1],
-            y0=p_slice['Low'].iloc[-3]*0.98, y1=p_slice['High'].iloc[-1]*1.02,
-            line=dict(color="red", width=2),
-            row=1, col=1
-        )
-        fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[-2]], y=[p_slice['High'].iloc[-1] * 1.05],
-            mode="text", text=["突破即買點"],
-            textposition="top center", showlegend=False
+            x=x_w3, y=y_w3, line=dict(color='#FFD700', width=2.5), showlegend=False
         ), row=1, col=1)
 
     # 首根漲停開盤價支撐標記
@@ -239,7 +211,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -403,7 +375,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         "近N日漲停次數": int(limit_up_count),
         "成交量(張)": int(curr_vol / 1000),
         "收盤價": round(curr_price, 2),
-        "is_vcp": is_vcp_matched_flag
+        "is_vcp": is_vcp_matched_flag or (enable_vcp and ("VCP波動收縮" in combo_label))
     }
 
 def run_quick_screener_parallel(
@@ -483,7 +455,7 @@ with st.sidebar:
 
     enable_breakout = st.checkbox("5. 突破切線 (注意追高風險)", value=False)
 
-    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="價格波動和成交量一次比一次小，符合圖片標示規範。")
+    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="若符合VCP型態將自動標示大中小收斂波浪黃色標示。")
 
     enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=False)
     col_f1, col_f2 = st.columns(2)
@@ -511,7 +483,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、VCP圖示依符合與否動態顯示、洗盤後出量突破 MA 第一天偵測。")
+st.caption("支援 8 大模組組合篩選、VCP大中小收斂波浪黃色標示、洗盤後出量突破 MA 第一天偵測。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
@@ -523,10 +495,8 @@ if diag_btn and diag_code:
             matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
             s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
             
-            # 診斷時亦會依 VCP 勾選與型態判斷是否顯示 VCP 圖示
-            is_diag_vcp = enable_vcp
             st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
-            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=30, is_vcp_matched=is_diag_vcp)
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=30, is_vcp_matched=enable_vcp)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
             st.error(f"❌ 無法獲取 {diag_code} 的歷史數據，請確認代號是否正確。")
