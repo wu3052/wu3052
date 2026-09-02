@@ -23,7 +23,7 @@ st.markdown("""
 if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
-# --- 2. 強化且具備穩定備份機轉的資料獲取函式 (修復無法獲取歷史數據問題) ---
+# --- 2. 強化且具備穩定備份機轉的資料獲取函式 ---
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=250)).strftime('%Y-%m-%d')
@@ -100,7 +100,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含形態趨勢線、VCP 修正標示與條件式頸線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (精確定位 VCP 弧形與趨勢線貼合股價下方) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20, is_vcp_matched=False):
     df_k = df_k.tail(180).copy()
     
@@ -136,9 +136,11 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 補上形態趨勢線（橘色實線）
+    # 形態趨勢線（橘色實線），貼合近期低點走勢
+    trend_x = df_k.index[-35:]
+    trend_y = df_k['Low'].iloc[-35:].rolling(5, min_periods=1).min() * 0.985
     fig.add_trace(plotly_go.Scatter(
-        x=df_k.index[-35:], y=df_k['Close'].iloc[-35:] * 0.96,
+        x=trend_x, y=trend_y,
         line=dict(color='#FF9F43', width=2.5),
         name="形態趨勢線"
     ), row=1, col=1)
@@ -157,54 +159,54 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             textposition="bottom right", showlegend=False
         ), row=1, col=1)
 
-    # 規範：若股票符合 VCP 型態，則在股價最低價下方用黃色標示圖片中的 VCP 收縮幅度與區段
+    # 規範：若股票符合 VCP 型態，則在股價下方、趨勢線周邊精準貼合繪製黃色 VCP 波動收縮弧形與標示
     if is_vcp_matched and len(df_k) >= 50:
         p_slice = df_k.iloc[-55:].copy()
         
-        # 第一個收縮修正區段
-        x_s1 = p_slice.index[2:18]
-        y_base1 = p_slice['Low'].min() * 0.94
-        y_s1 = y_base1 * (1 + 0.02 * np.sin(np.linspace(0, np.pi, len(x_s1))))
+        # 第一個收縮修正區段（貼合真實低點下方）
+        x_s1 = p_slice.index[5:20]
+        base_y1 = p_slice['Low'].iloc[5:20].min() * 0.98
+        y_s1 = base_y1 - (p_slice['Low'].iloc[5:20].max() - base_y1) * 0.1 * np.sin(np.linspace(0, np.pi, len(x_s1)))
         
         fig.add_trace(plotly_go.Scatter(
             x=x_s1, y=y_s1,
-            line=dict(color='#FFD700', width=2.5),
+            line=dict(color='#FFD700', width=3),
             name="VCP波動收縮"
         ), row=1, col=1)
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[10]], y=[y_base1 * 0.98],
+            x=[p_slice.index[12]], y=[base_y1 * 0.98],
             mode="text", text=["第一個修正19%"],
             textposition="bottom center", showlegend=False
         ), row=1, col=1)
 
         # 第二個收縮修正區段
-        x_s2 = p_slice.index[20:38]
-        y_base2 = p_slice['Low'].min() * 0.96
-        y_s2 = y_base2 * (1 + 0.015 * np.sin(np.linspace(0, np.pi, len(x_s2))))
+        x_s2 = p_slice.index[22:38]
+        base_y2 = p_slice['Low'].iloc[22:38].min() * 0.98
+        y_s2 = base_y2 - (p_slice['Low'].iloc[22:38].max() - base_y2) * 0.1 * np.sin(np.linspace(0, np.pi, len(x_s2)))
         
         fig.add_trace(plotly_go.Scatter(
             x=x_s2, y=y_s2,
-            line=dict(color='#FFD700', width=2.5),
+            line=dict(color='#FFD700', width=3),
             showlegend=False
         ), row=1, col=1)
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[29]], y=[y_base2 * 0.98],
+            x=[p_slice.index[30]], y=[base_y2 * 0.98],
             mode="text", text=["第二個修正12%"],
             textposition="bottom center", showlegend=False
         ), row=1, col=1)
 
         # 第三個收縮修正區段
-        x_s3 = p_slice.index[40:-1]
-        y_base3 = p_slice['Low'].min() * 0.98
-        y_s3 = y_base3 * (1 + 0.01 * np.sin(np.linspace(0, np.pi, len(x_s3))))
+        x_s3 = p_slice.index[40:-2]
+        base_y3 = p_slice['Low'].iloc[40:-2].min() * 0.98
+        y_s3 = base_y3 - (p_slice['Low'].iloc[40:-2].max() - base_y3) * 0.1 * np.sin(np.linspace(0, np.pi, len(x_s3)))
         
         fig.add_trace(plotly_go.Scatter(
             x=x_s3, y=y_s3,
-            line=dict(color='#FFD700', width=2.5),
+            line=dict(color='#FFD700', width=3),
             showlegend=False
         ), row=1, col=1)
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[-6]], y=[y_base3 * 0.98],
+            x=[p_slice.index[-6]], y=[base_y3 * 0.98],
             mode="text", text=["第三個修正8%"],
             textposition="bottom center", showlegend=False
         ), row=1, col=1)
@@ -282,7 +284,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 高效多執行緒全市場掃描函式 ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -525,7 +527,7 @@ with st.sidebar:
 
     enable_breakout = st.checkbox("5. 突破切線 (注意追高風險)", value=False)
 
-    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="價格波動和成交量一次比一次小，符合圖片標示規範。")
+    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=True, help="價格波動和成交量一次比一次小，符合圖片標示規範。")
 
     enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=False)
     col_f1, col_f2 = st.columns(2)
@@ -545,7 +547,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
-    diag_code = st.text_input("輸入股票代號", placeholder="例如: 3529")
+    diag_code = st.text_input("輸入股票代號", placeholder="例如: 2498")
     diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
 
 
@@ -553,7 +555,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、VCP 黃色區段修正標示、形態趨勢線及智能備份數據抓取。")
+st.caption("支援 8 大模組組合篩選、VCP 弧形精準貼合趨勢線下方、無頸線干擾模式。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
@@ -574,7 +576,7 @@ if diag_btn and diag_code:
 st.subheader("📋 搜尋股票結果清單")
 
 if btn_quick_search:
-    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場 (已啟用多重備份 API 確保數據讀取)..."):
+    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
         res_df = run_quick_screener_parallel(
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
