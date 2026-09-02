@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
-st.set_page_config(page_title="台股智慧選股與 VCP 潛力股挖掘系統", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -66,7 +66,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色 VCP 圓弧底與一年新高黑線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色VCP圓弧底與一年新高黑線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k = df_k.tail(180).copy()
     
@@ -74,7 +74,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
     
     year_high = df_k['High'].max()
-    recent_neckline = df_k['High'].iloc[-30:-1].max()
+    recent_neckline = df_k['High'].iloc[-25:-1].max()
 
     # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
@@ -111,9 +111,9 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
 
     # 紅色突破頸線 (水平實線)
     fig.add_shape(
-        type="line", x0=df_k.index[-30], x1=df_k.index[-1],
+        type="line", x0=df_k.index[-25], x1=df_k.index[-1],
         y0=recent_neckline, y1=recent_neckline,
-        line=dict(color="#FF0000", width=2, dash="solid"),
+        line=dict(color="#FF0000", width=2),
         row=1, col=1
     )
     fig.add_trace(plotly_go.Scatter(
@@ -122,13 +122,13 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 棕色 VCP 下跌能量逐漸縮小的圓弧底
-    vcp_x = df_k.index[-25:]
-    vcp_y = df_k['Low'].iloc[-25:].min() * 0.98 + (df_k['Close'].iloc[-25:].values * 0.01)
+    # 棕色 VCP 下跌能量逐漸縮小的圓弧底輔助線 (以近30日低點與波動收縮模擬圓弧底)
+    vcp_x = df_k.index[-30:]
+    vcp_y = df_k['Low'].iloc[-30:] * 0.97
     fig.add_trace(plotly_go.Scatter(
         x=vcp_x, y=vcp_y,
-        line=dict(color='#A0522D', width=2, shape='spline'),
-        name="VCP 圓弧底(能量縮小)"
+        line=dict(color='#A0522D', width=2, dash='dot'),
+        name="VCP 波動收縮圓弧底"
     ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
@@ -174,10 +174,10 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 6 大策略獨立/組合篩選) ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援 6 大策略獨立/組合判斷與名稱標記) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-                                    enable_kd_cross, enable_tangle_shrink, tangle_ma_period,
+                                    enable_kd_cross, enable_tangle_steady, tangle_ma_period,
                                     enable_breakout, enable_vcp,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
@@ -198,10 +198,9 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
     recent_df = df.iloc[-60:]
     limit_up_count = (recent_df['daily_change'] >= 9.5).sum()
 
-    matched_names = []
+    matched_strategies = []
 
-    # 1. MACD 回踩 0 軸 + MA 支持
-    cond_a = False
+    # 策略 1: MACD 回踩 0 軸 + MA 支持
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
@@ -212,11 +211,10 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         
         cond_ma = (df['Low'].iloc[-1] <= ma_a_curr * 1.015) and (curr_price >= ma_a_curr * 0.985)
         cond_macd = (abs(dif.iloc[-1]) < (curr_price * 0.02)) and (dif.iloc[-1] > signal.iloc[-1])
-        cond_a = cond_ma and cond_macd
-        if cond_a: matched_names.append("MACD回踩0軸+MA")
+        if cond_ma and cond_macd:
+            matched_strategies.append("MACD回踩0軸")
 
-    # 2. 前 N 天帶量漲停 + 量縮回踩 MA
-    cond_b = False
+    # 策略 2: 前 N 天帶量漲停 + 量縮回踩 MA
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
@@ -227,83 +225,74 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         is_vol_shrink = curr_vol < df['vol_ma5'].iloc[-1]
         is_touch_ma = (df['Low'].iloc[-1] <= ma_b_curr * 1.015) and (curr_price >= ma_b_curr * 0.985)
         
-        cond_b = had_limit_up_vol and is_vol_shrink and is_touch_ma
-        if cond_b: matched_names.append("漲停回踩MA")
+        if had_limit_up_vol and is_vol_shrink and is_touch_ma:
+            matched_strategies.append("漲停回踩MA")
 
-    # 3. 日 KD 金叉
-    cond_c = False
+    # 策略 3: 日 KD 金叉
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
         rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
         k = rsv.ewm(com=2).mean()
         d = k.ewm(com=2).mean()
-        cond_c = (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1])
-        if cond_c: matched_names.append("KD金叉")
+        if (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1]):
+            matched_strategies.append("KD金叉")
 
-    # 4. 均線糾結 + 量穩價縮 (無追高風險)
-    cond_d = False
-    if enable_tangle_shrink:
+    # 策略 4: 均線糾結 + 量穩價縮
+    if enable_tangle_steady:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
         ma20 = df['Close'].rolling(tangle_ma_period).mean()
         
         ma_max = pd.concat([ma5, ma10, ma20], axis=1).max(axis=1)
         ma_min = pd.concat([ma5, ma10, ma20], axis=1).min(axis=1)
-        is_tangled = ((ma_max - ma_min) / ma_min < 0.025).iloc[-8:-1].any()
+        is_tangled = ((ma_max - ma_min) / ma_min < 0.025).iloc[-5:-1].any()
         
         vol_ma = df['Volume'].rolling(5).mean()
         is_vol_steady = df['Volume'].iloc[-5:-1].mean() < vol_ma.iloc[-1] * 1.3
+        is_price_shrink = df['Close'].iloc[-1] <= df['Close'].iloc[-5] * 1.05
         
-        cond_d = is_tangled and is_vol_steady
-        if cond_d: matched_names.append("均線糾結+量穩價縮")
+        if is_tangled and is_vol_steady and is_price_shrink:
+            matched_strategies.append("均線糾結+量穩價縮")
 
-    # 5. 突破切線 (獨立防追高搜尋)
-    cond_e = False
+    # 策略 5: 突破切線
     if enable_breakout:
         vol_ma = df['Volume'].rolling(5).mean()
-        is_breakout = (curr_price > df['High'].iloc[-30:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
-        cond_e = is_breakout
-        if cond_e: matched_names.append("突破切線")
+        is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
+        if is_breakout:
+            matched_strategies.append("突破切線")
 
-    # 6. VCP 波動收縮型態 (價格波動與成交量一次比一次縮小)
-    cond_f = False
+    # 策略 6: VCP (波動收縮)
     if enable_vcp:
-        p_range_1 = (df['High'].iloc[-30:-20] - df['Low'].iloc[-30:-20]).mean()
-        p_range_2 = (df['High'].iloc[-20:-10] - df['Low'].iloc[-20:-10]).mean()
-        p_range_3 = (df['High'].iloc[-10:-1] - df['Low'].iloc[-10:-1]).mean()
+        # VCP 核心邏輯：近期高低點波動幅度逐漸縮小，且成交量遞減
+        h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
+        h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
+        v1 = df['Volume'].iloc[-30:-15].mean()
+        v2 = df['Volume'].iloc[-15:].mean()
         
-        v_1 = df['Volume'].iloc[-30:-20].mean()
-        v_2 = df['Volume'].iloc[-20:-10].mean()
-        v_3 = df['Volume'].iloc[-10:-1].mean()
-        
-        is_vcp_price = (p_range_3 < p_range_2) and (p_range_2 < p_range_1)
-        is_vcp_vol = (v_3 < v_2) and (v_2 < v_1)
-        cond_f = is_vcp_price and is_vcp_vol
-        if cond_f: matched_names.append("VCP收縮型態")
+        is_vcp_contraction = (h2 < h1) and (v2 < v1)
+        if is_vcp_contraction:
+            matched_strategies.append("VCP波動收縮")
 
-    active_checks = []
-    if enable_macd_25ma: active_checks.append(cond_a)
-    if enable_limit_up_pullback: active_checks.append(cond_b)
-    if enable_kd_cross: active_checks.append(cond_c)
-    if enable_tangle_shrink: active_checks.append(cond_d)
-    if enable_breakout: active_checks.append(cond_e)
-    if enable_vcp: active_checks.append(cond_f)
-
-    if not active_checks:
+    # 收集勾選的策略清單
+    total_enabled_flags = sum([enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, enable_tangle_steady, enable_breakout, enable_vcp])
+    if total_enabled_flags == 0:
         return None
 
+    # 邏輯判斷
     if logic_mode == "AND (所有勾選條件皆需成立)":
-        if not all(active_checks): return None
+        if len(matched_strategies) < total_enabled_flags: 
+            return None
     else:  # OR 模式
-        if not any(active_checks): return None
+        if len(matched_strategies) == 0: 
+            return None
 
-    logic_str = " + ".join(matched_names) if matched_names else "符合篩選"
+    combo_label = " + ".join(matched_strategies)
 
     return {
         "股票代號": sid,
         "股票名稱": row['name'],
-        "組合邏輯名稱": logic_str,
+        "組合邏輯名稱": combo_label,
         "當日漲幅(%)": round(change_pct, 2),
         "近N日漲停次數": int(limit_up_count),
         "成交量(張)": int(curr_vol / 1000),
@@ -313,7 +302,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 def run_quick_screener_parallel(
     enable_macd_25ma, macd_ma_period,
     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-    enable_kd_cross, enable_tangle_shrink, tangle_ma_period,
+    enable_kd_cross, enable_tangle_steady, tangle_ma_period,
     enable_breakout, enable_vcp,
     logic_mode, min_vol, max_growth
 ):
@@ -331,7 +320,7 @@ def run_quick_screener_parallel(
                 fetch_and_analyze_single_stock, 
                 row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-                enable_kd_cross, enable_tangle_shrink, tangle_ma_period,
+                enable_kd_cross, enable_tangle_steady, tangle_ma_period,
                 enable_breakout, enable_vcp,
                 logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
@@ -353,20 +342,20 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (6大策略自由勾選與組合)
+# 5. 左側控制台 (6大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
-    st.title("⚡ 快速潛力股挖掘 (進階模組)")
+    st.title("⚡ 快速潛力股挖掘 (策略組合)")
     st.divider()
 
     logic_mode = st.radio(
         "🔀 篩選組合邏輯", 
         ["OR (符合任一勾選條件即可)", "AND (所有勾選條件皆需成立)"],
-        index=0
+        index=0,
     )
     st.divider()
 
-    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支持", value=True)
+    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支持", value=False)
     macd_ma_period = st.number_input("MACD 搭配均線數值", min_value=1, max_value=240, value=25)
 
     enable_limit_up_pullback = st.checkbox("2. 前 N 天帶量漲停 + 量縮回踩 MA", value=False)
@@ -378,12 +367,12 @@ with st.sidebar:
 
     enable_kd_cross = st.checkbox("3. 僅顯示 KD 金叉 (日)", value=False)
 
-    enable_tangle_shrink = st.checkbox("4. 均線糾結 + 量穩價縮", value=True)
+    enable_tangle_steady = st.checkbox("4. 均線糾結 + 量穩價縮", value=True)
     tangle_ma_period = st.number_input("糾結基準長 MA 數值", min_value=1, max_value=240, value=20)
 
-    enable_breakout = st.checkbox("5. 突破切線 (獨立防追高搜尋)", value=False)
+    enable_breakout = st.checkbox("5. 突破切線 (注意追高風險)", value=False)
 
-    enable_vcp = st.checkbox("6. VCP 波動收縮型態", value=False, help="價格波動與成交量一次比一次縮小，形成最小阻力。")
+    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=True, help="價格波動和成交量一次比一次小，形成最小阻力。")
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
@@ -401,10 +390,10 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 6 大策略自由組合、VCP 圓弧底縮小標註、紅色水平突破頸線與邏輯清單追蹤。")
+st.caption("支援 6 大模組組合篩選、紅色突破頸線、棕色 VCP 圓弧底與組合邏輯標記。")
 st.divider()
 
-# 個股即時 K 線圖診斷邏輯
+# 個股即時 K 線圖診斷邏輯（整合股票名稱與代號顯示）
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
@@ -413,7 +402,7 @@ if diag_btn and diag_code:
             matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
             s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
             
-            st.success(f"📊 股票代號 {diag_code} ({s_name}) 即時 K 線圖診斷報告")
+            st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
             fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
@@ -426,7 +415,7 @@ if btn_quick_search:
         res_df = run_quick_screener_parallel(
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-            enable_kd_cross, enable_tangle_shrink, tangle_ma_period,
+            enable_kd_cross, enable_tangle_steady, tangle_ma_period,
             enable_breakout, enable_vcp,
             logic_mode, min_vol, max_growth
         )
@@ -436,7 +425,7 @@ res_table = st.session_state.screener_results
 if not res_table.empty:
     st.success(f"🎉 掃描完成！共找到 `{len(res_table)}` 檔符合條件的優質標的：")
     
-    # 表格包含組合邏輯名稱
+    # 呈現指定欄位包含「組合邏輯名稱」
     display_cols = ["股票代號", "股票名稱", "組合邏輯名稱", "當日漲幅(%)", "近N日漲停次數", "成交量(張)"]
     st.dataframe(res_table[display_cols], use_container_width=True)
 
@@ -445,17 +434,20 @@ if not res_table.empty:
     selected_stock = st.selectbox(
         "請選擇欲檢視的股票代號",
         options=res_table["股票代號"].tolist(),
-        format_func=lambda x: f"{x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]}"
+        format_func=lambda x: f"{x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]} ({res_table[res_table['股票代號']==x]['組合邏輯名稱'].values[0]})"
     )
 
     if selected_stock:
         with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
             df_k = get_finmind_data(selected_stock)
             if df_k is not None and not df_k.empty:
-                stock_name = res_table[res_table['股票代號']==selected_stock]['股票名稱'].values[0]
-                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name}", macd_ma_period)
+                r_row = res_table[res_table['股票代號']==selected_stock].iloc[0]
+                stock_name = r_row['股票名稱']
+                combo_tag = r_row['組合邏輯名稱']
+                
+                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選想組合的策略、切換篩選邏輯，並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側勾選策略模組、設定組合邏輯，並點擊「執行組合潛力股挖掘」。")
