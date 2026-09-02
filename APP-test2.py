@@ -37,7 +37,7 @@ def get_finmind_data(stock_id):
     try:
         response = requests.get(url, params=parameters, timeout=5)
         data = response.json()
-        if data.get("status") == 200 and data.get("data"):
+        if data.get("status"] == 200 and data.get("data"):
             df = pd.DataFrame(data["data"])
             df['date'] = pd.to_datetime(df['date'])
             df = df.set_index('date')
@@ -66,7 +66,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含紅線突破頸線、棕線突破切線、一年新高黑線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含斜向棕色下降趨勢突破切線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k = df_k.tail(180).copy()
     
@@ -76,12 +76,32 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     year_high = df_k['High'].max()
     recent_high = df_k['High'].iloc[-25:-1].max()
 
-    # 計算近20日下降趨勢線（以高點連線延伸至當前）
-    highs = df_k['High'].iloc[-30:]
-    x_idx = np.arange(len(highs))
-    # 簡單模擬近期下降趨勢線斜率與切點
-    slope, intercept = np.polyfit(x_idx[-15:], highs.iloc[-15:], 1)
-    trendline_y = slope * x_idx + intercept
+    # 精準尋找近期高點並擬合「下降趨勢線」（斜向棕線）
+    sub_df = df_k.iloc[-40:].copy()
+    highs_idx = []
+    # 尋找區域高點 (Local Maxima) 作為切線依據
+    high_vals = sub_df['High'].values
+    for i in range(2, len(high_vals) - 2):
+        if high_vals[i] >= high_vals[i-1] and high_vals[i] >= high_vals[i-2] and \
+           high_vals[i] >= high_vals[i+1] and high_vals[i] >= high_vals[i+2]:
+            highs_idx.append(i)
+    
+    if len(highs_idx) >= 2:
+        # 取最後兩個主要高點連線作為下降趨勢線
+        p1_idx, p2_idx = highs_idx[-2], highs_idx[-1]
+        x_vals = np.array([p1_idx, p2_idx])
+        y_vals = np.array([high_vals[p1_idx], high_vals[p2_idx]])
+        slope = (y_vals[1] - y_vals[0]) / (x_vals[1] - x_vals[0] + 1e-5)
+        # 延伸到當前
+        full_x = np.arange(len(sub_df))
+        trendline_y = y_vals[0] + slope * (full_x - x_vals[0])
+        trend_x_index = sub_df.index
+    else:
+        # 若高點不明顯，預設用近30日最高點向下斜率
+        trend_x_index = sub_df.index[-30:]
+        max_h = sub_df['High'].iloc[-30:-10].max()
+        curr_h = sub_df['High'].iloc[-1]
+        trendline_y = np.linspace(max_h, curr_h * 0.98, len(trend_x_index))
 
     # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
@@ -129,11 +149,11 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 棕線：突破切線 (突破下降趨勢線)
+    # 棕線：斜向突破切線 (下降趨勢線)
     fig.add_trace(plotly_go.Scatter(
-        x=df_k.index[-30:], y=trendline_y,
-        line=dict(color="#8B4513", width=2, dash="solid"),
-        name="棕線 (突破切線/下降趨勢)"
+        x=trend_x_index, y=trendline_y,
+        line=dict(color="#8B4513", width=2.5, dash="solid"),
+        name="棕線 (突破下降趨勢線)"
     ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
@@ -374,7 +394,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援策略 4 與 5 獨立拆分搜尋，紅線為突破頸線，棕線為突破切線。")
+st.caption("支援斜向下降趨勢線（棕線）與水平頸線（紅線）並存的智慧 K 線診斷。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
