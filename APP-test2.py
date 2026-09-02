@@ -190,7 +190,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
     recent_df = df.iloc[-60:]
     limit_up_count = (recent_df['daily_change'] >= 9.5).sum()
 
-    # 策略 1: MACD 回踩 0 軸 + 自訂 MA 支持
+    # 策略 1: MACD 回踩 0 軸 + 自訂 MA 支撐
     cond_a = True
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
@@ -305,7 +305,7 @@ with st.sidebar:
     st.title("⚡ 快速潛力股挖掘")
     st.divider()
 
-    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支持", value=True)
+    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支撐", value=True)
     macd_ma_period = st.number_input("MACD 搭配均線數值", min_value=1, max_value=240, value=25)
 
     enable_limit_up_pullback = st.checkbox("2. 前 N 天帶量漲停 + 量縮回踩 MA", value=False)
