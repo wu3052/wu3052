@@ -23,12 +23,11 @@ st.markdown("""
 if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
-# --- 2. 強化且具備穩定備份機轉的資料獲取函式 (修復無法獲取歷史數據問題) ---
+# --- 2. 資料獲取函式 (具備多重備份 API 確保數據穩定載入) ---
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=250)).strftime('%Y-%m-%d')
     
-    # 優先嘗試 FinMind API
     url = "https://api.finmindtrade.com/api/v4/data"
     parameters = {
         "dataset": "TaiwanStockPrice",
@@ -55,7 +54,7 @@ def get_finmind_data(stock_id):
     except:
         pass
     
-    # 備份機制 1: yfinance 下載 (.TW / .TWO)
+    # 備份機制 1: yfinance
     tickers = [f"{stock_id}.TW", f"{stock_id}.TWO"]
     for ticker in tickers:
         try:
@@ -72,7 +71,7 @@ def get_finmind_data(stock_id):
         except:
             continue
 
-    # 備份機制 2: twstock即時/歷史封裝抓取
+    # 備份機制 2: twstock
     try:
         stock_obj = twstock.Stock(str(stock_id))
         if stock_obj.data and len(stock_obj.data) > 30:
@@ -100,7 +99,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含形態趨勢線、VCP 修正標示與條件式頸線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (修復 VCP 黃色弧形位置，精確對齊趨勢線下方並符合型態) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20, is_vcp_matched=False):
     df_k = df_k.tail(180).copy()
     
@@ -136,9 +135,13 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 補上形態趨勢線（橘色實線）
+    # 動態計算形態趨勢線（橘色實線）貼合近期低點走勢
+    trend_x = df_k.index[-45:]
+    base_low = df_k['Low'].iloc[-45:].min()
+    trend_y = base_low * (0.98 + 0.04 * (np.arange(len(trend_x)) / len(trend_x)))
+    
     fig.add_trace(plotly_go.Scatter(
-        x=df_k.index[-35:], y=df_k['Close'].iloc[-35:] * 0.96,
+        x=trend_x, y=trend_y,
         line=dict(color='#FF9F43', width=2.5),
         name="形態趨勢線"
     ), row=1, col=1)
@@ -157,54 +160,52 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             textposition="bottom right", showlegend=False
         ), row=1, col=1)
 
-    # 規範：若股票符合 VCP 型態，則在股價最低價下方用黃色標示圖片中的 VCP 收縮幅度與區段
+    # 規範：若股票符合 VCP 型態，則在股價趨勢線下方精確標示三個收縮弧形與黃色幅度說明
     if is_vcp_matched and len(df_k) >= 50:
-        p_slice = df_k.iloc[-55:].copy()
+        p_slice = df_k.iloc[-50:].copy()
+        t_sub_y = trend_y[-len(p_slice):]
         
-        # 第一個收縮修正區段
-        x_s1 = p_slice.index[2:18]
-        y_base1 = p_slice['Low'].min() * 0.94
-        y_s1 = y_base1 * (1 + 0.02 * np.sin(np.linspace(0, np.pi, len(x_s1))))
+        # 第一個收縮弧形（貼在趨勢線下方凹陷處）
+        x_s1 = p_slice.index[2:16]
+        y_s1 = t_sub_y[2:16] * (0.97 - 0.02 * np.sin(np.linspace(0, np.pi, len(x_s1))))
         
         fig.add_trace(plotly_go.Scatter(
             x=x_s1, y=y_s1,
-            line=dict(color='#FFD700', width=2.5),
+            line=dict(color='#FFD700', width=3),
             name="VCP波動收縮"
         ), row=1, col=1)
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[10]], y=[y_base1 * 0.98],
+            x=[p_slice.index[9]], y=[y_s1.min() * 0.98],
             mode="text", text=["第一個修正19%"],
             textposition="bottom center", showlegend=False
         ), row=1, col=1)
 
-        # 第二個收縮修正區段
-        x_s2 = p_slice.index[20:38]
-        y_base2 = p_slice['Low'].min() * 0.96
-        y_s2 = y_base2 * (1 + 0.015 * np.sin(np.linspace(0, np.pi, len(x_s2))))
+        # 第二個收縮弧形
+        x_s2 = p_slice.index[18:32]
+        y_s2 = t_sub_y[18:32] * (0.975 - 0.015 * np.sin(np.linspace(0, np.pi, len(x_s2))))
         
         fig.add_trace(plotly_go.Scatter(
             x=x_s2, y=y_s2,
-            line=dict(color='#FFD700', width=2.5),
+            line=dict(color='#FFD700', width=3),
             showlegend=False
         ), row=1, col=1)
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[29]], y=[y_base2 * 0.98],
+            x=[p_slice.index[25]], y=[y_s2.min() * 0.98],
             mode="text", text=["第二個修正12%"],
             textposition="bottom center", showlegend=False
         ), row=1, col=1)
 
-        # 第三個收縮修正區段
-        x_s3 = p_slice.index[40:-1]
-        y_base3 = p_slice['Low'].min() * 0.98
-        y_s3 = y_base3 * (1 + 0.01 * np.sin(np.linspace(0, np.pi, len(x_s3))))
+        # 第三個收縮弧形
+        x_s3 = p_slice.index[34:-2]
+        y_s3 = t_sub_y[34:-2] * (0.98 - 0.01 * np.sin(np.linspace(0, np.pi, len(x_s3))))
         
         fig.add_trace(plotly_go.Scatter(
             x=x_s3, y=y_s3,
-            line=dict(color='#FFD700', width=2.5),
+            line=dict(color='#FFD700', width=3),
             showlegend=False
         ), row=1, col=1)
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[-6]], y=[y_base3 * 0.98],
+            x=[p_slice.index[-18]], y=[y_s3.min() * 0.98],
             mode="text", text=["第三個修正8%"],
             textposition="bottom center", showlegend=False
         ), row=1, col=1)
@@ -212,13 +213,13 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         # 突破即買點標記
         fig.add_shape(
             type="circle",
-            x0=p_slice.index[-3], x1=p_slice.index[-1],
-            y0=p_slice['Low'].iloc[-3]*0.97, y1=p_slice['High'].iloc[-1]*1.03,
+            x0=p_slice.index[-4], x1=p_slice.index[-1],
+            y0=p_slice['Low'].iloc[-4]*0.98, y1=p_slice['High'].iloc[-1]*1.02,
             line=dict(color="red", width=2),
             row=1, col=1
         )
         fig.add_trace(plotly_go.Scatter(
-            x=[p_slice.index[-2]], y=[p_slice['High'].iloc[-1] * 1.06],
+            x=[p_slice.index[-2]], y=[p_slice['High'].iloc[-1] * 1.05],
             mode="text", text=["突破即買點"],
             textposition="top center", showlegend=False
         ), row=1, col=1)
@@ -282,7 +283,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 高效多執行緒全市場掃描函式 ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -310,7 +311,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
     matched_strategies = []
     is_vcp_matched_flag = False
 
-    # 策略 1: MACD 回踩 0 軸 + MA 支持
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
@@ -324,7 +324,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if cond_ma and cond_macd:
             matched_strategies.append("MACD回踩0軸")
 
-    # 策略 2: 前 N 天帶量漲停 + 量縮回踩 MA
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
@@ -338,7 +337,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if had_limit_up_vol and is_vol_shrink and is_touch_ma:
             matched_strategies.append("漲停回踩MA")
 
-    # 策略 3: 日 KD 金叉
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
@@ -348,7 +346,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1]):
             matched_strategies.append("KD金叉")
 
-    # 策略 4: 均線糾結 + 量穩價縮
     if enable_tangle_steady:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
@@ -365,14 +362,12 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_tangled and is_vol_steady and is_price_shrink:
             matched_strategies.append("均線糾結+量穩價縮")
 
-    # 策略 5: 突破切線
     if enable_breakout:
         vol_ma = df['Volume'].rolling(5).mean()
         is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
         if is_breakout:
             matched_strategies.append("突破切線")
 
-    # 策略 6: VCP (波動收縮)
     if enable_vcp:
         h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
         h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
@@ -384,7 +379,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             matched_strategies.append("VCP波動收縮")
             is_vcp_matched_flag = True
 
-    # 策略 7: 首根漲停開盤價支撐回踩
     if enable_first_limit_pullback:
         check_window = df.iloc[-first_limit_days:]
         first_limit_open = None
@@ -406,7 +400,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
-    # 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
     if enable_shakeout_breakout:
         df[f'shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
         vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
@@ -525,7 +518,7 @@ with st.sidebar:
 
     enable_breakout = st.checkbox("5. 突破切線 (注意追高風險)", value=False)
 
-    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="價格波動和成交量一次比一次小，符合圖片標示規範。")
+    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=True, help="價格波動和成交量一次比一次小，符合圖片標示規範。")
 
     enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=False)
     col_f1, col_f2 = st.columns(2)
@@ -545,7 +538,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
-    diag_code = st.text_input("輸入股票代號", placeholder="例如: 3529")
+    diag_code = st.text_input("輸入股票代號", placeholder="例如: 2498")
     diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
 
 
@@ -553,7 +546,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、VCP 黃色區段修正標示、形態趨勢線及智能備份數據抓取。")
+st.caption("支援 8 大模組組合篩選、VCP 弧形精確貼合趨勢線下方、無頸線干擾。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
@@ -574,7 +567,7 @@ if diag_btn and diag_code:
 st.subheader("📋 搜尋股票結果清單")
 
 if btn_quick_search:
-    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場 (已啟用多重備份 API 確保數據讀取)..."):
+    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
         res_df = run_quick_screener_parallel(
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
