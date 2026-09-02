@@ -66,12 +66,13 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色VCP圓弧底與一年新高黑線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色VCP圓弧底、首根漲停開盤價與一年新高黑線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k = df_k.tail(180).copy()
     
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
+    df_k['daily_change'] = df_k['Close'].pct_change() * 100
     
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
@@ -122,7 +123,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 棕色 VCP 下跌能量逐漸縮小的圓弧底輔助線 (以近30日低點與波動收縮模擬圓弧底)
+    # 棕色 VCP 下跌能量逐漸縮小的圓弧底輔助線
     vcp_x = df_k.index[-30:]
     vcp_y = df_k['Low'].iloc[-30:] * 0.97
     fig.add_trace(plotly_go.Scatter(
@@ -130,6 +131,24 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         line=dict(color='#A0522D', width=2, dash='dot'),
         name="VCP 波動收縮圓弧底"
     ), row=1, col=1)
+
+    # 標示起漲第一根漲停的開盤價（藍色虛線）
+    recent_60_plot = df_k.tail(60)
+    lu_mask_plot = recent_60_plot['daily_change'] >= 9.5
+    if lu_mask_plot.any():
+        first_lu_idx_plot = lu_mask_plot.idxmax()
+        first_lu_open_val = df_k.loc[first_lu_idx_plot, 'Open']
+        fig.add_shape(
+            type="line", x0=df_k.index[0], x1=df_k.index[-1],
+            y0=first_lu_open_val, y1=first_lu_open_val,
+            line=dict(color="#1E90FF", width=1.5, dash="dashdot"),
+            row=1, col=1
+        )
+        fig.add_trace(plotly_go.Scatter(
+            x=[df_k.index[-1]], y=[first_lu_open_val],
+            mode="text", text=[f" 首根漲停開盤價: {first_lu_open_val:.2f}"],
+            textposition="top right", showlegend=False
+        ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
     fig.add_shape(
@@ -174,11 +193,11 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 6 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援 7 大策略獨立/組合判斷與名稱標記) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-                                    enable_breakout, enable_vcp,
+                                    enable_breakout, enable_vcp, enable_first_limit_open_support,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
@@ -264,7 +283,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 
     # 策略 6: VCP (波動收縮)
     if enable_vcp:
-        # VCP 核心邏輯：近期高低點波動幅度逐漸縮小，且成交量遞減
         h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
         h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
         v1 = df['Volume'].iloc[-30:-15].mean()
@@ -274,8 +292,18 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_vcp_contraction:
             matched_strategies.append("VCP波動收縮")
 
+    # 策略 7: 首根漲停開盤價支撐
+    if enable_first_limit_open_support:
+        limit_up_mask = recent_df['daily_change'] >= 9.5
+        if limit_up_mask.any():
+            first_lu_idx = limit_up_mask.idxmax()
+            first_lu_open = df.loc[first_lu_idx, 'Open']
+            is_supported = (df['Low'].iloc[-1] <= first_lu_open * 1.015) and (curr_price >= first_lu_open * 0.985)
+            if is_supported:
+                matched_strategies.append("首根漲停開盤價支撐")
+
     # 收集勾選的策略清單
-    total_enabled_flags = sum([enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, enable_tangle_steady, enable_breakout, enable_vcp])
+    total_enabled_flags = sum([enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_open_support])
     if total_enabled_flags == 0:
         return None
 
@@ -303,7 +331,7 @@ def run_quick_screener_parallel(
     enable_macd_25ma, macd_ma_period,
     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-    enable_breakout, enable_vcp,
+    enable_breakout, enable_vcp, enable_first_limit_open_support,
     logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
@@ -321,7 +349,7 @@ def run_quick_screener_parallel(
                 row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                 enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-                enable_breakout, enable_vcp,
+                enable_breakout, enable_vcp, enable_first_limit_open_support,
                 logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
@@ -342,7 +370,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (6大策略模組與組合選擇)
+# 5. 左側控制台 (7大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
@@ -374,6 +402,8 @@ with st.sidebar:
 
     enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=True, help="價格波動和成交量一次比一次小，形成最小阻力。")
 
+    enable_first_limit_open_support = st.checkbox("7. 首根漲停開盤價支撐", value=False, help="回測近60日第一根漲停板的開盤價支撐位。")
+
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
     max_growth = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5)
@@ -390,10 +420,10 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 6 大模組組合篩選、紅色突破頸線、棕色 VCP 圓弧底與組合邏輯標記。")
+st.caption("支援 7 大模組組合篩選、紅色突破頸線、棕色 VCP 圓弧底、首根漲停開盤價支撐線與組合邏輯標記。")
 st.divider()
 
-# 個股即時 K 線圖診斷邏輯（整合股票名稱與代號顯示）
+# 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
@@ -416,7 +446,7 @@ if btn_quick_search:
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
             enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-            enable_breakout, enable_vcp,
+            enable_breakout, enable_vcp, enable_first_limit_open_support,
             logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
@@ -425,7 +455,6 @@ res_table = st.session_state.screener_results
 if not res_table.empty:
     st.success(f"🎉 掃描完成！共找到 `{len(res_table)}` 檔符合條件的優質標的：")
     
-    # 呈現指定欄位包含「組合邏輯名稱」
     display_cols = ["股票代號", "股票名稱", "組合邏輯名稱", "當日漲幅(%)", "近N日漲停次數", "成交量(張)"]
     st.dataframe(res_table[display_cols], use_container_width=True)
 
