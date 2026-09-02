@@ -350,7 +350,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         t_ma = df['target_ma'].iloc[-1]
         prev_t_ma = df['target_ma'].iloc[-2] if len(df) > 1 else t_ma
         
-        # 判定近期曾跌破前波低點或量縮洗盤，且今天出量站上 MA 第一天
         recent_low_break = (df['Low'].iloc[-20:-1] < df['Low'].iloc[-40:-20].min()).any()
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
         is_volume_out = curr_vol > vol_ma5 * 1.3
@@ -359,7 +358,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if recent_low_break and is_volume_out and crossed_above_ma:
             matched_strategies.append(f"量縮洗盤後出量站上MA{shakeout_ma_val}")
 
-    # 收集勾選的策略清單
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
         enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback,
@@ -368,11 +366,10 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
     if total_enabled_flags == 0:
         return None
 
-    # 邏輯判斷
     if logic_mode == "AND (所有勾選條件皆需成立)":
         if len(matched_strategies) < total_enabled_flags: 
             return None
-    else:  # OR 模式
+    else:  
         if len(matched_strategies) == 0: 
             return None
 
@@ -405,7 +402,8 @@ def run_quick_screener_parallel(
     status_text = st.sidebar.empty()
     
     completed = 0
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    # 將 max_workers 從 10 調降至 3，防止觸發 Streamlit Cloud 容器的執行緒上限錯誤
+    with ThreadPoolExecutor(max_workers=3) as executor:
         futures = {
             executor.submit(
                 fetch_and_analyze_single_stock, 
@@ -496,7 +494,6 @@ st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.caption("支援 8 大模組組合篩選、洗盤後出量站上MA第一天、精準VCP標示、紅色突破頸線與組合邏輯標記。")
 st.divider()
 
-# 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
