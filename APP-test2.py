@@ -66,7 +66,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含紅線突破頸線、VCP棕色圓弧線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (已移除棕線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k = df_k.tail(180).copy()
     
@@ -75,16 +75,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     
     year_high = df_k['High'].max()
     recent_high = df_k['High'].iloc[-25:-1].max()
-
-    # 計算 VCP 圓弧收斂軌跡（以二次多項式擬合近期收盤價形成流暢的棕色圓弧收斂線）
-    sub_df = df_k.iloc[-45:].copy()
-    x_idx = np.arange(len(sub_df))
-    y_close = sub_df['Close'].values
-    # 利用二次曲線擬合呈現圓弧收斂軌跡 (VCP 波動收縮曲線)
-    poly_coeff = np.polyfit(x_idx, y_close, 2)
-    vcp_curve_y = poly_coeff[0] * (x_idx ** 2) + poly_coeff[1] * x_idx + poly_coeff[2]
-    # 微調讓弧度自然上揚或收斂
-    vcp_curve_y = vcp_curve_y * 0.99 + y_close * 0.01
 
     # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
@@ -112,6 +102,13 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
+    # 形態趨勢線（橘色實線）
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
+        line=dict(color='#FF9F43', width=2),
+        name="形態趨勢線"
+    ), row=1, col=1)
+
     # 紅色突破頸線 (水平實線)
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
@@ -123,13 +120,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         x=[df_k.index[-1]], y=[recent_high],
         mode="text", text=[f" 紅色突破頸線: {recent_high:.2f}"],
         textposition="bottom right", showlegend=False
-    ), row=1, col=1)
-
-    # VCP 棕色圓弧線 (波動收縮圓弧線)
-    fig.add_trace(plotly_go.Scatter(
-        x=sub_df.index, y=vcp_curve_y,
-        line=dict(color="#8B4513", width=2.5, dash="solid"),
-        name="VCP 圓弧收斂線 (棕色)"
     ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
@@ -370,7 +360,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 VCP 棕色圓弧收斂線與紅色水平突破頸線並存的智慧 K 線診斷。")
+st.caption("已移除斜向棕線，圖面保留紫色均線與紅色水平突破頸線。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
