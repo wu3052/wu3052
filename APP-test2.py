@@ -37,7 +37,7 @@ def get_finmind_data(stock_id):
     try:
         response = requests.get(url, params=parameters, timeout=5)
         data = response.json()
-        if data.get("status"] == 200 and data.get("data"):
+        if data.get("status") == 200 and data.get("data"):
             df = pd.DataFrame(data["data"])
             df['date'] = pd.to_datetime(df['date'])
             df = df.set_index('date')
