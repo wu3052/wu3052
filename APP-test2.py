@@ -66,7 +66,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含正確「頭頭低」斜向棕色下降趨勢線) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含紅線突破頸線、VCP棕色圓弧線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k = df_k.tail(180).copy()
     
@@ -76,41 +76,15 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     year_high = df_k['High'].max()
     recent_high = df_k['High'].iloc[-25:-1].max()
 
-    # 精準尋找多個波段高點，並篩選出「頭頭低」的下降趨勢線（由左上至右下斜線）
-    sub_df = df_k.tail(100).copy()
-    highs = sub_df['High'].values
-    
-    peak_indices = []
-    for i in range(4, len(highs) - 4):
-        if highs[i] == max(highs[i-4:i+5]):
-            peak_indices.append(i)
-            
-    best_p1, best_p2 = None, None
-    for i in range(len(peak_indices)):
-        for j in range(i + 1, len(peak_indices)):
-            idx1, idx2 = peak_indices[i], peak_indices[j]
-            # 確保頭頭低 (前高大於後高) 且間隔合理
-            if highs[idx1] > highs[idx2] and (idx2 - idx1) >= 5:
-                best_p1, best_p2 = idx1, idx2
-
-    if best_p1 is not None and best_p2 is not None:
-        x1, y1 = best_p1, highs[best_p1]
-        x2, y2 = best_p2, highs[best_p2]
-        slope = (y2 - y1) / (x2 - x1)
-        full_x = np.arange(len(sub_df))
-        trendline_y = y1 + slope * (full_x - x1)
-        trend_x_index = sub_df.index
-    else:
-        # 備用方案：若高點不夠明顯，取區間前段最高點與後段次高點連線
-        max_idx = int(np.argmax(highs[:len(highs)-15])) if len(highs) > 15 else 0
-        end_idx = len(highs) - 1
-        x1, y1 = max_idx, highs[max_idx]
-        y2 = highs[end_idx] * 0.95
-        if y1 <= y2: y2 = y1 * 0.85
-        slope = (y2 - y1) / max(1, (end_idx - x1))
-        full_x = np.arange(len(sub_df))
-        trendline_y = y1 + slope * (full_x - x1)
-        trend_x_index = sub_df.index
+    # 計算 VCP 圓弧收斂軌跡（以二次多項式擬合近期收盤價形成流暢的棕色圓弧收斂線）
+    sub_df = df_k.iloc[-45:].copy()
+    x_idx = np.arange(len(sub_df))
+    y_close = sub_df['Close'].values
+    # 利用二次曲線擬合呈現圓弧收斂軌跡 (VCP 波動收縮曲線)
+    poly_coeff = np.polyfit(x_idx, y_close, 2)
+    vcp_curve_y = poly_coeff[0] * (x_idx ** 2) + poly_coeff[1] * x_idx + poly_coeff[2]
+    # 微調讓弧度自然上揚或收斂
+    vcp_curve_y = vcp_curve_y * 0.99 + y_close * 0.01
 
     # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
@@ -138,13 +112,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 形態趨勢線（橘色實線）
-    fig.add_trace(plotly_go.Scatter(
-        x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
-        line=dict(color='#FF9F43', width=2),
-        name="形態趨勢線"
-    ), row=1, col=1)
-
     # 紅色突破頸線 (水平實線)
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
@@ -158,11 +125,11 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 棕線：斜向突破切線 (由左上至右下的頭頭低下降趨勢線)
+    # VCP 棕色圓弧線 (波動收縮圓弧線)
     fig.add_trace(plotly_go.Scatter(
-        x=trend_x_index, y=trendline_y,
+        x=sub_df.index, y=vcp_curve_y,
         line=dict(color="#8B4513", width=2.5, dash="solid"),
-        name="棕線 (突破下降趨勢線)"
+        name="VCP 圓弧收斂線 (棕色)"
     ), row=1, col=1)
 
     # 股價創一年新高處劃一條水平線 (黑線)
@@ -403,7 +370,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("具備正確「頭頭低」斜向下降趨勢線（棕線）與水平頸線（紅線）並存的 K 線診斷。")
+st.caption("支援 VCP 棕色圓弧收斂線與紅色水平突破頸線並存的智慧 K 線診斷。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
