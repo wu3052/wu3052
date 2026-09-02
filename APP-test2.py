@@ -382,43 +382,36 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
-    # 策略 8: 量縮洗盤後出量站上 MA 第一天
-    if enable_washout_breakout:
-        df['washout_ma'] = df['Close'].rolling(washout_ma_period).mean()
-        ma_val = df['washout_ma'].iloc[-1]
+    # 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
+    if enable_shakeout_breakout:
+        df[f'shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
+        vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
+        is_volume_expand = curr_vol > vol_ma_20 * 1.3
         
-        # 檢查今天是否為第一天站上該 MA (昨天收盤 <= MA，今天收盤 > MA)
-        is_first_day_above = (curr_price > ma_val) and (df['Close'].iloc[-2] <= df['washout_ma'].iloc[-2])
+        recent_vol_slice = df['Volume'].iloc[-15:-1]
+        is_prior_shrink = (recent_vol_slice.min() < vol_ma_20 * 0.8)
         
-        # 檢查近期是否有量縮洗盤過程 (例如前 5~20 天出現過成交量萎縮或跌破前波低點後量縮)
-        recent_vol_mean = df['Volume'].iloc[-15:-1].mean()
-        vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-        is_after_washout = (recent_vol_mean < vol_ma5 * 1.2)
+        is_first_day_above_ma = (df['Close'].iloc[-1] >= df[f'shk_ma'].iloc[-1]) and (df['Close'].iloc[-2] <= df[f'shk_ma'].iloc[-2])
         
-        # 今天出量 (成交量放大超過 5 日均量一定倍數)
-        is_vol_expand = curr_vol > vol_ma5 * washout_vol_mult
-        
-        if is_first_day_above and is_after_washout and is_vol_expand:
-            matched_strategies.append(f"量縮洗盤後出量站上{washout_ma_period}MA")
+        if is_prior_shrink and is_volume_expand and is_first_day_above_ma:
+            matched_strategies.append(f"量縮洗盤後出量站上MA{shakeout_ma_val}")
 
-    # 收集勾選的策略清單
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
         enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback,
-        enable_washout_breakout
+        enable_shakeout_breakout
     ])
     if total_enabled_flags == 0:
         return None
 
-    # 邏輯判斷
     if logic_mode == "AND (所有勾選條件皆需成立)":
         if len(matched_strategies) < total_enabled_flags: 
             return None
-    else:  # OR 模式
+    else:  
         if len(matched_strategies) == 0: 
             return None
 
-combo_label = " + ".join(matched_strategies)
+    combo_label = " + ".join(matched_strategies)
 
     return {
         "股票代號": sid,
