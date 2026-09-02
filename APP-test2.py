@@ -66,37 +66,31 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- Helper: 檢測是否符合 VCP 型態 (計算三段修正與波動收縮) ---
+# --- Helper: 檢測是否符合 VCP 型態 ---
 def check_vcp_pattern(df):
-    if len(df) < 50:
-        return False, None, None, None, None, None
+    if len(df) < 40:
+        return False, None, None
+    # 分成三段近期波動來檢查收縮 (浪潮 1, 2, 3)
+    p3 = df.iloc[-30:-20]
+    p2 = df.iloc[-20:-10]
+    p1 = df.iloc[-10:]
     
-    # 將近期資料劃分為三段波動收縮區間 (對應附圖中的三個修正波)
-    p3 = df.iloc[-45:-30] # 第一段較大修正
-    p2 = df.iloc[-30:-15] # 第二段中等修正
-    p1 = df.iloc[-15:]    # 第三段輕微收斂修正
+    h3 = p3['High'].max() - p3['Low'].min()
+    h2 = p2['High'].max() - p2['Low'].min()
+    h1 = p1['High'].max() - p1['Low'].min()
     
-    h3_top = p3['High'].max()
-    l3_bot = p3['Low'].min()
-    drop3 = (h3_top - l3_bot) / h3_top * 100
+    v3 = p3['Volume'].mean()
+    v2 = p2['Volume'].mean()
+    v1 = p1['Volume'].mean()
     
-    h2_top = p2['High'].max()
-    l2_bot = p2['Low'].min()
-    drop2 = (h2_top - l2_bot) / h2_top * 100
-    
-    h1_top = p1['High'].max()
-    l1_bot = p1['Low'].min()
-    drop1 = (h1_top - l1_bot) / h1_top * 100
-    
-    # 檢查是否呈現波動收幅 (drop3 > drop2 > drop1，或者幅度遞減)
-    is_contracting = (drop3 >= drop2) and (drop2 >= drop1) or (drop3 > drop1 and drop2 < drop3)
-    if is_contracting or len(df) >= 40:
+    # 波動幅度與成交量逐漸縮小
+    is_contracting = (h2 <= h3 * 1.1) and (h1 <= h2 * 1.1) and (v2 < v3 * 1.1) and (v1 < v2 * 1.1)
+    if is_contracting:
         t3_idx = p3['Low'].idxmin()
         t2_idx = p2['Low'].idxmin()
         t1_idx = p1['Low'].idxmin()
-        return True, [t3_idx, t2_idx, t1_idx], [l3_bot, l2_bot, l1_bot], [round(drop3, 0), round(drop2, 0), round(drop1, 0)]
-    
-    return False, None, None, None
+        return True, [t3_idx, t2_idx, t1_idx], [p3['Low'].min(), p2['Low'].min(), p1['Low'].min()]
+    return False, None, None
 
 # --- 3. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
@@ -134,72 +128,12 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # VCP 價格波動率收縮型態標示 (仿照附圖：三段由左至右的收斂弧線與修正幅度說明、頂部壓力線與底部上升趨勢線)
-    is_vcp_matched, vcp_indices, vcp_lows, vcp_drops = check_vcp_pattern(df_k)
-    if vcp_indices is not None and len(vcp_indices) == 3:
-        # 頂部水平壓力線 (紅色實線)
-        resistance_y = df_k['High'].iloc[-45:].max()
-        fig.add_shape(
-            type="line", x0=df_k.index[-45], x1=df_k.index[-1],
-            y0=resistance_y, y1=resistance_y,
-            line=dict(color="#D32F2F", width=2),
-            row=1, col=1
-        )
-        
-        # 底部黃色上升支撐趨勢線 (連結三個逐漸墊高的波谷)
-        fig.add_trace(plotly_go.Scatter(
-            x=vcp_indices, y=vcp_lows,
-            mode="lines+markers",
-            line=dict(color='#FFA726', width=2.5),
-            marker=dict(size=6, color='#FFA726'),
-            name="VCP底部收斂線"
-        ), row=1, col=1)
-
-        # 模擬附圖中的三段流暢黃色收斂弧線 (波谷 1、波谷 2、波谷 3)
-        # 第一段弧線
-        sub_df1 = df_k.loc[df_k.index[max(0, df_k.index.get_loc(vcp_indices[0])-10)]:vcp_indices[0]]
-        if len(sub_df1) > 1:
-            fig.add_trace(plotly_go.Scatter(
-                x=sub_df1.index, y=sub_df1['Low'] * 0.98,
-                mode="lines", line=dict(color='#FFA726', width=2),
-                showlegend=False
-            ), row=1, col=1)
-
-        # 第二段弧線
-        sub_df2 = df_k.loc[vcp_indices[0]:vcp_indices[1]]
-        if len(sub_df2) > 1:
-            fig.add_trace(plotly_go.Scatter(
-                x=sub_df2.index, y=sub_df2['Low'] * 0.98,
-                mode="lines", line=dict(color='#FFA726', width=2),
-                showlegend=False
-            ), row=1, col=1)
-
-        # 第三段弧線
-        sub_df3 = df_k.loc[vcp_indices[1]:vcp_indices[2]]
-        if len(sub_df3) > 1:
-            fig.add_trace(plotly_go.Scatter(
-                x=sub_df3.index, y=sub_df3['Low'] * 0.98,
-                mode="lines", line=dict(color='#FFA726', width=2),
-                showlegend=False
-            ), row=1, col=1)
-
-        # 加上對應的文字標示 (如：第一個修正、第二個修正、第三個修正)
-        drop_texts = [f"第一個修正 {vcp_drops[0]}%", f"第二個修正 {vcp_drops[1]}%", f"第三個修正 {vcp_drops[2]}%"]
-        for idx, text_val in zip(vcp_indices, drop_texts):
-            fig.add_trace(plotly_go.Scatter(
-                x=[idx], y=[df_k.loc[idx, 'Low'] * 0.94],
-                mode="text", text=[text_val],
-                textfont=dict(color="#B71C1C", size=11, family="sans-serif"),
-                showlegend=False
-            ), row=1, col=1)
-
-        # 頂部大字標題與突破買點標示
-        fig.add_trace(plotly_go.Scatter(
-            x=[df_k.index[-25]], y=[resistance_y * 1.05],
-            mode="text", text=["<b>VCP價格波動率收縮型態</b>"],
-            textfont=dict(size=14, color="#000000"),
-            showlegend=False
-        ), row=1, col=1)
+    # 形態趨勢線（橘色實線）
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index[-20:], y=df_k['Close'].iloc[-20:] * 0.98,
+        line=dict(color='#FF9F43', width=2),
+        name="形態趨勢線"
+    ), row=1, col=1)
 
     # 紅色突破頸線 (水平實線)
     fig.add_shape(
@@ -213,6 +147,48 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         mode="text", text=[f" 突破頸線: {recent_neckline:.2f}"],
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
+
+    # VCP 型態：仿照附圖以藍色由左至右出現波動收幅的弧線（多段二次貝茲曲線或滑順收斂弧線模擬）
+    is_vcp_matched, vcp_indices, vcp_lows = check_vcp_pattern(df_k)
+    if is_vcp_matched and vcp_indices is not None and len(vcp_indices) == 3:
+        # 建立由左至右、幅度漸漸變小的收斂波型點位，模擬附圖中經典的 VCP 弧形波動收縮
+        # 波谷 1 (大弧形) -> 反彈高點 -> 波谷 2 (中弧形) -> 反彈高點 -> 波谷 3 (小弧形)
+        t_start = df_k.index[-35] if len(df_k) >= 35 else df_k.index[0]
+        t_end = df_k.index[-1]
+        
+        # 繪製由左至右收斂的藍色波動收幅曲線（使用多個節點模擬弧形）
+        # 浪潮 1
+        arc_x1 = pd.date_range(start=df_k.index[-32], end=vcp_indices[0], periods=5)
+        base_y1 = vcp_lows[0]
+        arc_y1 = [base_y1 * 1.08, base_y1 * 1.02, base_y1, base_y1 * 1.03, base_y1 * 1.08]
+        
+        # 浪潮 2
+        arc_x2 = pd.date_range(start=vcp_indices[0], end=vcp_indices[1], periods=5)
+        base_y2 = vcp_lows[1]
+        arc_y2 = [base_y2 * 1.06, base_y2 * 1.01, base_y2, base_y2 * 1.02, base_y2 * 1.06]
+
+        # 浪潮 3
+        arc_x3 = pd.date_range(start=vcp_indices[1], end=vcp_indices[2], periods=5)
+        base_y3 = vcp_lows[2]
+        arc_y3 = [base_y3 * 1.04, base_y3 * 1.005, base_y3, base_y3 * 1.01, base_y3 * 1.04]
+
+        combined_x = list(arc_x1) + list(arc_x2)[1:] + list(arc_x3)[1:]
+        combined_y = list(arc_y1) + list(arc_y2)[1:] + list(arc_y3)[1:]
+
+        fig.add_trace(plotly_go.Scatter(
+            x=combined_x, y=combined_y,
+            mode="lines",
+            line=dict(color='#2196F3', width=3),
+            name="VCP波動收縮弧線"
+        ), row=1, col=1)
+
+        # 上方收斂趨勢線（模擬附圖中的黑色斜壓力線與下緣支撐線）
+        fig.add_shape(
+            type="line", x0=df_k.index[-32], x1=df_k.index[-2],
+            y0=df_k['High'].iloc[-32:].max() * 0.99, y1=df_k['High'].iloc[-10:].max() * 0.98,
+            line=dict(color="#000000", width=2),
+            row=1, col=1
+        )
 
     # 若需要標示出前N天出現的首根漲停開盤價
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
@@ -286,7 +262,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略，安全控制執行緒以防堆疊溢位或執行緒上限) ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -378,7 +354,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 
     # 策略 6: VCP (波動收縮)
     if enable_vcp:
-        is_vcp_matched, _, _, _ = check_vcp_pattern(df)
+        is_vcp_matched, _, _ = check_vcp_pattern(df)
         if is_vcp_matched:
             matched_strategies.append("VCP波動收縮")
 
@@ -464,12 +440,9 @@ def run_quick_screener_parallel(
     status_text = st.sidebar.empty()
     
     completed = 0
-    # 使用保守的 max_workers=2 以防在雲端環境觸發執行緒上限 (RuntimeError: can't start new thread)
-    max_workers = 2
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for _, row in df_stocks.iterrows():
-            f = executor.submit(
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(
                 fetch_and_analyze_single_stock, 
                 row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
@@ -478,20 +451,18 @@ def run_quick_screener_parallel(
                 enable_first_limit_pullback, first_limit_days, first_limit_range,
                 enable_shrink_wash_break, shrink_ma_period,
                 logic_mode, min_vol, max_growth
-            )
-            futures.append((f, row))
+            ): row for _, row in df_stocks.iterrows()
+        }
         
-        for future, row in futures:
+        for future in as_completed(futures):
             completed += 1
             if completed % 15 == 0 or completed == total_count:
                 progress_bar.progress(min(completed / total_count, 1.0))
                 status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
-            try:
-                res = future.result()
-                if res:
-                    found_targets.append(res)
-            except Exception:
-                pass
+            
+            res = future.result()
+            if res:
+                found_targets.append(res)
                 
     progress_bar.empty()
     status_text.empty()
@@ -557,7 +528,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、量縮洗盤出量站上 MA、仿照附圖的經典三段修正 VCP 波動收縮弧線與頂部壓力線。")
+st.caption("支援 8 大模組組合篩選、量縮洗盤出量站上 MA、仿照附圖的經典藍色收斂 VCP 波動弧線與組合邏輯標記。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
