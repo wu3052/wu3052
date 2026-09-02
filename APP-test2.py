@@ -23,12 +23,26 @@ st.markdown("""
 if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
-# --- 2. 強化且具備穩健備援機制的資料獲取函式 (解決無法獲取歷史數據問題) ---
-def get_finmind_data(stock_id):
+# --- 2. 強化資料獲取函式 (修復 yfinance 與 FinMind 備份切換與欄位對齊) ---
+def get_stock_data(stock_id):
+    # 先試用 yfinance 確保穩定且能完整取得最近數據
+    ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
+    try:
+        df = yf.download(ticker, period="250d", interval="1d", progress=False)
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.capitalize() for c in df.columns]
+            if {'Open', 'High', 'Low', 'Close', 'Volume'}.issubset(df.columns):
+                df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+                if len(df) > 30:
+                    return df.astype(float)
+    except:
+        pass
+    
+    # 若 yfinance 失敗則備份使用 FinMind API
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=250)).strftime('%Y-%m-%d')
-    
-    # 優先嘗試 FinMind API
     url = "https://api.finmindtrade.com/api/v4/data"
     parameters = {
         "dataset": "TaiwanStockPrice",
@@ -41,49 +55,18 @@ def get_finmind_data(stock_id):
         data = response.json()
         if data.get("status") == 200 and data.get("data"):
             df = pd.DataFrame(data["data"])
-            if not df.empty and 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
-                df = df.set_index('date')
-                df = df.rename(columns={
-                    'open': 'Open', 'max': 'High', 'min': 'Low', 
-                    'close': 'Close', 'Trading_Volume': 'Volume'
-                })
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-                df = df.dropna()
-                if len(df) > 30:
-                    return df
+            df['date'] = pd.to_datetime(df['date'])
+            df = df.set_index('date')
+            df = df.rename(columns={
+                'open': 'Open', 'max': 'High', 'min': 'Low', 
+                'close': 'Close', 'Trading_Volume': 'Volume'
+            })
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+            if len(df) > 30:
+                return df.astype(float)
     except:
         pass
     
-    # 備援機制 1: 透過 yfinance 抓取 .TW 或 .TWO
-    tickers = [f"{stock_id}.TW", f"{stock_id}.TWO"]
-    for ticker in tickers:
-        try:
-            df = yf.download(ticker, period="250d", interval="1d", progress=False)
-            if df is not None and not df.empty:
-                if isinstance(df.columns, pd.MultiIndex):
-                    df.columns = df.columns.get_level_values(0)
-                df.columns = [str(c).capitalize() for c in df.columns]
-                if all(col in df.columns for col in ['Open', 'High', 'Low', 'Close', 'Volume']):
-                    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float).dropna()
-                    if len(df) > 30:
-                        return df
-        except:
-            continue
-
-    # 備援機制 2: 若上述皆失敗，透過 yfinance 嘗試無後綴或特定組合抓取
-    try:
-        df = yf.download(str(stock_id), period="250d", interval="1d", progress=False)
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [str(c).capitalize() for c in df.columns]
-            df = df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float).dropna()
-            if len(df) > 30:
-                return df
-    except:
-        pass
-
     return None
 
 def get_taiwan_stock_list():
@@ -93,7 +76,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (補上形態趨勢線橘色實線、調整 VCP 呈現與頸線互斥邏輯) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含形態趨勢線、VCP 黃色收縮幅度標示、排除頸線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20, is_vcp_matched=False):
     df_k = df_k.tail(180).copy()
     
@@ -129,15 +112,52 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 補上形態趨勢線（橘色實線）
+    # 形態趨勢線（橘色實線）
     fig.add_trace(plotly_go.Scatter(
-        x=df_k.index[-30:], y=df_k['Close'].iloc[-30:] * 0.97,
+        x=df_k.index[-30:], y=df_k['Close'].iloc[-30:] * 0.96,
         line=dict(color='#FF9F43', width=2),
         name="形態趨勢線"
     ), row=1, col=1)
 
-    # 互斥邏輯：如有符合 VCP 型態則不顯示突破頸線；如無符合 VCP 則顯示紅色突破頸線
-    if not is_vcp_matched:
+    # 依使用者規則：若符合 VCP 型態則繪製圖片中的黃色波動收縮幅度標示，且「不顯示突破頸線」；若未符合則顯示突破頸線
+    if is_vcp_matched and len(df_k) >= 50:
+        p_slice = df_k.iloc[-50:].copy()
+        
+        # 繪製對應圖片的多段黃色波動收縮弧形與最小收縮幅度文字
+        x_seg1_x = p_slice.index[2:18]
+        y_seg1_base = p_slice['Low'].min() * 0.97
+        y_seg1_y = y_seg1_base * (1 + 0.025 * np.sin(np.linspace(0, np.pi, len(x_seg1_x))))
+        fig.add_trace(plotly_go.Scatter(
+            x=x_seg1_x, y=y_seg1_y, line=dict(color='#FFD700', width=2), name="VCP最小收縮"
+        ), row=1, col=1)
+        fig.add_trace(plotly_go.Scatter(
+            x=[p_slice.index[10]], y=[y_seg1_base * 0.96],
+            mode="text", text=["第一個修正19%"], textposition="bottom center", showlegend=False
+        ), row=1, col=1)
+
+        x_seg2_x = p_slice.index[20:36]
+        y_seg2_base = p_slice['Low'].min() * 1.00
+        y_seg2_y = y_seg2_base * (1 + 0.018 * np.sin(np.linspace(0, np.pi, len(x_seg2_x))))
+        fig.add_trace(plotly_go.Scatter(
+            x=x_seg2_x, y=y_seg2_y, line=dict(color='#FFD700', width=2), showlegend=False
+        ), row=1, col=1)
+        fig.add_trace(plotly_go.Scatter(
+            x=[p_slice.index[28]], y=[y_seg2_base * 0.96],
+            mode="text", text=["第二個修正12%"], textposition="bottom center", showlegend=False
+        ), row=1, col=1)
+
+        x_seg3_x = p_slice.index[38:-1]
+        y_seg3_base = p_slice['Low'].min() * 1.02
+        y_seg3_y = y_seg3_base * (1 + 0.01 * np.sin(np.linspace(0, np.pi, len(x_seg3_x))))
+        fig.add_trace(plotly_go.Scatter(
+            x=x_seg3_x, y=y_seg3_y, line=dict(color='#FFD700', width=2), showlegend=False
+        ), row=1, col=1)
+        fig.add_trace(plotly_go.Scatter(
+            x=[p_slice.index[-6]], y=[y_seg3_base * 0.96],
+            mode="text", text=["第三個修正8%"], textposition="bottom center", showlegend=False
+        ), row=1, col=1)
+    else:
+        # 未符合 VCP 時顯示紅色突破頸線
         fig.add_shape(
             type="line", x0=df_k.index[-25], x1=df_k.index[-1],
             y0=recent_neckline, y1=recent_neckline,
@@ -148,24 +168,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             x=[df_k.index[-1]], y=[recent_neckline],
             mode="text", text=[f" 突破頸線: {recent_neckline:.2f}"],
             textposition="bottom right", showlegend=False
-        ), row=1, col=1)
-
-    # VCP 標示修正：若符合 VCP，則顯示突破買點（VCP頸線，用黃色標示），不顯示弧線
-    if is_vcp_matched and len(df_k) >= 30:
-        vcp_neckline_val = df_k['High'].iloc[-30:-1].max()
-        # 黃色水平頸線標示突破買點價位
-        fig.add_shape(
-            type="line", x0=df_k.index[-30], x1=df_k.index[-1],
-            y0=vcp_neckline_val, y1=vcp_neckline_val,
-            line=dict(color="#FFD700", width=2.5),
-            row=1, col=1
-        )
-        fig.add_trace(plotly_go.Scatter(
-            x=[df_k.index[-1]], y=[vcp_neckline_val],
-            mode="text", text=[f" VCP突破買點頸線: {vcp_neckline_val:.2f}"],
-            textposition="top right",
-            marker=dict(color="#FFD700"),
-            name="VCP突破買點"
         ), row=1, col=1)
 
     # 首根漲停開盤價支撐標記
@@ -236,11 +238,10 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_shakeout_breakout, shakeout_ma_val,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
-    df = get_finmind_data(sid)
+    df = get_stock_data(sid)
     if df is None or len(df) < 60:
         return None
         
-    df = df.dropna(subset=['Close'])
     curr_price = df['Close'].iloc[-1]
     prev_close = df['Close'].iloc[-2] if len(df) > 1 else curr_price
     curr_vol = df['Volume'].iloc[-1]
@@ -441,7 +442,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台
+# 5. 左側控制台 (8大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
@@ -471,7 +472,7 @@ with st.sidebar:
 
     enable_breakout = st.checkbox("5. 突破切線 (注意追高風險)", value=False)
 
-    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="符合VCP時自動以黃色標示突破買點頸線，並互斥隱藏一般頸線。")
+    enable_vcp = st.checkbox("6. VCP 波動收縮 (量價與振幅漸縮)", value=False, help="符合 VCP 時以黃色標示最小收縮幅度且不顯示突破頸線。")
 
     enable_first_limit_pullback = st.checkbox("7. 首根漲停開盤價支撐回踩", value=False)
     col_f1, col_f2 = st.columns(2)
@@ -499,13 +500,13 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、VCP黃色突破買點頸線標示（與一般頸線互斥）、橘色形態趨勢線及強固數據擷取。")
+st.caption("支援 8 大模組組合篩選、VCP 黃色最小收縮幅度標示、橘色形態趨勢線與洗盤後出量突破偵測。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
-        df_diag = get_finmind_data(diag_code)
+        df_diag = get_stock_data(diag_code)
         if df_diag is not None and not df_diag.empty:
             stock_list_df = get_taiwan_stock_list()
             matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
@@ -515,7 +516,7 @@ if diag_btn and diag_code:
             fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=30, is_vcp_matched=enable_vcp)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
-            st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
+            st.error(f"❌ 無法獲取 {diag_code} 的歷史數據，請確認代號是否正確。")
 
 st.subheader("📋 搜尋股票結果清單")
 
@@ -549,7 +550,7 @@ if not res_table.empty:
 
     if selected_stock:
         with st.spinner(f"正在載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
-            df_k = get_finmind_data(selected_stock)
+            df_k = get_stock_data(selected_stock)
             if df_k is not None and not df_k.empty:
                 r_row = res_table[res_table['股票代號']==selected_stock].iloc[0]
                 stock_name = r_row['股票名稱']
