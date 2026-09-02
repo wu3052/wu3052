@@ -7,6 +7,7 @@ import twstock
 import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
 st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
@@ -65,22 +66,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 輔助函式：精準判定 VCP 型態 ---
-def check_vcp(df):
-    if len(df) < 40: 
-        return False
-    s1 = df.iloc[-30:-20]
-    s2 = df.iloc[-20:-10]
-    s3 = df.iloc[-10:]
-    r1 = s1['High'].max() - s1['Low'].min()
-    r2 = s2['High'].max() - s2['Low'].min()
-    r3 = s3['High'].max() - s3['Low'].min()
-    v1 = s1['Volume'].mean()
-    v2 = s2['Volume'].mean()
-    v3 = s3['Volume'].mean()
-    return (r2 < r1 * 0.9) and (r3 < r2 * 0.9) and (v2 < v1) and (v3 < v2)
-
-# --- 3. 繪製美化白色 K 線圖的共用函式 ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、棕色VCP圓弧底、首根漲停開盤價標記與一年新高黑線) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -136,22 +122,14 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 只有當股票確實出現 VCP 型態時，才在下方明顯標示由左至右波動收幅的棕色圓弧底
-    if check_vcp(df_k):
-        vcp_x = df_k.index[-30:]
-        base_low = df_k['Low'].iloc[-30:].min()
-        vcp_y = base_low * 0.93 - np.linspace(0, base_low * 0.03, len(vcp_x))
-        fig.add_trace(plotly_go.Scatter(
-            x=vcp_x, y=vcp_y,
-            line=dict(color='#A0522D', width=2.5, dash='dot'),
-            name="VCP 波動收縮圓弧底"
-        ), row=1, col=1)
-        fig.add_trace(plotly_go.Scatter(
-            x=[df_k.index[-15]], y=[base_low * 0.92],
-            mode="text", text=["VCP波動收縮完成"],
-            textposition="bottom center", showlegend=False,
-            textfont=dict(color="#A0522D", size=11)
-        ), row=1, col=1)
+    # 棕色 VCP 下跌能量逐漸縮小的圓弧底輔助線
+    vcp_x = df_k.index[-30:]
+    vcp_y = df_k['Low'].iloc[-30:] * 0.97
+    fig.add_trace(plotly_go.Scatter(
+        x=vcp_x, y=vcp_y,
+        line=dict(color='#A0522D', width=2, dash='dot'),
+        name="VCP 波動收縮圓弧底"
+    ), row=1, col=1)
 
     # 若需要標示出前N天出現的首根漲停開盤價
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
@@ -225,13 +203,13 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 穩健序列式全市場掃描函式 (完全避免執行緒滿載與崩潰錯誤) ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
                                     enable_breakout, enable_vcp,
                                     enable_first_limit_pullback, first_limit_days, first_limit_range,
-                                    enable_shakeout_breakout, shakeout_ma_val,
+                                    enable_washout_breakout, washout_ma_period, washout_vol_mult,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
@@ -317,7 +295,13 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 
     # 策略 6: VCP (波動收縮)
     if enable_vcp:
-        if check_vcp(df):
+        h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
+        h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
+        v1 = df['Volume'].iloc[-30:-15].mean()
+        v2 = df['Volume'].iloc[-15:].mean()
+        
+        is_vcp_contraction = (h2 < h1) and (v2 < v1)
+        if is_vcp_contraction:
             matched_strategies.append("VCP波動收縮")
 
     # 策略 7: 首根漲停開盤價支撐回踩
@@ -342,32 +326,39 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
-    # 策略 8: 量縮洗盤後出量站上指定 MA 第一天
-    if enable_shakeout_breakout:
-        df['target_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
-        t_ma = df['target_ma'].iloc[-1]
-        prev_t_ma = df['target_ma'].iloc[-2] if len(df) > 1 else t_ma
+    # 策略 8: 量縮洗盤後出量站上 MA 第一天
+    if enable_washout_breakout:
+        df['washout_ma'] = df['Close'].rolling(washout_ma_period).mean()
+        ma_val = df['washout_ma'].iloc[-1]
         
-        recent_low_break = (df['Low'].iloc[-20:-1] < df['Low'].iloc[-40:-20].min()).any()
+        # 檢查今天是否為第一天站上該 MA (昨天收盤 <= MA，今天收盤 > MA)
+        is_first_day_above = (curr_price > ma_val) and (df['Close'].iloc[-2] <= df['washout_ma'].iloc[-2])
+        
+        # 檢查近期是否有量縮洗盤過程 (例如前 5~20 天出現過成交量萎縮或跌破前波低點後量縮)
+        recent_vol_mean = df['Volume'].iloc[-15:-1].mean()
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-        is_volume_out = curr_vol > vol_ma5 * 1.3
-        crossed_above_ma = (df['Close'].iloc[-1] >= t_ma) and (df['Close'].iloc[-2] < prev_t_ma)
+        is_after_washout = (recent_vol_mean < vol_ma5 * 1.2)
         
-        if recent_low_break and is_volume_out and crossed_above_ma:
-            matched_strategies.append(f"量縮洗盤後出量站上MA{shakeout_ma_val}")
+        # 今天出量 (成交量放大超過 5 日均量一定倍數)
+        is_vol_expand = curr_vol > vol_ma5 * washout_vol_mult
+        
+        if is_first_day_above and is_after_washout and is_vol_expand:
+            matched_strategies.append(f"量縮洗盤後出量站上{washout_ma_period}MA")
 
+    # 收集勾選的策略清單
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
         enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback,
-        enable_shakeout_breakout
+        enable_washout_breakout
     ])
     if total_enabled_flags == 0:
         return None
 
+    # 邏輯判斷
     if logic_mode == "AND (所有勾選條件皆需成立)":
         if len(matched_strategies) < total_enabled_flags: 
             return None
-    else:  
+    else:  # OR 模式
         if len(matched_strategies) == 0: 
             return None
 
@@ -389,7 +380,7 @@ def run_quick_screener_parallel(
     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
     enable_breakout, enable_vcp,
     enable_first_limit_pullback, first_limit_days, first_limit_range,
-    enable_shakeout_breakout, shakeout_ma_val,
+    enable_washout_breakout, washout_ma_period, washout_vol_mult,
     logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
@@ -399,23 +390,30 @@ def run_quick_screener_parallel(
     progress_bar = st.sidebar.progress(0)
     status_text = st.sidebar.empty()
     
-    # 改為高效穩健的迴圈檢視，徹底避開 Streamlit Cloud 執行緒池滿載崩潰 (RuntimeError)
-    for idx, row in df_stocks.iterrows():
-        if idx % 10 == 0 or idx == total_count - 1:
-            progress_bar.progress(min((idx + 1) / total_count, 1.0))
-            status_text.markdown(f"🔍 **篩選進度:** `{idx + 1}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
+    completed = 0
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {
+            executor.submit(
+                fetch_and_analyze_single_stock, 
+                row, enable_macd_25ma, macd_ma_period,
+                enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
+                enable_kd_cross, enable_tangle_steady, tangle_ma_period,
+                enable_breakout, enable_vcp,
+                enable_first_limit_pullback, first_limit_days, first_limit_range,
+                enable_washout_breakout, washout_ma_period, washout_vol_mult,
+                logic_mode, min_vol, max_growth
+            ): row for _, row in df_stocks.iterrows()
+        }
         
-        res = fetch_and_analyze_single_stock(
-            row, enable_macd_25ma, macd_ma_period,
-            enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-            enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-            enable_breakout, enable_vcp,
-            enable_first_limit_pullback, first_limit_days, first_limit_range,
-            enable_shakeout_breakout, shakeout_ma_val,
-            logic_mode, min_vol, max_growth
-        )
-        if res:
-            found_targets.append(res)
+        for future in as_completed(futures):
+            completed += 1
+            if completed % 15 == 0 or completed == total_count:
+                progress_bar.progress(min(completed / total_count, 1.0))
+                status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
+            
+            res = future.result()
+            if res:
+                found_targets.append(res)
                 
     progress_bar.empty()
     status_text.empty()
@@ -462,8 +460,12 @@ with st.sidebar:
     with col_f2:
         first_limit_range = st.number_input("回踩容許區間(%)", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
 
-    enable_shakeout_breakout = st.checkbox("8. 量縮洗盤後出量站上指定MA第一天", value=True)
-    shakeout_ma_val = st.number_input("站上 MA 數值 (策略8)", min_value=1, max_value=240, value=20)
+    enable_washout_breakout = st.checkbox("8. 量縮洗盤後出量站上 MA 第一天", value=True)
+    col_w1, col_w2 = st.columns(2)
+    with col_w1:
+        washout_ma_period = st.number_input("站上 MA 數值", min_value=1, max_value=240, value=20)
+    with col_w2:
+        washout_vol_mult = st.number_input("出量倍數", min_value=1.1, max_value=3.0, value=1.5, step=0.1)
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
@@ -481,9 +483,10 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、洗盤後出量站上MA第一天、精準VCP標示、紅色突破頸線與組合邏輯標記。")
+st.caption("支援 8 大模組組合篩選、量縮洗盤突破點偵測、紅色突破頸線與組合邏輯標記。")
 st.divider()
 
+# 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
@@ -493,7 +496,7 @@ if diag_btn and diag_code:
             s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
             
             st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
-            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", washout_ma_period, enable_first_limit=True, first_limit_days=30)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
             st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
@@ -501,14 +504,14 @@ if diag_btn and diag_code:
 st.subheader("📋 搜尋股票結果清單")
 
 if btn_quick_search:
-    with st.spinner("⚡ 正在掃描全市場標的..."):
+    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
         res_df = run_quick_screener_parallel(
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
             enable_kd_cross, enable_tangle_steady, tangle_ma_period,
             enable_breakout, enable_vcp,
             enable_first_limit_pullback, first_limit_days, first_limit_range,
-            enable_shakeout_breakout, shakeout_ma_val,
+            enable_washout_breakout, washout_ma_period, washout_vol_mult,
             logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
@@ -536,7 +539,7 @@ if not res_table.empty:
                 stock_name = r_row['股票名稱']
                 combo_tag = r_row['組合邏輯名稱']
                 
-                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=enable_first_limit_pullback, first_limit_days=first_limit_days)
+                fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", washout_ma_period, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
