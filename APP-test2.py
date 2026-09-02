@@ -74,8 +74,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
     
     year_high = df_k['High'].max()
-    
-    # 計算近20日頸線/前高作為突破切線參考
     recent_high = df_k['High'].iloc[-25:-1].max()
 
     # 計算 MACD
@@ -167,11 +165,11 @@ def plot_beautified_chart(df_k, stock_title, ma_num):
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 ---
+# --- 4. 高效多執行緒全市場掃描函式 (支援組合與邏輯判斷) ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_break, tangle_ma_period,
-                                    min_vol, max_growth):
+                                    logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
     if df is None or len(df) < 60:
@@ -190,8 +188,8 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
     recent_df = df.iloc[-60:]
     limit_up_count = (recent_df['daily_change'] >= 9.5).sum()
 
-    # 策略 1: MACD 回踩 0 軸 + 自訂 MA 支撐
-    cond_a = True
+    # 策略 1: MACD 回踩 0 軸 + 自訂 MA 支持
+    cond_a = False
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
@@ -205,7 +203,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         cond_a = cond_ma and cond_macd
 
     # 策略 2: 前 N 天帶量漲停 + 量縮回踩自訂 MA
-    cond_b = True
+    cond_b = False
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
@@ -219,7 +217,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         cond_b = had_limit_up_vol and is_vol_shrink and is_touch_ma
 
     # 策略 3: 日 KD 金叉
-    cond_c = True
+    cond_c = False
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
@@ -229,25 +227,37 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         cond_c = (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1])
 
     # 策略 4: 均線糾結 + 量穩價縮 + 突破切線(或前高)
-    cond_d = True
+    cond_d = False
     if enable_tangle_break:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
         ma20 = df['Close'].rolling(tangle_ma_period).mean()
         
-        # 均線糾結條件：近期 MA 之間最大差異小於 2%
         ma_max = pd.concat([ma5, ma10, ma20], axis=1).max(axis=1)
         ma_min = pd.concat([ma5, ma10, ma20], axis=1).min(axis=1)
         is_tangled = ((ma_max - ma_min) / ma_min < 0.025).iloc[-5:-1].any()
         
-        # 量穩價縮與帶量突破前高/切線
         vol_ma = df['Volume'].rolling(5).mean()
         is_vol_steady = df['Volume'].iloc[-5:-1].mean() < vol_ma.iloc[-1] * 1.3
         is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
         
         cond_d = is_tangled and is_vol_steady and is_breakout
 
-    if not (cond_a and cond_b and cond_c and cond_d): return None
+    # 收集勾選的條件狀態
+    active_checks = []
+    if enable_macd_25ma: active_checks.append(cond_a)
+    if enable_limit_up_pullback: active_checks.append(cond_b)
+    if enable_kd_cross: active_checks.append(cond_c)
+    if enable_tangle_break: active_checks.append(cond_d)
+
+    if not active_checks:
+        return None
+
+    # 根據 AND / OR 邏輯判斷是否符合
+    if logic_mode == "AND (所有勾選條件皆需成立)":
+        if not all(active_checks): return None
+    else:  # OR 模式
+        if not any(active_checks): return None
 
     return {
         "股票代號": sid,
@@ -262,7 +272,7 @@ def run_quick_screener_parallel(
     enable_macd_25ma, macd_ma_period,
     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
     enable_kd_cross, enable_tangle_break, tangle_ma_period,
-    min_vol, max_growth
+    logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
     found_targets = []
@@ -279,7 +289,7 @@ def run_quick_screener_parallel(
                 row, enable_macd_25ma, macd_ma_period,
                 enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                 enable_kd_cross, enable_tangle_break, tangle_ma_period,
-                min_vol, max_growth
+                logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
         
@@ -299,13 +309,21 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台
+# 5. 左側控制台 (支援組合選股與邏輯切換)
 # ==========================================
 with st.sidebar:
-    st.title("⚡ 快速潛力股挖掘")
+    st.title("⚡ 快速潛力股挖掘 (組合選股)")
     st.divider()
 
-    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 軸 + MA 支撐", value=True)
+    logic_mode = st.radio(
+        "🔀 篩選組合邏輯", 
+        ["OR (符合任一勾選條件即可)", "AND (所有勾選條件皆需成立)"],
+        index=0,
+        help="選擇 OR 可以自由組合多種策略且不怕選不到股票！"
+    )
+    st.divider()
+
+    enable_macd_25ma = st.checkbox("1. MACD 回踩 0 轴 + MA 支持", value=True)
     macd_ma_period = st.number_input("MACD 搭配均線數值", min_value=1, max_value=240, value=25)
 
     enable_limit_up_pullback = st.checkbox("2. 前 N 天帶量漲停 + 量縮回踩 MA", value=False)
@@ -324,7 +342,7 @@ with st.sidebar:
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
     max_growth = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5)
 
-    btn_quick_search = st.button("🚀 執行快速潛力股挖掘", use_container_width=True, type="primary")
+    btn_quick_search = st.button("🚀 執行組合潛力股挖掘", use_container_width=True, type="primary")
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
@@ -336,7 +354,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("具備多策略量化篩選、紅色突破切線標註及即時圖表診斷功能。")
+st.caption("具備自由組合點選、邏輯切換（OR/AND）、紅色突破切線與即時診斷功能。")
 st.divider()
 
 # 個股即時 K 線圖診斷邏輯（整合股票名稱查詢）
@@ -362,7 +380,7 @@ if btn_quick_search:
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
             enable_kd_cross, enable_tangle_break, tangle_ma_period,
-            min_vol, max_growth
+            logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
 
@@ -391,4 +409,4 @@ if not res_table.empty:
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側調整條件並點擊「執行快速潛力股挖掘」，系統將即時展示掃描進度與符合清單。")
+    st.info("👈 請於左側勾選想組合的策略、切換篩選邏輯，並點擊「執行組合潛力股挖掘」。")
