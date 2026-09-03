@@ -69,7 +69,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、動態最低價趨勢線、首根漲停開盤價支撐) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -105,7 +105,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 動態計算形態趨勢線（橘色實線 - 近期每天股價最低價連成線，取近 30 交易日或全部）
+    # 動態計算形態趨勢線
     trend_slice = df_k.iloc[-30:].copy()
     fig.add_trace(plotly_go.Scatter(
         x=trend_slice.index, y=trend_slice['Low'],
@@ -113,7 +113,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name="最低價趨勢線"
     ), row=1, col=1)
 
-    # 紅色突破頸線 (水平實線)
+    # 紅色突破頸線
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
         y0=recent_neckline, y1=recent_neckline,
@@ -126,7 +126,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 首根漲停開盤價支撐標記 (水藍色虛線)
+    # 首根漲停開盤價支撐標記
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
     check_window = df_k.iloc[-first_limit_days:]
     first_limit_idx = None
@@ -152,7 +152,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             textposition="top right", showlegend=False
         ), row=1, col=1)
 
-    # 股價創一年新高處劃一條水平線 (黑線)
+    # 股價創一年新高處劃一條水平線
     fig.add_shape(
         type="line", x0=df_k.index[0], x1=df_k.index[-1],
         y0=year_high, y1=year_high,
@@ -190,7 +190,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 高效多執行緒全市場掃描函式 ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -315,14 +315,14 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 
     # 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
     if enable_shakeout_breakout:
-        df[f'shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
+        df['shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
         vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
         is_volume_expand = curr_vol > vol_ma_20 * 1.3
         
         recent_vol_slice = df['Volume'].iloc[-15:-1]
         is_prior_shrink = (recent_vol_slice.min() < vol_ma_20 * 0.8)
         
-        is_first_day_above_ma = (df['Close'].iloc[-1] >= df[f'shk_ma'].iloc[-1]) and (df['Close'].iloc[-2] <= df[f'shk_ma'].iloc[-2])
+        is_first_day_above_ma = (df['Close'].iloc[-1] >= df['shk_ma'].iloc[-1]) and (df['Close'].iloc[-2] <= df['shk_ma'].iloc[-2])
         
         if is_prior_shrink and is_volume_expand and is_first_day_above_ma:
             matched_strategies.append(f"量縮洗盤後出量站上MA{shakeout_ma_val}")
@@ -506,7 +506,7 @@ if not res_table.empty:
     st.markdown(display_df[cols_to_show].to_markdown(index=False), unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")
+    st.subheader("📈 詳細美化 K 線圖與快速瀏覽")
 
     stock_list = res_table["股票代號"].tolist()
     total_stocks = len(stock_list)
@@ -514,6 +514,7 @@ if not res_table.empty:
     # 確保 index 範圍安全
     if st.session_state.selected_stock_index >= total_stocks:
         st.session_state.selected_stock_index = total_stocks - 1
+        
     if st.session_state.selected_stock_index < 0:
         st.session_state.selected_stock_index = 0
 
@@ -538,32 +539,11 @@ if not res_table.empty:
             format_func=lambda x: f"({stock_list.index(x)+1}/{total_stocks}) {x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]} ({res_table[res_table['股票代號']==x]['組合邏輯名稱'].values[0]})",
             key="selectbox_stock_changer"
         )
-        # 同步 selectbox 的變動至 session_state
         if selected_stock in stock_list:
             new_idx = stock_list.index(selected_stock)
             if new_idx != st.session_state.selected_stock_index:
                 st.session_state.selected_stock_index = new_idx
                 st.rerun()
-
-    # 鍵盤左右鍵快捷切換支援 (透過 Streamlit 自訂 JavaScript 監聽 ArrowLeft / ArrowRight)
-    st.markdown("""
-        <script>
-        const doc = window.parent.document;
-        doc.addEventListener('keydown', function(e) {
-            if (e.target.tagName.toLowerCase() === 'input' || e.target.tagName.toLowerCase() === 'textarea') {
-                return;
-            }
-            const buttons = Array.from(doc.querySelectorAll('button'));
-            if (e.key === 'ArrowLeft') {
-                const prevBtn = buttons.find(el => el.innerText.includes('上一檔'));
-                if (prevBtn) prevBtn.click();
-            } else if (e.key === 'ArrowRight') {
-                const nextBtn = buttons.find(el => el.innerText.includes('下一檔'));
-                if (nextBtn) nextBtn.click();
-            }
-        });
-        </script>
-    """, unsafe_allow_html=True)
 
     if selected_stock:
         with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
