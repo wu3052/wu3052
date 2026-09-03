@@ -8,6 +8,7 @@ import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import streamlit.components.v1 as components
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
 st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
@@ -190,7 +191,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 高效多執行緒全市場掃描函式 ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -218,7 +219,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 
     matched_strategies = []
 
-    # 策略 1: MACD 回踩 0 軸 + MA 支持
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
@@ -232,7 +232,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if cond_ma and cond_macd:
             matched_strategies.append("MACD回踩0軸")
 
-    # 策略 2: 前 N 天帶量漲停 + 量縮回踩 MA
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
@@ -246,7 +245,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if had_limit_up_vol and is_vol_shrink and is_touch_ma:
             matched_strategies.append("漲停回踩MA")
 
-    # 策略 3: 日 KD 金叉
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
@@ -256,7 +254,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1]):
             matched_strategies.append("KD金叉")
 
-    # 策略 4: 均線糾結 + 量穩價縮
     if enable_tangle_steady:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
@@ -273,14 +270,12 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_tangled and is_vol_steady and is_price_shrink:
             matched_strategies.append("均線糾結+量穩價縮")
 
-    # 策略 5: 突破切線
     if enable_breakout:
         vol_ma = df['Volume'].rolling(5).mean()
         is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
         if is_breakout:
             matched_strategies.append("突破切線")
 
-    # 策略 6: VCP (波動收縮)
     if enable_vcp:
         h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
         h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
@@ -291,7 +286,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_vcp_contraction:
             matched_strategies.append("VCP波動收縮")
 
-    # 策略 7: 首根漲停開盤價支撐回踩
     if enable_first_limit_pullback:
         check_window = df.iloc[-first_limit_days:]
         first_limit_open = None
@@ -313,7 +307,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
-    # 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
     if enable_shakeout_breakout:
         df[f'shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
         vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
@@ -462,7 +455,6 @@ st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.caption("支援 8 大模組組合篩選、動態最低價趨勢線與首根漲停開盤價支撐標記。")
 st.divider()
 
-# 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
@@ -497,7 +489,6 @@ res_table = st.session_state.screener_results
 if not res_table.empty:
     st.success(f"🎉 掃描完成！共找到 `{len(res_table)}` 檔符合條件的優質標的：")
     
-    # 建立 WantGoo 點擊連結表格顯示（使用內建 st.dataframe 取代依賴 tabulate 的 to_markdown，避免 ImportError）
     display_df = res_table.copy()
     display_df['股票名稱連結'] = display_df.apply(
         lambda r: f"https://www.wantgoo.com/stock/{r['股票代號']}/technical-chart", axis=1
@@ -518,7 +509,6 @@ if not res_table.empty:
     stock_list = res_table["股票代號"].tolist()
     total_stocks = len(stock_list)
 
-    # 確保 index 範圍安全
     if st.session_state.selected_stock_index >= total_stocks:
         st.session_state.selected_stock_index = total_stocks - 1
     if st.session_state.selected_stock_index < 0:
@@ -526,13 +516,15 @@ if not res_table.empty:
 
     col_btn1, col_sel, col_btn2 = st.columns([1, 4, 1])
     with col_btn1:
-        if st.button("⬅️ 上一檔", use_container_width=True):
+        btn_prev = st.button("⬅️ 上一檔", use_container_width=True)
+        if btn_prev:
             if st.session_state.selected_stock_index > 0:
                 st.session_state.selected_stock_index -= 1
                 st.rerun()
 
     with col_btn2:
-        if st.button("下一檔 ➡️", use_container_width=True):
+        btn_next = st.button("下一檔 ➡️", use_container_width=True)
+        if btn_next:
             if st.session_state.selected_stock_index < total_stocks - 1:
                 st.session_state.selected_stock_index += 1
                 st.rerun()
@@ -545,32 +537,42 @@ if not res_table.empty:
             format_func=lambda x: f"({stock_list.index(x)+1}/{total_stocks}) {x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]} ({res_table[res_table['股票代號']==x]['組合邏輯名稱'].values[0]})",
             key="selectbox_stock_changer"
         )
-        # 同步 selectbox 的變動至 session_state
         if selected_stock in stock_list:
             new_idx = stock_list.index(selected_stock)
             if new_idx != st.session_state.selected_stock_index:
                 st.session_state.selected_stock_index = new_idx
                 st.rerun()
 
-    # 鍵盤左右鍵快捷切換支援 (透過 Streamlit 自訂 JavaScript 監聽 ArrowLeft / ArrowRight)
-    st.markdown("""
+    # --- 透過 st.components.v1.html 穿透沙盒監聽鍵盤左右方向鍵 ---
+    components.html("""
         <script>
         const doc = window.parent.document;
-        doc.addEventListener('keydown', function(e) {
-            if (e.target.tagName.toLowerCase() === 'input' || e.target.tagName.toLowerCase() === 'textarea') {
-                return;
-            }
-            const buttons = Array.from(doc.querySelectorAll('button'));
-            if (e.key === 'ArrowLeft') {
-                const prevBtn = buttons.find(el => el.innerText.includes('上一檔'));
-                if (prevBtn) prevBtn.click();
-            } else if (e.key === 'ArrowRight') {
-                const nextBtn = buttons.find(el => el.innerText.includes('下一檔'));
-                if (nextBtn) nextBtn.click();
-            }
-        });
+        // 避免重複註冊監聽事件
+        if (!doc.dataset.keydownInitialized) {
+            doc.dataset.keydownInitialized = "true";
+            doc.addEventListener('keydown', function(e) {
+                // 如果正在輸入文字框或下拉選單中，不攔截鍵盤事件
+                if (['input', 'textarea', 'select'].includes(e.target.tagName.toLowerCase())) {
+                    return;
+                }
+                const buttons = Array.from(doc.querySelectorAll('button'));
+                if (e.key === 'ArrowLeft') {
+                    const prevBtn = buttons.find(el => el.innerText.includes('上一檔'));
+                    if (prevBtn) {
+                        prevBtn.click();
+                        e.preventDefault();
+                    }
+                } else if (e.key === 'ArrowRight') {
+                    const nextBtn = buttons.find(el => el.innerText.includes('下一檔'));
+                    if (nextBtn) {
+                        nextBtn.click();
+                        e.preventDefault();
+                    }
+                }
+            });
+        }
         </script>
-    """, unsafe_allow_html=True)
+    """, height=0)
 
     if selected_stock:
         with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
