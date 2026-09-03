@@ -1,10 +1,6 @@
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
-import opencc
-
-# 初始化繁簡轉換器 (簡體轉繁體)
-converter = opencc.OpenCC('s2t.json')
 
 st.set_page_config(
     page_title="日語學習互動 App",
@@ -22,7 +18,7 @@ TINGROOM_URL = "https://jp.tingroom.com/rumen/zary/list_17.html"
 
 @st.cache_data
 def fetch_tingroom_content(url):
-    """抓取 tingroom 講義內容並轉為繁體中文"""
+    """抓取 tingroom 講義內容"""
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         response = requests.get(url, headers=headers)
@@ -30,14 +26,11 @@ def fetch_tingroom_content(url):
         
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
-            # 根據 tingroom 的網頁結構抓取文章內容區域
             content_div = soup.find('div', class_='article_content') or soup.find('div', class_='text')
             
             if content_div:
-                text = content_div.get_text(separator="\n")
-                return converter.convert(text)
+                return content_div.get_text(separator="\n")
             else:
-                # 若找不到特定區塊，抓取主要文字或返回提示
                 return "成功連線，但未找到指定排版區塊。建議直接點擊下方連結閱讀原始講義。"
         else:
             return f"無法讀取網頁，狀態碼：{response.status_code}"
@@ -48,12 +41,10 @@ if page == "影片與學習講義":
     st.title("📺 日語教學影片與對應講義")
     st.markdown("邊看影片邊對照講義，輕鬆學習日語發音與基礎對話！")
     
-    # 建立左右兩欄排版
     col1, col2 = st.columns([1, 1])
     
     with col1:
         st.subheader("🎬 教學影片 (Bilibili)")
-        # 使用 iframe 嵌入 Bilibili 影片
         bilibili_iframe = f"""
         <iframe src="{BILIBILI_URL}" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true" width="100%" height="400px"> </iframe>
         """
@@ -61,12 +52,11 @@ if page == "影片與學習講義":
         st.markdown("[🔗 點此在 Bilibili 原網站觀看](https://www.bilibili.com/video/BV1Qx411D7oA/)")
 
     with col2:
-        st.subheader("📖 學習講義 (繁體中文轉換)")
-        with st.spinner("正在載入並轉換講義內容..."):
+        st.subheader("📖 學習講義")
+        with st.spinner("正在載入講義內容..."):
             講義內容 = fetch_tingroom_content(TINGROOM_URL)
         
-        # 顯示講義內容框
-        st.text_area("講義內容（繁體化）：", value=講義內容, height=400)
+        st.text_area("講義內容：", value=講義內容, height=400)
         st.markdown(f"[🔗 點此查看原始 tingroom 講義](https://jp.tingroom.com/rumen/zary/list_17.html)")
 
 elif page == "單字/筆記本":
