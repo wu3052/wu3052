@@ -436,7 +436,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
-    diag_code = st.text_input("輸入股票代號", placeholder="例如: 3529")
+    diag_code = st.text_input("輸入股票代號", placeholder="例如: 2330")
     diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
 
 
@@ -533,18 +533,17 @@ if not res_table.empty:
                 st.session_state.selected_stock_index = new_idx
                 st.rerun()
 
-    # --- 透過自訂元件直接呼叫 Streamlit 重新整理或模擬點擊 ---
-    # 改為在 JS 裡面直接對按鈕加上特定 ID 屬性後進行精準點擊
-    components.html(f"""
+    # --- 修正 f-string 衝突：移除 f 前綴，改為一般字串 ---
+    components.html("""
         <script>
         const doc = window.parent.document;
         
         // 給按鈕加上好辨識的屬性
         const buttons = Array.from(doc.querySelectorAll('button'));
-        buttons.forEach(btn => {{
+        buttons.forEach(btn => {
             if (btn.innerText.includes('上一檔')) btn.setAttribute('data-hotkey', 'prev');
             if (btn.innerText.includes('下一檔')) btn.setAttribute('data-hotkey', 'next');
-        }});
+        });
 
         if (!doc.dataset.keydownInitialized) {
             doc.dataset.keydownInitialized = "true";
@@ -556,16 +555,16 @@ if not res_table.empty:
                 
                 if (e.key === 'ArrowLeft') {
                     const prevBtn = doc.querySelector('button[data-hotkey="prev"]');
-                    if (prevBtn) {{
+                    if (prevBtn) {
                         prevBtn.click();
                         e.preventDefault();
-                    }}
+                    }
                 } else if (e.key === 'ArrowRight') {
                     const nextBtn = doc.querySelector('button[data-hotkey="next"]');
-                    if (nextBtn) {{
+                    if (nextBtn) {
                         nextBtn.click();
                         e.preventDefault();
-                    }}
+                    }
                 }
             });
         }
