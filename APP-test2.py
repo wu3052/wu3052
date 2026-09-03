@@ -18,14 +18,6 @@ st.markdown("""
     .main { background-color: #F8F9FA; }
     div.block-container { padding-top: 2rem; padding-bottom: 2rem; }
     .stSelectbox, .stSlider, .stNumberInput { margin-bottom: 4px; }
-    .wantgoo-link {
-        color: #1E90FF;
-        text-decoration: none;
-        font-weight: bold;
-    }
-    .wantgoo-link:hover {
-        text-decoration: underline;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -78,7 +70,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、動態最低價趨勢線、首根漲停開盤價支撐) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -88,7 +80,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
 
-    # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
     df_k['DIF'] = exp1 - exp2
@@ -101,7 +92,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row_heights=[0.6, 0.2, 0.2]
     )
 
-    # 1. 頂部 K 線圖與自訂紫色均線
     fig.add_trace(plotly_go.Candlestick(
         x=df_k.index, open=df_k['Open'], high=df_k['High'],
         low=df_k['Low'], close=df_k['Close'], name="K線",
@@ -114,7 +104,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 動態計算形態趨勢線（橘色實線 - 近期每天股價最低價連成線，取近 30 交易日或全部）
     trend_slice = df_k.iloc[-30:].copy()
     fig.add_trace(plotly_go.Scatter(
         x=trend_slice.index, y=trend_slice['Low'],
@@ -122,7 +111,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name="最低價趨勢線"
     ), row=1, col=1)
 
-    # 紅色突破頸線 (水平實線)
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
         y0=recent_neckline, y1=recent_neckline,
@@ -135,7 +123,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 首根漲停開盤價支撐標記 (水藍色虛線)
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
     check_window = df_k.iloc[-first_limit_days:]
     first_limit_idx = None
@@ -161,7 +148,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             textposition="top right", showlegend=False
         ), row=1, col=1)
 
-    # 股價創一年新高處劃一條水平線 (黑線)
     fig.add_shape(
         type="line", x0=df_k.index[0], x1=df_k.index[-1],
         y0=year_high, y1=year_high,
@@ -169,14 +155,12 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row=1, col=1
     )
 
-    # 2. 中間成交量
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
     fig.add_trace(plotly_go.Bar(
         x=df_k.index, y=df_k['Volume'] / 1000, 
         marker_color=colors, name="成交量(張)"
     ), row=2, col=1)
 
-    # 3. 底部 MACD
     fig.add_trace(plotly_go.Scatter(
         x=df_k.index, y=df_k['DIF'], line=dict(color='#2196F3', width=1.5), name="DIF"
     ), row=3, col=1)
@@ -199,7 +183,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 (支援 8 大策略獨立/組合判斷與名稱標記) ---
+# --- 4. 高效多執行緒全市場掃描函式 ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -227,7 +211,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
 
     matched_strategies = []
 
-    # 策略 1: MACD 回踩 0 軸 + MA 支持
     if enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(macd_ma_period).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
@@ -241,7 +224,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if cond_ma and cond_macd:
             matched_strategies.append("MACD回踩0軸")
 
-    # 策略 2: 前 N 天帶量漲停 + 量縮回踩 MA
     if enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(limit_up_ma_period).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
@@ -255,7 +237,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if had_limit_up_vol and is_vol_shrink and is_touch_ma:
             matched_strategies.append("漲停回踩MA")
 
-    # 策略 3: 日 KD 金叉
     if enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
@@ -265,7 +246,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1]):
             matched_strategies.append("KD金叉")
 
-    # 策略 4: 均線糾結 + 量穩價縮
     if enable_tangle_steady:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
@@ -282,14 +262,12 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_tangled and is_vol_steady and is_price_shrink:
             matched_strategies.append("均線糾結+量穩價縮")
 
-    # 策略 5: 突破切線
     if enable_breakout:
         vol_ma = df['Volume'].rolling(5).mean()
         is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
         if is_breakout:
             matched_strategies.append("突破切線")
 
-    # 策略 6: VCP (波動收縮)
     if enable_vcp:
         h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
         h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
@@ -300,7 +278,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_vcp_contraction:
             matched_strategies.append("VCP波動收縮")
 
-    # 策略 7: 首根漲停開盤價支撐回踩
     if enable_first_limit_pullback:
         check_window = df.iloc[-first_limit_days:]
         first_limit_open = None
@@ -322,7 +299,6 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
-    # 策略 8: 股價量縮洗盤，後出量站上指定 MA 第一天
     if enable_shakeout_breakout:
         df[f'shk_ma'] = df['Close'].rolling(shakeout_ma_val).mean()
         vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
@@ -410,7 +386,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (8大策略模組與組合選擇)
+# 5. 左側控制台
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
@@ -468,10 +444,9 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 8 大模組組合篩選、動態最低價趨勢線、首根漲停開盤價支撐標記與 WantGoo 快速導航。")
+st.caption("支援 8 大模組組合篩選、動態最低價趨勢線、首根漲停開盤價支撐標記與可排序互動表格。")
 st.divider()
 
-# 個股即時 K 線圖診斷邏輯
 if diag_btn and diag_code:
     with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
@@ -505,34 +480,44 @@ if btn_quick_search:
 res_table = st.session_state.screener_results
 if not res_table.empty:
     st.success(f"🎉 掃描完成！共找到 `{len(res_table)}` 檔符合條件的優質標的：")
+    st.caption("💡 提示：點擊表格上方的欄位標題即可進行**升冪/降冪排序**；點擊名稱欄位的連結可直接連至玩股網技術分析頁面。")
     
-    # 轉換成包含 WantGoo 超連結的表格呈現
+    # 準備用原生 st.dataframe 顯示，並帶有玩股網超連結
     display_df = res_table.copy()
-    display_df['股票名稱連結'] = display_df.apply(
-        lambda r: f"<a href='https://www.wantgoo.com/stock/{r['股票代號']}/technical-chart' target='_blank' class='wantgoo-link'>{r['股票名稱']} 🔗</a>", 
-        axis=1
+    display_df['玩股網連結'] = display_df['股票代號'].apply(
+        lambda x: f"https://www.wantgoo.com/stock/{x}/technical-chart"
     )
     
-    # 重新排列欄位位置
-    table_to_show = display_df[["股票代號", "股票名稱連結", "組合邏輯名稱", "當日漲幅(%)", "近N日漲停次數", "成交量(張)", "收盤價"]]
-    table_to_show = table_to_show.rename(columns={"股票名稱連結": "股票名稱 (連至玩股網)"})
-    
-    st.markdown(table_to_show.to_html(escape=False, index=True), unsafe_allow_html=True)
+    # 調整欄位順序
+    display_df = display_df[["股票代號", "股票名稱", "玩股網連結", "組合邏輯名稱", "當日漲幅(%)", "近N日漲停次數", "成交量(張)", "收盤價"]]
+
+    # 使用 Streamlit 原生互動表格 (支援點擊欄位標題排序、調整欄寬)
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "玩股網連結": st.column_config.LinkColumn(
+                "玩股網技術分析",
+                help="點擊直接前往玩股網查看該股票技術分析圖",
+                display_text="🔗 點擊前往玩股網"
+            ),
+            "當日漲幅(%)": st.column_config.NumberColumn(format="%.2f %%"),
+            "收盤價": st.column_config.NumberColumn(format="%.2f 元"),
+            "成交量(張)": st.column_config.NumberColumn(format="%d 張")
+        }
+    )
 
     st.divider()
     st.subheader("📈 詳細美化 K 線圖互動瀏覽（支援左右鍵與按鈕快速切換）")
     
     stock_list_options = res_table["股票代號"].tolist()
-    stock_names = res_table["股票名稱"].tolist()
-    combo_tags = res_table["組合邏輯名稱"].tolist()
 
-    # 確保 index 範圍正確
     if st.session_state.selected_index >= len(stock_list_options):
         st.session_state.selected_index = 0
     if st.session_state.selected_index < 0:
         st.session_state.selected_index = 0
 
-    # 左右按鈕切換邏輯
     col_btn1, col_sel, col_btn2 = st.columns([1, 4, 1])
     with col_btn1:
         if st.button("⬅️ 上一檔", use_container_width=True):
@@ -555,11 +540,10 @@ if not res_table.empty:
             index=st.session_state.selected_index,
             format_func=lambda x: f"{x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]} ({res_table[res_table['股票代號']==x]['組合邏輯名稱'].values[0]})"
         )
-        # 同步 selectbox 的變動回 session_state
         if selected_stock in stock_list_options:
             st.session_state.selected_index = stock_list_options.index(selected_stock)
 
-    # 鍵盤左右鍵監聽注入 (透過 Streamlit Component JavaScript)
+    # 鍵盤左右鍵監聽注入
     components.html("""
     <script>
     const doc = window.parent.document;
@@ -588,10 +572,9 @@ if not res_table.empty:
                 fig_res = plot_beautified_chart(df_k, f"{selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
                 st.plotly_chart(fig_res, use_container_width=True)
                 
-                # 額外提供快速點擊直接前往玩股網的按鈕
                 wantgoo_url = f"https://www.wantgoo.com/stock/{selected_stock}/technical-chart"
                 st.markdown(f"🔗 [點擊此處前往 玩股網 ({selected_stock} {stock_name}) 技術分析頁面]({wantgoo_url})", unsafe_allow_html=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選策略模組、設定組合邏輯，並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側勾選策略模組、設定組合邏輯並執行挖掘。")
