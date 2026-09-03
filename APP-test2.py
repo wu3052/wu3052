@@ -8,6 +8,7 @@ import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import streamlit.components.v1 as components
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
 st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
@@ -507,69 +508,69 @@ if not res_table.empty:
 
     col_btn1, col_sel, col_btn2 = st.columns([1, 4, 1])
     with col_btn1:
-        if st.button("⬅️ 上一檔", use_container_width=True):
+        if st.button("⬅️ 上一檔", use_container_width=True, key="btn_prev_stock"):
             if st.session_state.selected_stock_index > 0:
                 st.session_state.selected_stock_index -= 1
                 st.rerun()
 
     with col_btn2:
-        if st.button("下一檔 ➡️", use_container_width=True):
+        if st.button("下一檔 ➡️", use_container_width=True, key="btn_next_stock"):
             if st.session_state.selected_stock_index < total_stocks - 1:
                 st.session_state.selected_stock_index += 1
                 st.rerun()
 
     with col_sel:
-        # 使用 callback 直接同步 selectbox 的異動至 session_state
-        def on_selectbox_change():
-            selected_code = st.session_state.selectbox_stock_changer
-            if selected_code in stock_list:
-                st.session_state.selected_stock_index = stock_list.index(selected_code)
-
         selected_stock = st.selectbox(
             "請選擇欲檢視的股票代號",
             options=stock_list,
             index=st.session_state.selected_stock_index,
             format_func=lambda x: f"({stock_list.index(x)+1}/{total_stocks}) {x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]} ({res_table[res_table['股票代號']==x]['組合邏輯名稱'].values[0]})",
-            key="selectbox_stock_changer",
-            on_change=on_selectbox_change
+            key="selectbox_stock_changer"
         )
+        if selected_stock in stock_list:
+            new_idx = stock_list.index(selected_stock)
+            if new_idx != st.session_state.selected_stock_index:
+                st.session_state.selected_stock_index = new_idx
+                st.rerun()
 
-# 運用純 HTML5 隱藏表單配合按鈕觸發機制，完美繞過 sandbox 限制來綁定鍵盤左右鍵
-    st.markdown("""
-        <form id="keyboard_nav_form" style="display:none;" method="get">
-            <input type="hidden" name="action" id="action_input" value="">
-        </form>
+    # --- 透過自訂元件直接呼叫 Streamlit 重新整理或模擬點擊 ---
+    # 改為在 JS 裡面直接對按鈕加上特定 ID 屬性後進行精準點擊
+    components.html(f"""
         <script>
-        const parentDoc = window.parent.document;
-        if (!parentDoc.dataset.kbListenerAdded) {
-            parentDoc.dataset.kbListenerAdded = "true";
-            parentDoc.addEventListener('keydown', function(e) {
-                // 如果目前游標正在輸入框中，不執行快捷鍵
+        const doc = window.parent.document;
+        
+        // 給按鈕加上好辨識的屬性
+        const buttons = Array.from(doc.querySelectorAll('button'));
+        buttons.forEach(btn => {{
+            if (btn.innerText.includes('上一檔')) btn.setAttribute('data-hotkey', 'prev');
+            if (btn.innerText.includes('下一檔')) btn.setAttribute('data-hotkey', 'next');
+        }});
+
+        if (!doc.dataset.keydownInitialized) {
+            doc.dataset.keydownInitialized = "true";
+            doc.addEventListener('keydown', function(e) {
+                // 如果正在輸入文字或下拉選單，不作動
                 if (['input', 'textarea', 'select'].includes(e.target.tagName.toLowerCase())) {
                     return;
                 }
                 
-                // 尋找頁面中的按鈕
-                const buttons = Array.from(parentDoc.querySelectorAll('button'));
                 if (e.key === 'ArrowLeft') {
-                    const prevBtn = buttons.find(el => el.innerText.includes('上一檔'));
-                    if (prevBtn) {
+                    const prevBtn = doc.querySelector('button[data-hotkey="prev"]');
+                    if (prevBtn) {{
                         prevBtn.click();
                         e.preventDefault();
-                    }
+                    }}
                 } else if (e.key === 'ArrowRight') {
-                    const nextBtn = buttons.find(el => el.innerText.includes('下一檔'));
-                    if (nextBtn) {
+                    const nextBtn = doc.querySelector('button[data-hotkey="next"]');
+                    if (nextBtn) {{
                         nextBtn.click();
                         e.preventDefault();
-                    }
+                    }}
                 }
             });
         }
         </script>
-    """, unsafe_allow_html=True)
-    # 確保選到的股票代號正確對應目前的索引
-    selected_stock = stock_list[st.session_state.selected_stock_index]
+    """, height=0)
 
     if selected_stock:
         with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
