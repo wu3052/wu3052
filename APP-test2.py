@@ -509,7 +509,7 @@ if not res_table.empty:
     # 轉換成包含 WantGoo 超連結的表格呈現
     display_df = res_table.copy()
     display_df['股票名稱連結'] = display_df.apply(
-        lambda r: f"<a href='https://www.wantgoo.com/stock/{r[\"股票代號\"]}/technical-chart' target='_blank' class='wantgoo-link'>{r[\"股票名稱\"]} 🔗</a>", 
+        lambda r: f"<a href='https://www.wantgoo.com/stock/{r['股票代號']}/technical-chart' target='_blank' class='wantgoo-link'>{r['股票名稱']} 🔗</a>", 
         axis=1
     )
     
