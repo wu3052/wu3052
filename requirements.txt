@@ -8,3 +8,5 @@ google-generativeai
 scipy
 yfinance
 streamlit-drawable-canvas
+beautifulsoup4
+opencc-python-reep
