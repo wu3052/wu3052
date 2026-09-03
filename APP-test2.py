@@ -70,9 +70,8 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含第9策略箱型與突破標記) ---
-def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20, 
-                          enable_box_breakout=False, box_days=20):
+# --- 3. 繪製美化白色 K 線圖的共用函式 ---
+def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
     ma_col_name = f'MA{ma_num}'
@@ -123,51 +122,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         mode="text", text=[f" 突破頸線: {recent_neckline:.2f}"],
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
-
-    # 若啟用了箱型突破，在圖面上畫出箱型頂壓力(粉紅色)與箱型底支撐(黃色)，並標記突破K棒
-    if enable_box_breakout and len(df_k) > box_days + 1:
-        box_window = df_k.iloc[-(box_days+1):-1]  # 突破當天之前 N 天的箱型
-        box_top = box_window['High'].max()
-        box_bottom = box_window['Low'].min()
-        
-        # 畫箱型頂壓力 (粉紅色虛線)
-        fig.add_shape(
-            type="line", x0=df_k.index[-(box_days+1)], x1=df_k.index[-1],
-            y0=box_top, y1=box_top,
-            line=dict(color="#FF1493", width=2, dash="dash"),
-            row=1, col=1
-        )
-        fig.add_trace(plotly_go.Scatter(
-            x=[df_k.index[-1]], y=[box_top],
-            mode="text", text=[f" 箱型頂壓力: {box_top:.2f}"],
-            textposition="top right", showlegend=False
-        ), row=1, col=1)
-
-        # 畫箱型底支撐 (黃色虛線)
-        fig.add_shape(
-            type="line", x0=df_k.index[-(box_days+1)], x1=df_k.index[-1],
-            y0=box_bottom, y1=box_bottom,
-            line=dict(color="#FFD700", width=2, dash="dash"),
-            row=1, col=1
-        )
-        fig.add_trace(plotly_go.Scatter(
-            x=[df_k.index[-1]], y=[box_bottom],
-            mode="text", text=[f" 箱型底支撐: {box_bottom:.2f}"],
-            textposition="bottom right", showlegend=False
-        ), row=1, col=1)
-
-        # 標記帶量突破箱型頂的 K 棒
-        vol_ma5 = df_k['Volume'].rolling(5).mean()
-        curr_close = df_k['Close'].iloc[-1]
-        curr_vol = df_k['Volume'].iloc[-1]
-        if (curr_close > box_top) and (curr_vol > vol_ma5.iloc[-1] * 1.5):
-            fig.add_trace(plotly_go.Scatter(
-                x=[df_k.index[-1]], y=[df_k['High'].iloc[-1]],
-                mode="text", text=["⭐ 帶量突破箱型頂"],
-                textposition="top center",
-                textfont=dict(color="red", size=12, family="Arial Black"),
-                showlegend=False
-            ), row=1, col=1)
 
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
     check_window = df_k.iloc[-first_limit_days:]
@@ -240,7 +194,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
-    if df is None or len(df) < 60:
+    if df is None or len(df) < (box_days + 10):
         return None
         
     df = df.dropna(subset=['Close'])
@@ -360,20 +314,15 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             matched_strategies.append(f"量縮洗盤後出量站上MA{shakeout_ma_val}")
 
     if enable_box_breakout:
-        if len(df) > box_days + 1:
-            box_window = df.iloc[-(box_days+1):-1]
-            box_top = box_window['High'].max()
-            vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-            
-            # 判斷今天帶量突破箱型頂端
-            is_box_breakout = (curr_price > box_top) and (curr_vol > vol_ma5 * 1.5)
-            # 確保前一天還沒突破箱型頂（代表是第一天突破）
-            prev_price = df['Close'].iloc[-2]
-            prev_box_top = df.iloc[-(box_days+2):-2]['High'].max()
-            is_first_day_breakout = prev_price <= prev_box_top
-            
-            if is_box_breakout and is_first_day_breakout:
-                matched_strategies.append("帶量突破箱型高點")
+        # 計算過去 box_days 天（不含今天）的箱型頂部最高價
+        box_high = df['High'].iloc[-(box_days + 1):-1].max()
+        vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
+        # 條件：今天收盤價突破箱型頂部，且成交量大於 5 日均量 1.5 倍，且昨天收盤價尚未突破箱型頂部
+        is_break_box = (curr_price >= box_high) and (df['Close'].iloc[-2] < box_high)
+        is_box_volume_expand = curr_vol > (vol_ma5 * 1.5)
+        
+        if is_break_box and is_box_volume_expand:
+            matched_strategies.append(f"帶量突破箱型高點({box_days}日)")
 
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
@@ -494,11 +443,11 @@ with st.sidebar:
     shakeout_ma_val = st.number_input("站上目標 MA 數值 (策略8)", min_value=1, max_value=240, value=20)
 
     enable_box_breakout = st.checkbox("9. 帶量突破箱型高點", value=True)
-    box_days = st.number_input("箱型計算天數 (策略9)", min_value=5, max_value=120, value=20)
+    box_days = st.number_input("箱型計算天數 (策略9)", min_value=5, max_value=250, value=20)
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
-    max_growth = st.number_input("當日漲幅小於 (%)", value=5.0, step=0.5)
+    max_growth = st.number_input("當日漲幅小於 (%)", value=9.5, step=0.5)
 
     btn_quick_search = st.button("🚀 執行組合潛力股挖掘", use_container_width=True, type="primary")
 
@@ -512,7 +461,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 9 大模組組合篩選、動態最低價趨勢線、首根漲停支撐與箱型突破標記。")
+st.caption("支援 9 大模組組合篩選、動態最低價趨勢線與箱型突破選股。")
 st.divider()
 
 if diag_btn and diag_code:
@@ -524,11 +473,7 @@ if diag_btn and diag_code:
             s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
             
             st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
-            fig_diag = plot_beautified_chart(
-                df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, 
-                enable_first_limit=True, first_limit_days=30,
-                enable_box_breakout=True, box_days=box_days
-            )
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=30)
             st.plotly_chart(fig_diag, use_container_width=True)
         else:
             st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
@@ -649,13 +594,9 @@ if not res_table.empty:
                 stock_name = r_row['股票名稱']
                 combo_tag = r_row['組合邏輯名稱']
                 
-                fig_res = plot_beautified_chart(
-                    df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {stock_name} [{combo_tag}]", 
-                    macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days,
-                    enable_box_breakout=enable_box_breakout, box_days=box_days
-                )
+                fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選策略模組、設定組合邏輯，並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側勾選策略模組、設定組合邏輯與箱型天數，並點擊「執行組合潛力股挖掘」。")
