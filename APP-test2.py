@@ -8,7 +8,6 @@ import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import streamlit.components.v1 as components
 
 # --- 1. 頁面配置與簡潔美化 CSS ---
 st.set_page_config(page_title="台股快速潛力股挖掘與 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
@@ -70,7 +69,7 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-# --- 3. 繪製美化白色 K 線圖的共用函式 (含 MACD、成交量、紅色突破頸線、動態最低價趨勢線、首根漲停開盤價支撐) ---
+# --- 3. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -80,7 +79,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
 
-    # 計算 MACD
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
     df_k['DIF'] = exp1 - exp2
@@ -93,7 +91,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row_heights=[0.6, 0.2, 0.2]
     )
 
-    # 1. 頂部 K 線圖與自訂紫色均線
     fig.add_trace(plotly_go.Candlestick(
         x=df_k.index, open=df_k['Open'], high=df_k['High'],
         low=df_k['Low'], close=df_k['Close'], name="K線",
@@ -106,7 +103,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    # 動態計算形態趨勢線（橘色實線 - 近期每天股價最低價連成線，取近 30 交易日或全部）
     trend_slice = df_k.iloc[-30:].copy()
     fig.add_trace(plotly_go.Scatter(
         x=trend_slice.index, y=trend_slice['Low'],
@@ -114,7 +110,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name="最低價趨勢線"
     ), row=1, col=1)
 
-    # 紅色突破頸線 (水平實線)
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
         y0=recent_neckline, y1=recent_neckline,
@@ -127,7 +122,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         textposition="bottom right", showlegend=False
     ), row=1, col=1)
 
-    # 首根漲停開盤價支撐標記 (水藍色虛線)
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
     check_window = df_k.iloc[-first_limit_days:]
     first_limit_idx = None
@@ -153,7 +147,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
             textposition="top right", showlegend=False
         ), row=1, col=1)
 
-    # 股價創一年新高處劃一條水平線 (黑線)
     fig.add_shape(
         type="line", x0=df_k.index[0], x1=df_k.index[-1],
         y0=year_high, y1=year_high,
@@ -161,14 +154,12 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row=1, col=1
     )
 
-    # 2. 中間成交量
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
     fig.add_trace(plotly_go.Bar(
         x=df_k.index, y=df_k['Volume'] / 1000, 
         marker_color=colors, name="成交量(張)"
     ), row=2, col=1)
 
-    # 3. 底部 MACD
     fig.add_trace(plotly_go.Scatter(
         x=df_k.index, y=df_k['DIF'], line=dict(color='#2196F3', width=1.5), name="DIF"
     ), row=3, col=1)
@@ -516,46 +507,50 @@ if not res_table.empty:
 
     col_btn1, col_sel, col_btn2 = st.columns([1, 4, 1])
     with col_btn1:
-        btn_prev = st.button("⬅️ 上一檔", use_container_width=True)
-        if btn_prev:
+        if st.button("⬅️ 上一檔", use_container_width=True):
             if st.session_state.selected_stock_index > 0:
                 st.session_state.selected_stock_index -= 1
                 st.rerun()
 
     with col_btn2:
-        btn_next = st.button("下一檔 ➡️", use_container_width=True)
-        if btn_next:
+        if st.button("下一檔 ➡️", use_container_width=True):
             if st.session_state.selected_stock_index < total_stocks - 1:
                 st.session_state.selected_stock_index += 1
                 st.rerun()
 
     with col_sel:
+        # 使用 callback 直接同步 selectbox 的異動至 session_state
+        def on_selectbox_change():
+            selected_code = st.session_state.selectbox_stock_changer
+            if selected_code in stock_list:
+                st.session_state.selected_stock_index = stock_list.index(selected_code)
+
         selected_stock = st.selectbox(
             "請選擇欲檢視的股票代號",
             options=stock_list,
             index=st.session_state.selected_stock_index,
             format_func=lambda x: f"({stock_list.index(x)+1}/{total_stocks}) {x} - {res_table[res_table['股票代號']==x]['股票名稱'].values[0]} ({res_table[res_table['股票代號']==x]['組合邏輯名稱'].values[0]})",
-            key="selectbox_stock_changer"
+            key="selectbox_stock_changer",
+            on_change=on_selectbox_change
         )
-        if selected_stock in stock_list:
-            new_idx = stock_list.index(selected_stock)
-            if new_idx != st.session_state.selected_stock_index:
-                st.session_state.selected_stock_index = new_idx
-                st.rerun()
 
-    # --- 透過 st.components.v1.html 穿透沙盒監聽鍵盤左右方向鍵 ---
-    components.html("""
+    # 運用純 HTML5 隱藏表單配合按鈕觸發機制，完美繞過 sandbox 限制來綁定鍵盤左右鍵
+    st.markdown(f"""
+        <form id="keyboard_nav_form" style="display:none;" method="get">
+            <input type="hidden" name="action" id="action_input" value="">
+        </form>
         <script>
-        const doc = window.parent.document;
-        // 避免重複註冊監聽事件
-        if (!doc.dataset.keydownInitialized) {
-            doc.dataset.keydownInitialized = "true";
-            doc.addEventListener('keydown', function(e) {
-                // 如果正在輸入文字框或下拉選單中，不攔截鍵盤事件
+        const parentDoc = window.parent.document;
+        if (!parentDoc.dataset.kbListenerAdded) {
+            parentDoc.dataset.kbListenerAdded = "true";
+            parentDoc.addEventListener('keydown', function(e) {
+                // 如果目前游標正在輸入框中，不執行快捷鍵
                 if (['input', 'textarea', 'select'].includes(e.target.tagName.toLowerCase())) {
                     return;
                 }
-                const buttons = Array.from(doc.querySelectorAll('button'));
+                
+                // 尋找頁面中的按鈕
+                const buttons = Array.from(parentDoc.querySelectorAll('button'));
                 if (e.key === 'ArrowLeft') {
                     const prevBtn = buttons.find(el => el.innerText.includes('上一檔'));
                     if (prevBtn) {
@@ -572,7 +567,10 @@ if not res_table.empty:
             });
         }
         </script>
-    """, height=0)
+    """, unsafe_allow_html=True)
+
+    # 確保選到的股票代號正確對應目前的索引
+    selected_stock = stock_list[st.session_state.selected_stock_index]
 
     if selected_stock:
         with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
