@@ -76,7 +76,6 @@ def get_contract_liability_qoq(stock_id):
         data = response.json()
         if data.get("status") == 200 and data.get("data"):
             df = pd.DataFrame(data["data"])
-            # 常見合約負債代碼名稱: ContractLiabilities 或對應中文
             cl_df = df[(df['type'] == 'ContractLiabilities') | (df['origin_name'].str.contains('合約負債', na=False))]
             if not cl_df.empty:
                 cl_df['date'] = pd.to_datetime(cl_df['date'])
@@ -514,7 +513,11 @@ if not res_table.empty:
     
     display_cols = ["股票代號", "股票名稱", "玩股網技術分析", "合約負債季增率(%)", "組合邏輯名稱", "當日漲幅(%)", "近N日漲停次數", "成交量(張)"]
     
-    # 設定 link column 格式連至玩股網
+    # 檢查並補齊可能因快取或空資料漏掉的欄位，防止 KeyError
+    for col in display_cols:
+        if col not in res_table.columns:
+            res_table[col] = None
+
     st.dataframe(
         res_table[display_cols], 
         use_container_width=True,
@@ -532,7 +535,6 @@ if not res_table.empty:
     if 'selected_stock_idx' not in st.session_state or st.session_state.selected_stock_idx >= len(stock_list_options):
         st.session_state.selected_stock_idx = 0
 
-    # 左右按鈕切換列
     col_btn1, col_btn2, col_info = st.columns([1, 1, 4])
     with col_btn1:
         if st.button("⬅️ 上一檔", use_container_width=True):
@@ -555,11 +557,9 @@ if not res_table.empty:
         key="current_selected_stock_box"
     )
 
-    # 同步 selectbox 的變動回 session_state index
     if selected_stock in stock_list_options:
         st.session_state.selected_stock_idx = stock_list_options.index(selected_stock)
 
-    # 鍵盤左右鍵快速切換 JS 支援
     components.html(
         """
         <script>
