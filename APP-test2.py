@@ -534,8 +534,8 @@ if not res_table.empty:
             on_change=on_selectbox_change
         )
 
-    # 運用純 HTML5 隱藏表單配合按鈕觸發機制，完美繞過 sandbox 限制來綁定鍵盤左右鍵
-    st.markdown(f"""
+# 運用純 HTML5 隱藏表單配合按鈕觸發機制，完美繞過 sandbox 限制來綁定鍵盤左右鍵
+    st.markdown("""
         <form id="keyboard_nav_form" style="display:none;" method="get">
             <input type="hidden" name="action" id="action_input" value="">
         </form>
@@ -568,7 +568,6 @@ if not res_table.empty:
         }
         </script>
     """, unsafe_allow_html=True)
-
     # 確保選到的股票代號正確對應目前的索引
     selected_stock = stock_list[st.session_state.selected_stock_index]
 
