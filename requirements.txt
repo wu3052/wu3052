@@ -8,4 +8,3 @@ google-generativeai
 scipy
 yfinance
 streamlit-drawable-canvas
-st.dataframe(display_df[cols_to_show], hide_index=True)
