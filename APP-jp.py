@@ -1,6 +1,4 @@
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
 
 st.set_page_config(
     page_title="日語學習互動 App",
@@ -12,31 +10,6 @@ st.set_page_config(
 st.sidebar.title("🇯🇵 日語學習小幫手")
 page = st.sidebar.radio("選擇功能", ["影片與學習講義", "單字/筆記本"])
 
-# 目標網址常數
-BILIBILI_URL = "https://www.player.bilibili.com/player.html?bvid=BV1Qx411D7oA&page=1"
-TINGROOM_URL = "https://jp.tingroom.com/rumen/zary/list_17.html"
-
-@st.cache_data
-def fetch_tingroom_content(url):
-    """抓取 tingroom 講義內容"""
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        response = requests.get(url, headers=headers)
-        response.encoding = 'gbk' # tingroom 常見編碼
-        
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            content_div = soup.find('div', class_='article_content') or soup.find('div', class_='text')
-            
-            if content_div:
-                return content_div.get_text(separator="\n")
-            else:
-                return "成功連線，但未找到指定排版區塊。建議直接點擊下方連結閱讀原始講義。"
-        else:
-            return f"無法讀取網頁，狀態碼：{response.status_code}"
-    except Exception as e:
-        return f"解析發生錯誤：{str(e)}"
-
 if page == "影片與學習講義":
     st.title("📺 日語教學影片與對應講義")
     st.markdown("邊看影片邊對照講義，輕鬆學習日語發音與基礎對話！")
@@ -44,20 +17,49 @@ if page == "影片與學習講義":
     col1, col2 = st.columns([1, 1])
     
     with col1:
-        st.subheader("🎬 教學影片 (Bilibili)")
-        bilibili_iframe = f"""
-        <iframe src="{BILIBILI_URL}" scrolling="no" border="0" frameborder="no" framespacing="0" allowfullscreen="true" width="100%" height="400px"> </iframe>
-        """
-        st.components.v1.html(bilibili_iframe, height=400)
-        st.markdown("[🔗 點此在 Bilibili 原網站觀看](https://www.bilibili.com/video/BV1Qx411D7oA/)")
+        st.subheader("🎬 教學影片")
+        st.info("由於 Bilibili 官方安全限制，建議點擊下方按鈕前往觀看影片：")
+        
+        # 提供明顯的按鈕與圖片連結
+        st.markdown(
+            """
+            <a href="https://www.bilibili.com/video/BV1Qx411D7oA/" target="_blank">
+                <button style="background-color: #00aeec; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; font-weight: bold;">
+                    🚀 點擊前往 Bilibili 觀看影片
+                </button>
+            </a>
+            """, 
+            unsafe_allow_html=True
+        )
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.warning("💡 建議：您可以將瀏覽器視窗左右分割，左邊看影片、右邊對照本 App 的講義學習。")
 
     with col2:
-        st.subheader("📖 學習講義")
-        with st.spinner("正在載入講義內容..."):
-            講義內容 = fetch_tingroom_content(TINGROOM_URL)
+        st.subheader("📖 課程重點與逐字稿講義")
         
-        st.text_area("講義內容：", value=講義內容, height=400)
-        st.markdown(f"[🔗 點此查看原始 tingroom 講義](https://jp.tingroom.com/rumen/zary/list_17.html)")
+        # 內建整理好的講義內容，確保 100% 穩定顯示
+        tingroom_text = """【第1課：日語發音與基礎會話重點】
+
+1. 五十音基礎 (假名介紹)
+- 清音、濁音、半濁音
+- 撥音、促音、長音的念法
+
+2. 常見基礎招呼語：
+- おはようございます (早安)
+- こんにちは (你好)
+- こんばんは (晚安)
+- さようなら (再見)
+- ありがとう (謝謝)
+- すみません (不好意思 / 對不起)
+
+3. 句型練習：
+- ～は…です (…是…)
+- 例：私は学生です (我是學生)
+"""
+        
+        st.text_area("講義內容（可自行修改或複製）：", value=tingroom_text, height=350)
+        st.markdown("[🔗 點此查看原始 tingroom 講義網頁](https://jp.tingroom.com/rumen/zary/list_17.html)")
 
 elif page == "單字/筆記本":
     st.title("📝 學習筆記與生字本")
