@@ -191,10 +191,11 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_first_limit_pullback, first_limit_days, first_limit_range,
                                     enable_shakeout_breakout, shakeout_ma_val,
                                     enable_box_breakout, box_days,
+                                    enable_box_volume_accum, box10_days, box10_vol_mult,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
-    if df is None or len(df) < (box_days + 10):
+    if df is None or len(df) < (max(box_days, box10_days) + 10):
         return None
         
     df = df.dropna(subset=['Close'])
@@ -314,20 +315,40 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             matched_strategies.append(f"量縮洗盤後出量站上MA{shakeout_ma_val}")
 
     if enable_box_breakout:
-        # 計算過去 box_days 天（不含今天）的箱型頂部最高價
         box_high = df['High'].iloc[-(box_days + 1):-1].max()
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-        # 條件：今天收盤價突破箱型頂部，且成交量大於 5 日均量 1.5 倍，且昨天收盤價尚未突破箱型頂部
         is_break_box = (curr_price >= box_high) and (df['Close'].iloc[-2] < box_high)
         is_box_volume_expand = curr_vol > (vol_ma5 * 1.5)
         
         if is_break_box and is_box_volume_expand:
             matched_strategies.append(f"帶量突破箱型高點({box_days}日)")
 
+    if enable_box_volume_accum:
+        # 計算箱型區間高點與低點
+        box_window = df.iloc[-(box10_days + 1):-1]
+        b_high = box_window['High'].max()
+        b_low = box_window['Low'].min()
+        
+        # 條件 1：還沒突破箱型頂部，且高於箱底（確實還在箱型整理中）
+        is_inside_box = (curr_price < b_high) and (curr_price > b_low)
+        
+        # 條件 2：箱型階段突然爆大量（當日成交量大於 5 日均量的一定倍數，例如 2 倍）
+        vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
+        is_surge_volume = curr_vol > (vol_ma5 * box10_vol_mult)
+        
+        # 條件 3：站穩所有主要均線（收盤價同時大於 MA5、MA10、MA20）
+        ma5 = df['Close'].rolling(5).mean().iloc[-1]
+        ma10 = df['Close'].rolling(10).mean().iloc[-1]
+        ma20 = df['Close'].rolling(20).mean().iloc[-1]
+        is_above_all_mas = (curr_price >= ma5) and (curr_price >= ma10) and (curr_price >= ma20)
+        
+        if is_inside_box and is_surge_volume and is_above_all_mas:
+            matched_strategies.append(f"箱型爆大量站穩均線未破頂({box10_days}日)")
+
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
         enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback,
-        enable_shakeout_breakout, enable_box_breakout
+        enable_shakeout_breakout, enable_box_breakout, enable_box_volume_accum
     ])
     if total_enabled_flags == 0:
         return None
@@ -359,6 +380,7 @@ def run_quick_screener_parallel(
     enable_first_limit_pullback, first_limit_days, first_limit_range,
     enable_shakeout_breakout, shakeout_ma_val,
     enable_box_breakout, box_days,
+    enable_box_volume_accum, box10_days, box10_vol_mult,
     logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
@@ -380,6 +402,7 @@ def run_quick_screener_parallel(
                 enable_first_limit_pullback, first_limit_days, first_limit_range,
                 enable_shakeout_breakout, shakeout_ma_val,
                 enable_box_breakout, box_days,
+                enable_box_volume_accum, box10_days, box10_vol_mult,
                 logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
@@ -400,7 +423,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (9大策略模組與組合選擇)
+# 5. 左側控制台 (10大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
@@ -442,8 +465,15 @@ with st.sidebar:
     enable_shakeout_breakout = st.checkbox("8. 量縮洗盤後出量站上 MA 第一天", value=False)
     shakeout_ma_val = st.number_input("站上目標 MA 數值 (策略8)", min_value=1, max_value=240, value=20)
 
-    enable_box_breakout = st.checkbox("9. 帶量突破箱型高點", value=True)
+    enable_box_breakout = st.checkbox("9. 帶量突破箱型高點", value=False)
     box_days = st.number_input("箱型計算天數 (策略9)", min_value=5, max_value=250, value=20)
+
+    enable_box_volume_accum = st.checkbox("10. 箱型爆大量站穩均線(未破箱頂)", value=True)
+    col_b1, col_b2 = st.columns(2)
+    with col_b1:
+        box10_days = st.number_input("箱型天數 (策略10)", min_value=10, max_value=250, value=60)
+    with col_b2:
+        box10_vol_mult = st.number_input("爆量倍數 (策略10)", min_value=1.2, max_value=5.0, value=2.0, step=0.2)
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
@@ -453,7 +483,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
-    diag_code = st.text_input("輸入股票代號", placeholder="例如: 3529")
+    diag_code = st.text_input("輸入股票代號", placeholder="例如: 6290")
     diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
 
 
@@ -461,7 +491,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 9 大模組組合篩選、動態最低價趨勢線與箱型突破選股。")
+st.caption("支援 10 大模組組合篩選、箱型爆大量蓄勢選股與即時 K 線診斷。")
 st.divider()
 
 if diag_btn and diag_code:
@@ -490,6 +520,7 @@ if btn_quick_search:
             enable_first_limit_pullback, first_limit_days, first_limit_range,
             enable_shakeout_breakout, shakeout_ma_val,
             enable_box_breakout, box_days,
+            enable_box_volume_accum, box10_days, box10_vol_mult,
             logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
@@ -599,4 +630,4 @@ if not res_table.empty:
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選策略模組、設定組合邏輯與箱型天數，並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側勾選策略模組、設定箱型天數與爆量倍數，並點擊「執行組合潛力股挖掘」。")
