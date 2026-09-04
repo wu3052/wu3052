@@ -7,7 +7,6 @@ import twstock
 import requests
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import streamlit.components.v1 as components
 
 # --- 1. 頁面配置與現代化美化 CSS ---
@@ -205,7 +204,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     )
     return fig
 
-# --- 4. 高效多執行緒全市場掃描函式 ---
+# --- 4. 單檔分析與全市場循序掃描函式 ---
 def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
                                     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -479,7 +478,7 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         "收盤價": round(curr_price, 2)
     }
 
-def run_quick_screener_parallel(
+def run_quick_screener_sequential(
     enable_macd_25ma, macd_ma_period,
     enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
     enable_kd_cross, enable_tangle_steady, tangle_ma_period,
@@ -500,33 +499,27 @@ def run_quick_screener_parallel(
     status_text = st.sidebar.empty()
     
     completed = 0
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {
-            executor.submit(
-                fetch_and_analyze_single_stock, 
-                row, enable_macd_25ma, macd_ma_period,
-                enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
-                enable_kd_cross, enable_tangle_steady, tangle_ma_period,
-                enable_breakout, enable_vcp,
-                enable_first_limit_pullback, first_limit_days, first_limit_range,
-                enable_shakeout_breakout, shakeout_ma_val,
-                enable_box_breakout, box_days,
-                enable_box_volume_accum, box10_days, box10_vol_mult,
-                enable_box_bottom_support, s11_box_days, s11_vol_mult, s11_target_ma, s11_limit_days,
-                enable_trend_breakout, s12_lookback, s12_vol_mult,
-                logic_mode, min_vol, max_growth
-            ): row for _, row in df_stocks.iterrows()
-        }
+    for _, row in df_stocks.iterrows():
+        completed += 1
+        if completed % 10 == 0 or completed == total_count:
+            progress_bar.progress(min(completed / total_count, 1.0))
+            status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
         
-        for future in as_completed(futures):
-            completed += 1
-            if completed % 15 == 0 or completed == total_count:
-                progress_bar.progress(min(completed / total_count, 1.0))
-                status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
-            
-            res = future.result()
-            if res:
-                found_targets.append(res)
+        res = fetch_and_analyze_single_stock(
+            row, enable_macd_25ma, macd_ma_period,
+            enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
+            enable_kd_cross, enable_tangle_steady, tangle_ma_period,
+            enable_breakout, enable_vcp,
+            enable_first_limit_pullback, first_limit_days, first_limit_range,
+            enable_shakeout_breakout, shakeout_ma_val,
+            enable_box_breakout, box_days,
+            enable_box_volume_accum, box10_days, box10_vol_mult,
+            enable_box_bottom_support, s11_box_days, s11_vol_mult, s11_target_ma, s11_limit_days,
+            enable_trend_breakout, s12_lookback, s12_vol_mult,
+            logic_mode, min_vol, max_growth
+        )
+        if res:
+            found_targets.append(res)
                 
     progress_bar.empty()
     status_text.empty()
@@ -622,8 +615,8 @@ st.divider()
 
 # 執行搜尋按鈕觸發
 if btn_quick_search:
-    with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
-        res_df = run_quick_screener_parallel(
+    with st.spinner("⚡ 正在掃描全市場..."):
+        res_df = run_quick_screener_sequential(
             enable_macd_25ma, macd_ma_period,
             enable_limit_up_pullback, limit_up_days, limit_up_ma_period,
             enable_kd_cross, enable_tangle_steady, tangle_ma_period,
