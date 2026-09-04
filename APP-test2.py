@@ -193,10 +193,11 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_box_breakout, box_days,
                                     enable_box_volume_accum, box10_days, box10_vol_mult,
                                     enable_box_bottom_support, s11_box_days, s11_vol_mult, s11_target_ma, s11_limit_days,
+                                    enable_trend_breakout, s12_lookback, s12_vol_mult,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
-    required_len = max(box_days, box10_days, s11_box_days, 250) + 10
+    required_len = max(box_days, box10_days, s11_box_days, s12_lookback, 250) + 10
     if df is None or len(df) < required_len:
         return None
         
@@ -344,35 +345,26 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             matched_strategies.append(f"箱型爆大量站穩均線未破頂({box10_days}日)")
 
     if enable_box_bottom_support:
-        # 1. 箱型整理期間（可手動設定，例如 120 天）
         s11_box_window = df.iloc[-(s11_box_days + 1):-1]
         s11_b_high = s11_box_window['High'].max()
         s11_b_low = s11_box_window['Low'].min()
         box_range_val = s11_b_high - s11_b_low
         
-        # 2. 股價在箱型底部支撐處附近（收盤價小於等於箱底 + 箱幅的 20%，且高於箱底）
         is_at_box_bottom = (curr_price >= s11_b_low) and (curr_price <= s11_b_low + box_range_val * 0.20)
-        
-        # 3. 長期均線多頭排列 (MA120 > MA240)
         ma120 = df['Close'].rolling(120).mean().iloc[-1]
         ma240 = df['Close'].rolling(240).mean().iloc[-1]
         is_long_bull = ma120 > ma240
         
-        # 4. 突然爆大量（當日成交量大於 5 日均量指定倍數）
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
         is_s11_surge = curr_vol > (vol_ma5 * s11_vol_mult)
         
-        # 5. 站穩指定均線（檢查 60, 20, 10, 5）並動態標示
         standing_mas = []
         for m_val in [60, 20, 10, 5]:
             m_val_calc = df['Close'].rolling(m_val).mean().iloc[-1]
             if curr_price >= m_val_calc:
                 standing_mas.append(f"MA{m_val}")
         
-        # 判斷是否符合使用者勾選的目標均線
         is_match_target_ma = s11_target_ma in standing_mas if s11_target_ma else len(standing_mas) > 0
-        
-        # 6. 曾經在指定天數內（例如 60 天）出現漲停
         s11_recent_window = df.iloc[-s11_limit_days:]
         had_recent_limit = (s11_recent_window['daily_change'] >= 9.5).any()
         
@@ -380,10 +372,78 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             ma_str_label = "+".join(standing_mas) if standing_mas else "無"
             matched_strategies.append(f"箱底爆大量站穩均線[{ma_str_label}]({s11_box_days}日)")
 
+    if enable_trend_breakout:
+        # 第 12 策略：突破均線糾結（打底、突破、帶量同時符合，且配合使用者指定條件）
+        hist_df = df.iloc[-s12_lookback:-1]
+        if len(hist_df) >= 20:
+            # 要點一：打底 (尋找過去區間內兩個低點形成上升趨勢線，當前價在上升支撐線之上)
+            low_idx1 = hist_df['Low'].idxmin()
+            # 找第二個低點（排除第一個低點前後5天）
+            remaining_lows = hist_df.drop(hist_df.loc[max(hist_df.index[0], low_idx1 - pd.Timedelta(days=5)):min(hist_df.index[-1], low_idx1 + pd.Timedelta(days=5))].index)
+            if not remaining_lows.empty:
+                low_idx2 = remaining_lows['Low'].idxmin()
+                
+                # 計算上升趨勢線斜率與當日支撐價
+                p1_x = (low_idx1 - hist_df.index[0]).days
+                p1_y = df.loc[low_idx1, 'Low']
+                p2_x = (low_idx2 - hist_df.index[0]).days
+                p2_y = df.loc[low_idx2, 'Low']
+                
+                curr_x = (df.index[-1] - hist_df.index[0]).days
+                if p2_x != p1_x:
+                    slope_low = (p2_y - p1_y) / (p2_x - p1_x)
+                    support_line_val = p1_y + slope_low * (curr_x - p1_x)
+                else:
+                    support_line_val = p1_y
+                
+                is_basing = curr_price >= support_line_val * 0.98  # 符合打底且在上升趨勢之上
+                
+                # 要點二：突破（尋找過去區間內的兩個高點形成下降趨勢線，當前價向上突破）
+                high_idx1 = hist_df['High'].idxmax()
+                remaining_highs = hist_df.drop(hist_df.loc[max(hist_df.index[0], high_idx1 - pd.Timedelta(days=5)):min(hist_df.index[-1], high_idx1 + pd.Timedelta(days=5))].index)
+                if not remaining_highs.empty:
+                    high_idx2 = remaining_highs['High'].idxmax()
+                    
+                    hp1_x = (high_idx1 - hist_df.index[0]).days
+                    hp1_y = df.loc[high_idx1, 'High']
+                    hp2_x = (high_idx2 - hist_df.index[0]).days
+                    hp2_y = df.loc[high_idx2, 'High']
+                    
+                    if hp2_x != hp1_x:
+                        slope_high = (hp2_y - hp1_y) / (hp2_x - hp1_x)
+                        resistance_line_val = hp1_y + slope_high * (curr_x - hp1_x)
+                    else:
+                        resistance_line_val = hp1_y
+                    
+                    is_breaking = curr_price > resistance_line_val and df['Close'].iloc[-2] <= resistance_line_val
+                    
+                    # 要點三：帶量
+                    vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
+                    is_volume_surge = curr_vol > (vol_ma5 * s12_vol_mult)
+                    
+                    # 條件 1: 股價大於週(MA5)、月(MA20)、季(MA60)線
+                    ma5_v = df['Close'].rolling(5).mean().iloc[-1]
+                    ma20_v = df['Close'].rolling(20).mean().iloc[-1]
+                    ma60_v = df['Close'].rolling(60).mean().iloc[-1]
+                    is_above_all = (curr_price > ma5_v) and (curr_price > ma20_v) and (curr_price > ma60_v)
+                    
+                    # 條件 2: 股價位置距離在週、月、季線 10% 之內 (代表糾結剛發散)
+                    dist_ma5 = abs(curr_price - ma5_v) / ma5_v
+                    dist_ma20 = abs(curr_price - ma20_v) / ma20_v
+                    dist_ma60 = abs(curr_price - ma60_v) / ma60_v
+                    is_within_10pct = (dist_ma5 <= 0.10) and (dist_ma20 <= 0.10) and (dist_ma60 <= 0.10)
+                    
+                    # 條件 3: 當日漲幅大於 2%
+                    is_pct_gt_2 = change_pct >= 2.0
+                    
+                    if is_basing and is_breaking and is_volume_surge and is_above_all and is_within_10pct and is_pct_gt_2:
+                        matched_strategies.append("12.突破均線糾結(趨勢突破+帶量)")
+
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
         enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback,
-        enable_shakeout_breakout, enable_box_breakout, enable_box_volume_accum, enable_box_bottom_support
+        enable_shakeout_breakout, enable_box_breakout, enable_box_volume_accum, enable_box_bottom_support,
+        enable_trend_breakout
     ])
     if total_enabled_flags == 0:
         return None
@@ -417,6 +477,7 @@ def run_quick_screener_parallel(
     enable_box_breakout, box_days,
     enable_box_volume_accum, box10_days, box10_vol_mult,
     enable_box_bottom_support, s11_box_days, s11_vol_mult, s11_target_ma, s11_limit_days,
+    enable_trend_breakout, s12_lookback, s12_vol_mult,
     logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
@@ -440,6 +501,7 @@ def run_quick_screener_parallel(
                 enable_box_breakout, box_days,
                 enable_box_volume_accum, box10_days, box10_vol_mult,
                 enable_box_bottom_support, s11_box_days, s11_vol_mult, s11_target_ma, s11_limit_days,
+                enable_trend_breakout, s12_lookback, s12_vol_mult,
                 logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
@@ -460,7 +522,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (11大策略模組與組合選擇)
+# 5. 左側控制台 (12大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
@@ -512,7 +574,7 @@ with st.sidebar:
     with col_b2:
         box10_vol_mult = st.number_input("爆量倍數 (策略10)", min_value=1.2, max_value=5.0, value=2.0, step=0.2)
 
-    enable_box_bottom_support = st.checkbox("11. 箱底爆大量長均多頭站穩均線", value=True)
+    enable_box_bottom_support = st.checkbox("11. 箱底爆大量長均多頭站穩均線", value=False)
     s11_box_days = st.number_input("箱型天數 (策略11)", min_value=20, max_value=250, value=120)
     col_s1, col_s2 = st.columns(2)
     with col_s1:
@@ -520,6 +582,13 @@ with st.sidebar:
     with col_s2:
         s11_limit_days = st.number_input("近期漲停天數", min_value=10, max_value=120, value=60)
     s11_target_ma = st.selectbox("指定必須站穩均線 (策略11)", options=["", "MA60", "MA20", "MA10", "MA5"], index=0, format_func=lambda x: "不限 (顯示站穩之均線)" if x=="" else x)
+
+    enable_trend_breakout = st.checkbox("12. 突破均線糾結(打底+突破+帶量)", value=True)
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        s12_lookback = st.number_input("趨勢計算天數 (策略12)", min_value=20, max_value=120, value=60)
+    with col_t2:
+        s12_vol_mult = st.number_input("突破爆量倍數 (策略12)", min_value=1.1, max_value=3.0, value=1.5, step=0.1)
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
@@ -537,7 +606,7 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 11 大模組組合篩選、箱型底部爆量長均多頭選股與即時 K 線診斷。")
+st.caption("支援 12 大模組組合篩選、突破均線糾結與即時 K 線診斷。")
 st.divider()
 
 if diag_btn and diag_code:
@@ -568,6 +637,7 @@ if btn_quick_search:
             enable_box_breakout, box_days,
             enable_box_volume_accum, box10_days, box10_vol_mult,
             enable_box_bottom_support, s11_box_days, s11_vol_mult, s11_target_ma, s11_limit_days,
+            enable_trend_breakout, s12_lookback, s12_vol_mult,
             logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
@@ -672,9 +742,9 @@ if not res_table.empty:
                 stock_name = r_row['股票名稱']
                 combo_tag = r_row['組合邏輯名稱']
                 
-                fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
+                fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選策略模組、設定箱型天數、均線與爆量條件，並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側勾選策略模組（如第 12 策略），並點擊「執行組合潛力股挖掘」。")
