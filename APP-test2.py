@@ -537,8 +537,7 @@ def run_quick_screener_parallel(
 # 5. 左側控制台 (12大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
-    st.image("https://img.icons8.com/color/96/bullish.png", width=60)
-    st.title("策略控制面板")
+    st.title("📈 策略控制面板")
     st.caption("調整選股條件與多策略組合")
     st.divider()
 
