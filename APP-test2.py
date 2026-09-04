@@ -27,10 +27,10 @@ if 'screener_results' not in st.session_state:
 if 'selected_stock_index' not in st.session_state:
     st.session_state.selected_stock_index = 0
 
-# --- 2. 資料獲取函式 (FinMind 180天數據 + yfinance 備份) ---
+# --- 2. 資料獲取函式 (FinMind 250天數據 + yfinance 備份) ---
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = (pd.Timestamp.today() - pd.Timedelta(days=250)).strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=300)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
     parameters = {
         "dataset": "TaiwanStockPrice",
@@ -55,7 +55,7 @@ def get_finmind_data(stock_id):
     
     ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
     try:
-        df = yf.download(ticker, period="250d", interval="1d", progress=False)
+        df = yf.download(ticker, period="300d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
@@ -72,10 +72,12 @@ def get_taiwan_stock_list():
 
 # --- 3. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
-    df_k = df_k.tail(180).copy()
+    df_k = df_k.tail(200).copy()
     
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
+    df_k['MA60'] = df_k['Close'].rolling(60).mean()
+    df_k['MA120'] = df_k['Close'].rolling(120).mean()
     
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
@@ -104,23 +106,16 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name=f"{ma_col_name} (均線)"
     ), row=1, col=1)
 
-    trend_slice = df_k.iloc[-30:].copy()
     fig.add_trace(plotly_go.Scatter(
-        x=trend_slice.index, y=trend_slice['Low'],
-        line=dict(color='#FFA500', width=2),
-        name="最低價趨勢線"
+        x=df_k.index, y=df_k['MA60'], 
+        line=dict(color='#FF8C00', width=1.5), 
+        name="MA60"
     ), row=1, col=1)
 
-    fig.add_shape(
-        type="line", x0=df_k.index[-25], x1=df_k.index[-1],
-        y0=recent_neckline, y1=recent_neckline,
-        line=dict(color="#FF0000", width=2),
-        row=1, col=1
-    )
     fig.add_trace(plotly_go.Scatter(
-        x=[df_k.index[-1]], y=[recent_neckline],
-        mode="text", text=[f" 突破頸線: {recent_neckline:.2f}"],
-        textposition="bottom right", showlegend=False
+        x=df_k.index, y=df_k['MA120'], 
+        line=dict(color='#1E90FF', width=1.5), 
+        name="MA120"
     ), row=1, col=1)
 
     df_k['daily_change'] = df_k['Close'].pct_change() * 100
@@ -144,16 +139,9 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         )
         fig.add_trace(plotly_go.Scatter(
             x=[df_k.index[-1]], y=[open_price_val],
-            mode="text", text=[f" 首根漲停開盤價支撐: {open_price_val:.2f}"],
+            mode="text", text=[f" 漲停開盤價支撐: {open_price_val:.2f}"],
             textposition="top right", showlegend=False
         ), row=1, col=1)
-
-    fig.add_shape(
-        type="line", x0=df_k.index[0], x1=df_k.index[-1],
-        y0=year_high, y1=year_high,
-        line=dict(color="#000000", width=1.5, dash="dash"),
-        row=1, col=1
-    )
 
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
     fig.add_trace(plotly_go.Bar(
@@ -174,7 +162,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     ), row=3, col=1)
 
     fig.update_layout(
-        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
+        title=dict(text=f"<b>{stock_title}</b> - 200天歷史日線圖", font=dict(size=14, color="#2D3748")),
         template="plotly_white",
         height=600,
         margin=dict(l=20, r=20, t=40, b=20),
@@ -192,10 +180,11 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                                     enable_shakeout_breakout, shakeout_ma_val,
                                     enable_box_breakout, box_days,
                                     enable_box_volume_accum, box10_days, box10_vol_mult,
+                                    enable_box_bottom_long, b11_days, b11_vol_mult, b11_ma_target,
                                     logic_mode, min_vol, max_growth):
     sid = row['code']
     df = get_finmind_data(sid)
-    if df is None or len(df) < (max(box_days, box10_days) + 10):
+    if df is None or len(df) < 250:
         return None
         
     df = df.dropna(subset=['Close'])
@@ -324,19 +313,14 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             matched_strategies.append(f"帶量突破箱型高點({box_days}日)")
 
     if enable_box_volume_accum:
-        # 計算箱型區間高點與低點
         box_window = df.iloc[-(box10_days + 1):-1]
         b_high = box_window['High'].max()
         b_low = box_window['Low'].min()
         
-        # 條件 1：還沒突破箱型頂部，且高於箱底（確實還在箱型整理中）
         is_inside_box = (curr_price < b_high) and (curr_price > b_low)
-        
-        # 條件 2：箱型階段突然爆大量（當日成交量大於 5 日均量的一定倍數，例如 2 倍）
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
         is_surge_volume = curr_vol > (vol_ma5 * box10_vol_mult)
         
-        # 條件 3：站穩所有主要均線（收盤價同時大於 MA5、MA10、MA20）
         ma5 = df['Close'].rolling(5).mean().iloc[-1]
         ma10 = df['Close'].rolling(10).mean().iloc[-1]
         ma20 = df['Close'].rolling(20).mean().iloc[-1]
@@ -345,10 +329,45 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
         if is_inside_box and is_surge_volume and is_above_all_mas:
             matched_strategies.append(f"箱型爆大量站穩均線未破頂({box10_days}日)")
 
+    if enable_box_bottom_long:
+        # 1. 長期均線多頭排列：60 > 120 > 240
+        ma60 = df['Close'].rolling(60).mean().iloc[-1]
+        ma120 = df['Close'].rolling(120).mean().iloc[-1]
+        ma240 = df['Close'].rolling(240).mean().iloc[-1]
+        is_long_alignment = (ma60 > ma120) and (ma120 > ma240)
+
+        # 2. 箱型底部支撐處附近
+        box_window = df.iloc[-(b11_days + 1):-1]
+        b_low = box_window['Low'].min()
+        # 股價在箱底附近 (箱底 <= 當前價 <= 箱底 * 1.06)
+        is_near_box_bottom = (curr_price >= b_low) and (curr_price <= b_low * 1.06)
+
+        # 3. 突然爆大量 (大於5日均量一定倍數)
+        vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
+        is_surge_vol = curr_vol > (vol_ma5 * b11_vol_mult)
+
+        # 4. 站穩均線 (可設定，例如大於 MA5 或 MA20)
+        target_ma = df['Close'].rolling(b11_ma_target).mean().iloc[-1]
+        is_above_ma = curr_price >= target_ma
+
+        # 5. 回踩漲停開盤價附近 (前60天內曾有漲停，且現價接近該漲停開盤價 ±3%)
+        check_limit_window = df.iloc[-60:]
+        near_limit_open = False
+        for idx, r in check_limit_window.iterrows():
+            if r['daily_change'] >= 9.5:
+                l_open = r['Open']
+                if abs(curr_price - l_open) / l_open <= 0.035:
+                    near_limit_open = True
+                    break
+
+        if is_long_alignment and is_near_box_bottom and is_surge_vol and is_above_ma and near_limit_open:
+            matched_strategies.append(f"多頭排列箱底爆大量站均+回踩漲停價({b11_days}日)")
+
     total_enabled_flags = sum([
         enable_macd_25ma, enable_limit_up_pullback, enable_kd_cross, 
         enable_tangle_steady, enable_breakout, enable_vcp, enable_first_limit_pullback,
-        enable_shakeout_breakout, enable_box_breakout, enable_box_volume_accum
+        enable_shakeout_breakout, enable_box_breakout, enable_box_volume_accum,
+        enable_box_bottom_long
     ])
     if total_enabled_flags == 0:
         return None
@@ -381,6 +400,7 @@ def run_quick_screener_parallel(
     enable_shakeout_breakout, shakeout_ma_val,
     enable_box_breakout, box_days,
     enable_box_volume_accum, box10_days, box10_vol_mult,
+    enable_box_bottom_long, b11_days, b11_vol_mult, b11_ma_target,
     logic_mode, min_vol, max_growth
 ):
     df_stocks = get_taiwan_stock_list()
@@ -403,6 +423,7 @@ def run_quick_screener_parallel(
                 enable_shakeout_breakout, shakeout_ma_val,
                 enable_box_breakout, box_days,
                 enable_box_volume_accum, box10_days, box10_vol_mult,
+                enable_box_bottom_long, b11_days, b11_vol_mult, b11_ma_target,
                 logic_mode, min_vol, max_growth
             ): row for _, row in df_stocks.iterrows()
         }
@@ -423,7 +444,7 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (10大策略模組與組合選擇)
+# 5. 左側控制台 (11大策略模組與組合選擇)
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
@@ -468,12 +489,20 @@ with st.sidebar:
     enable_box_breakout = st.checkbox("9. 帶量突破箱型高點", value=False)
     box_days = st.number_input("箱型計算天數 (策略9)", min_value=5, max_value=250, value=20)
 
-    enable_box_volume_accum = st.checkbox("10. 箱型爆大量站穩均線(未破箱頂)", value=True)
+    enable_box_volume_accum = st.checkbox("10. 箱型爆大量站穩均線(未破箱頂)", value=False)
     col_b1, col_b2 = st.columns(2)
     with col_b1:
         box10_days = st.number_input("箱型天數 (策略10)", min_value=10, max_value=250, value=60)
     with col_b2:
         box10_vol_mult = st.number_input("爆量倍數 (策略10)", min_value=1.2, max_value=5.0, value=2.0, step=0.2)
+
+    enable_box_bottom_long = st.checkbox("11. 多頭排列箱底爆大量站均+回踩漲停價", value=True)
+    col_k1, col_k2 = st.columns(2)
+    with col_k1:
+        b11_days = st.number_input("箱型天數 (策略11)", min_value=10, max_value=250, value=40)
+        b11_ma_target = st.number_input("站穩均線參數", min_value=1, max_value=60, value=5)
+    with col_k2:
+        b11_vol_mult = st.number_input("爆量倍數 (策略11)", min_value=1.2, max_value=5.0, value=2.2, step=0.2)
 
     st.divider()
     min_vol = st.number_input("成交量大於 (張)", value=500, step=100)
@@ -483,7 +512,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("🩺 個股即時 K 線圖診斷")
-    diag_code = st.text_input("輸入股票代號", placeholder="例如: 6290")
+    diag_code = st.text_input("輸入股票代號", placeholder="例如: 2330")
     diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
 
 
@@ -491,11 +520,11 @@ with st.sidebar:
 # 6. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 10 大模組組合篩選、箱型爆大量蓄勢選股與即時 K 線診斷。")
+st.caption("支援 11 大模組組合篩選、箱型底部多頭爆量佈局與即時 K 線診斷。")
 st.divider()
 
 if diag_btn and diag_code:
-    with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
+    with st.spinner(f"正在從 FinMind 擷取 {diag_code} 200天歷史數據並繪製即時 K 線圖..."):
         df_diag = get_finmind_data(diag_code)
         if df_diag is not None and not df_diag.empty:
             stock_list_df = get_taiwan_stock_list()
@@ -521,6 +550,7 @@ if btn_quick_search:
             enable_shakeout_breakout, shakeout_ma_val,
             enable_box_breakout, box_days,
             enable_box_volume_accum, box10_days, box10_vol_mult,
+            enable_box_bottom_long, b11_days, b11_vol_mult, b11_ma_target,
             logic_mode, min_vol, max_growth
         )
         st.session_state.screener_results = res_df
@@ -618,16 +648,16 @@ if not res_table.empty:
     """, height=0)
 
     if selected_stock:
-        with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的 180 天歷史日線數據與指標..."):
+        with st.spinner(f"正在從 FinMind 載入 {selected_stock} 的歷史日線數據與指標..."):
             df_k = get_finmind_data(selected_stock)
             if df_k is not None and not df_k.empty:
                 r_row = res_table[res_table['股票代號']==selected_stock].iloc[0]
                 stock_name = r_row['股票名稱']
                 combo_tag = r_row['組合邏輯名稱']
                 
-                fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=first_limit_days)
+                fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {stock_name} [{combo_tag}]", macd_ma_period, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_res, use_container_width=True)
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選策略模組、設定箱型天數與爆量倍數，並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側勾選策略模組、設定相關參數，並點擊「執行組合潛力股挖掘」。")
