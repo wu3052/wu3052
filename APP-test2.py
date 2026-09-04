@@ -373,17 +373,13 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
             matched_strategies.append(f"箱底爆大量站穩均線[{ma_str_label}]({s11_box_days}日)")
 
     if enable_trend_breakout:
-        # 第 12 策略：突破均線糾結（打底、突破、帶量同時符合，且配合使用者指定條件）
         hist_df = df.iloc[-s12_lookback:-1]
         if len(hist_df) >= 20:
-            # 要點一：打底 (尋找過去區間內兩個低點形成上升趨勢線，當前價在上升支撐線之上)
             low_idx1 = hist_df['Low'].idxmin()
-            # 找第二個低點（排除第一個低點前後5天）
             remaining_lows = hist_df.drop(hist_df.loc[max(hist_df.index[0], low_idx1 - pd.Timedelta(days=5)):min(hist_df.index[-1], low_idx1 + pd.Timedelta(days=5))].index)
             if not remaining_lows.empty:
                 low_idx2 = remaining_lows['Low'].idxmin()
                 
-                # 計算上升趨勢線斜率與當日支撐價
                 p1_x = (low_idx1 - hist_df.index[0]).days
                 p1_y = df.loc[low_idx1, 'Low']
                 p2_x = (low_idx2 - hist_df.index[0]).days
@@ -396,9 +392,8 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                 else:
                     support_line_val = p1_y
                 
-                is_basing = curr_price >= support_line_val * 0.98  # 符合打底且在上升趨勢之上
+                is_basing = curr_price >= support_line_val * 0.98
                 
-                # 要點二：突破（尋找過去區間內的兩個高點形成下降趨勢線，當前價向上突破）
                 high_idx1 = hist_df['High'].idxmax()
                 remaining_highs = hist_df.drop(hist_df.loc[max(hist_df.index[0], high_idx1 - pd.Timedelta(days=5)):min(hist_df.index[-1], high_idx1 + pd.Timedelta(days=5))].index)
                 if not remaining_highs.empty:
@@ -417,23 +412,19 @@ def fetch_and_analyze_single_stock(row, enable_macd_25ma, macd_ma_period,
                     
                     is_breaking = curr_price > resistance_line_val and df['Close'].iloc[-2] <= resistance_line_val
                     
-                    # 要點三：帶量
                     vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
                     is_volume_surge = curr_vol > (vol_ma5 * s12_vol_mult)
                     
-                    # 條件 1: 股價大於週(MA5)、月(MA20)、季(MA60)線
                     ma5_v = df['Close'].rolling(5).mean().iloc[-1]
                     ma20_v = df['Close'].rolling(20).mean().iloc[-1]
                     ma60_v = df['Close'].rolling(60).mean().iloc[-1]
                     is_above_all = (curr_price > ma5_v) and (curr_price > ma20_v) and (curr_price > ma60_v)
                     
-                    # 條件 2: 股價位置距離在週、月、季線 10% 之內 (代表糾結剛發散)
                     dist_ma5 = abs(curr_price - ma5_v) / ma5_v
                     dist_ma20 = abs(curr_price - ma20_v) / ma20_v
                     dist_ma60 = abs(curr_price - ma60_v) / ma60_v
                     is_within_10pct = (dist_ma5 <= 0.10) and (dist_ma20 <= 0.10) and (dist_ma60 <= 0.10)
                     
-                    # 條件 3: 當日漲幅大於 2%
                     is_pct_gt_2 = change_pct >= 2.0
                     
                     if is_basing and is_breaking and is_volume_surge and is_above_all and is_within_10pct and is_pct_gt_2:
@@ -522,10 +513,18 @@ def run_quick_screener_parallel(
 
 
 # ==========================================
-# 5. 左側控制台 (12大策略模組與組合選擇)
+# 5. 左側控制台 (方案快捷按鈕與 12大策略模組)
 # ==========================================
 with st.sidebar:
     st.title("⚡ 快速潛力股挖掘 (策略組合)")
+    st.divider()
+
+    st.subheader("🎯 一鍵套用精選方案")
+    col_a, col_b, col_c = st.columns(3)
+    
+    run_plan_a = col_a.button("🔥 方案A", use_container_width=True, help="強勢主升段組合：策略2+策略8 (AND)")
+    run_plan_b = col_b.button("📈 方案B", use_container_width=True, help="中長線打底突破：策略12")
+    run_plan_c = col_c.button("🛡️ 方案C", use_container_width=True, help="保守低接防守：策略7")
     st.divider()
 
     logic_mode = st.radio(
@@ -583,7 +582,7 @@ with st.sidebar:
         s11_limit_days = st.number_input("近期漲停天數", min_value=10, max_value=120, value=60)
     s11_target_ma = st.selectbox("指定必須站穩均線 (策略11)", options=["", "MA60", "MA20", "MA10", "MA5"], index=0, format_func=lambda x: "不限 (顯示站穩之均線)" if x=="" else x)
 
-    enable_trend_breakout = st.checkbox("12. 突破均線糾結(打底+突破+帶量)", value=True)
+    enable_trend_breakout = st.checkbox("12. 突破均線糾結(打底+突破+帶量)", value=False)
     col_t1, col_t2 = st.columns(2)
     with col_t1:
         s12_lookback = st.number_input("趨勢計算天數 (策略12)", min_value=20, max_value=120, value=60)
@@ -603,29 +602,68 @@ with st.sidebar:
 
 
 # ==========================================
-# 6. 右側主畫面區塊
+# 6. 右側主畫面區塊與方案觸發處理
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
-st.caption("支援 12 大模組組合篩選、突破均線糾結與即時 K 線診斷。")
+st.caption("支援 12 大模組組合篩選、方案快速一鍵生成與即時 K 線診斷。")
 st.divider()
 
-if diag_btn and diag_code:
-    with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
-        df_diag = get_finmind_data(diag_code)
-        if df_diag is not None and not df_diag.empty:
-            stock_list_df = get_taiwan_stock_list()
-            matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
-            s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
-            
-            st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
-            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=30)
-            st.plotly_chart(fig_diag, use_container_width=True)
-        else:
-            st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
+# 處理方案快捷按鈕點擊事件
+if run_plan_a:
+    with st.spinner("⚡ 正在執行【方案 A：強勢主升段組合】高速掃描..."):
+        res_df = run_quick_screener_parallel(
+            enable_macd_25ma=False, macd_ma_period=25,
+            enable_limit_up_pullback=True, limit_up_days=20, limit_up_ma_period=20,
+            enable_kd_cross=False, enable_tangle_steady=False, tangle_ma_period=20,
+            enable_breakout=False, enable_vcp=False,
+            enable_first_limit_pullback=False, first_limit_days=30, first_limit_range=2.0,
+            enable_shakeout_breakout=True, shakeout_ma_val=20,
+            enable_box_breakout=False, box_days=20,
+            enable_box_volume_accum=False, box10_days=60, box10_vol_mult=2.0,
+            enable_box_bottom_support=False, s11_box_days=120, s11_vol_mult=2.0, s11_target_ma="", s11_limit_days=60,
+            enable_trend_breakout=False, s12_lookback=60, s12_vol_mult=1.5,
+            logic_mode="AND (所有勾選條件皆需成立)", min_vol=800, max_growth=9.5
+        )
+        st.session_state.screener_results = res_df
+        st.session_state.selected_stock_index = 0
 
-st.subheader("📋 搜尋股票結果清單")
+elif run_plan_b:
+    with st.spinner("⚡ 正在執行【方案 B：中長線帶量打底突破組合】高速掃描..."):
+        res_df = run_quick_screener_parallel(
+            enable_macd_25ma=False, macd_ma_period=25,
+            enable_limit_up_pullback=False, limit_up_days=20, limit_up_ma_period=25,
+            enable_kd_cross=False, enable_tangle_steady=False, tangle_ma_period=20,
+            enable_breakout=False, enable_vcp=False,
+            enable_first_limit_pullback=False, first_limit_days=30, first_limit_range=2.0,
+            enable_shakeout_breakout=False, shakeout_ma_val=20,
+            enable_box_breakout=False, box_days=20,
+            enable_box_volume_accum=False, box10_days=60, box10_vol_mult=2.0,
+            enable_box_bottom_support=False, s11_box_days=120, s11_vol_mult=2.0, s11_target_ma="", s11_limit_days=60,
+            enable_trend_breakout=True, s12_lookback=60, s12_vol_mult=2.0,
+            logic_mode="OR (符合任一勾選條件即可)", min_vol=800, max_growth=9.5
+        )
+        st.session_state.screener_results = res_df
+        st.session_state.selected_stock_index = 0
 
-if btn_quick_search:
+elif run_plan_c:
+    with st.spinner("⚡ 正在執行【方案 C：保守低接防守組合】高速掃描..."):
+        res_df = run_quick_screener_parallel(
+            enable_macd_25ma=False, macd_ma_period=25,
+            enable_limit_up_pullback=False, limit_up_days=20, limit_up_ma_period=25,
+            enable_kd_cross=False, enable_tangle_steady=False, tangle_ma_period=20,
+            enable_breakout=False, enable_vcp=False,
+            enable_first_limit_pullback=True, first_limit_days=30, first_limit_range=1.0,
+            enable_shakeout_breakout=False, shakeout_ma_val=20,
+            enable_box_breakout=False, box_days=20,
+            enable_box_volume_accum=False, box10_days=60, box10_vol_mult=2.0,
+            enable_box_bottom_support=False, s11_box_days=120, s11_vol_mult=2.0, s11_target_ma="", s11_limit_days=60,
+            enable_trend_breakout=False, s12_lookback=60, s12_vol_mult=1.5,
+            logic_mode="OR (符合任一勾選條件即可)", min_vol=1000, max_growth=5.0
+        )
+        st.session_state.screener_results = res_df
+        st.session_state.selected_stock_index = 0
+
+elif btn_quick_search:
     with st.spinner("⚡ 正在透過多執行緒高速掃描全市場..."):
         res_df = run_quick_screener_parallel(
             enable_macd_25ma, macd_ma_period,
@@ -642,6 +680,22 @@ if btn_quick_search:
         )
         st.session_state.screener_results = res_df
         st.session_state.selected_stock_index = 0
+
+if diag_btn and diag_code:
+    with st.spinner(f"正在從 FinMind 擷取 {diag_code} 180天歷史數據並繪製即時 K 線圖..."):
+        df_diag = get_finmind_data(diag_code)
+        if df_diag is not None and not df_diag.empty:
+            stock_list_df = get_taiwan_stock_list()
+            matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
+            s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
+            
+            st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
+            fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", macd_ma_period, enable_first_limit=True, first_limit_days=30)
+            st.plotly_chart(fig_diag, use_container_width=True)
+        else:
+            st.error(f"❌ 查無 {diag_code} 的歷史數據，請確認代號是否正確。")
+
+st.subheader("📋 搜尋股票結果清單")
 
 res_table = st.session_state.screener_results
 if not res_table.empty:
@@ -747,4 +801,4 @@ if not res_table.empty:
             else:
                 st.warning("⚠️ 無法獲取該標的的歷史數據。")
 else:
-    st.info("👈 請於左側勾選策略模組（如第 12 策略），並點擊「執行組合潛力股挖掘」。")
+    st.info("👈 請於左側上方點擊【方案 A / B / C】快捷按鈕，或手動勾選策略模組後點擊「執行組合潛力股挖掘」。")
