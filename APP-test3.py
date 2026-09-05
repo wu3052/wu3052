@@ -66,7 +66,7 @@ default_params = {
     "enable_box_volume_accum": False, "box10_days": 60, "box10_vol_mult": 2.0,
     "enable_box_bottom_support": False, "s11_box_days": 120, "s11_vol_mult": 2.0, "s11_target_ma": "", "s11_limit_days": 60,
     "enable_trend_breakout": True, "s12_lookback": 60, "s12_vol_mult": 1.5,
-    "min_vol": 500, "max_growth": 9.5
+    "min_vol": 800, "max_growth": 9.5
 }
 
 for k, v in default_params.items():
@@ -117,28 +117,38 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
-def get_taiex_status():
+def get_market_index_data():
+    """獲取台股大盤指數 (^TWII) 資料"""
     try:
-        df = yf.download("^TWII", period="120d", interval="1d", progress=False)
+        df = yf.download("^TWII", period="250d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
-        curr = df['Close'].iloc[-1]
-        ma20 = df['Close'].rolling(20).mean().iloc[-1]
-        ma60 = df['Close'].rolling(60).mean().iloc[-1]
-        return float(curr), float(ma20), float(ma60), True
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
     except:
-        return 0.0, 0.0, 0.0, False
+        return None
 
 
-# --- 4. 繪製 K 線圖 ---
-def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
+# --- 4. 繪製 K 線圖（包含突破頸線與首根漲停開盤價支撐線） ---
+def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=30):
     df_k = df_k.tail(180).copy()
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
     
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
+
+    # 計算首根漲停開盤價支撐
+    first_limit_open_val = None
+    check_window = df_k.iloc[-first_limit_days:]
+    df_k['daily_change_calc'] = df_k['Close'].pct_change() * 100
+    for idx, r in check_window.iterrows():
+        if r['daily_change_calc'] >= 9.5:
+            loc_in_full = df_k.index.get_loc(idx)
+            prior_slice = df_k.iloc[max(0, loc_in_full-15):loc_in_full]
+            if not (prior_slice['daily_change_calc'] >= 9.5).any():
+                first_limit_open_val = r['Open']
+                break
 
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
@@ -171,6 +181,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         name="最低價趨勢線"
     ), row=1, col=1)
 
+    # 1. 突破頸線（紅色實線）
     fig.add_shape(
         type="line", x0=df_k.index[-25], x1=df_k.index[-1],
         y0=recent_neckline, y1=recent_neckline,
@@ -178,10 +189,19 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row=1, col=1
     )
 
+    # 2. 首根漲停開盤價支撐（藍色虛線）
+    if first_limit_open_val is not None:
+        fig.add_shape(
+            type="line", x0=df_k.index[0], x1=df_k.index[-1],
+            y0=first_limit_open_val, y1=first_limit_open_val,
+            line=dict(color="#0000FF", width=1.8, dash="dash"),
+            row=1, col=1
+        )
+
     fig.add_shape(
         type="line", x0=df_k.index[0], x1=df_k.index[-1],
         y0=year_high, y1=year_high,
-        line=dict(color="#000000", width=1.5, dash="dash"),
+        line=dict(color="#000000", width=1.5, dash="dot"),
         row=1, col=1
     )
 
@@ -204,7 +224,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     ), row=3, col=1)
 
     fig.update_layout(
-        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
+        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖 (🔴紅線:突破頸線 | 🔵藍虛線:首根漲停開盤價支撐)", font=dict(size=13, color="#2D3748")),
         template="plotly_white",
         height=600,
         margin=dict(l=20, r=20, t=40, b=20),
@@ -638,38 +658,11 @@ with st.sidebar:
 
 
 # ==========================================
-# 8. 右側主畫面區塊與大盤監測
+# 8. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_name}`")
-st.caption("具備多模組組合篩選、動態技術分析與高速全市場掃描功能。")
-
-# 📊 右側大盤監測區塊
-with st.container():
-    st.markdown("### 📊 大盤即時動態與操作指南監測 (^TWII 加權指數)")
-    taiex_curr, taiex_ma20, taiex_ma60, taiex_ok = get_taiex_status()
-    
-    if taiex_ok:
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("加權指數現價", f"{taiex_curr:,.2f}")
-        col_m2.metric("20MA (月線)", f"{taiex_ma20:,.2f}")
-        col_m3.metric("60MA (季線)", f"{taiex_ma60:,.2f}")
-        
-        is_above_20ma = taiex_curr >= taiex_ma20
-        is_above_60ma = taiex_curr >= taiex_ma60
-        
-        if is_above_20ma:
-            col_m4.metric("大盤多空狀態", "🟢 多頭強勢", "站上月線")
-            st.success("💡 **大盤策略指引：** 目前大盤在 **20MA（月線）之上**，屬於多頭或盤整偏多格局，強烈建議大膽勾選 **策略 8、策略 12、策略 2**（突破與回檔買進勝率極高）。")
-        elif not is_above_60ma:
-            col_m4.metric("大盤多空狀態", "🔴 弱勢空方", "跌破季線")
-            st.warning("⚠️ **大盤策略指引：** 目前大盤弱勢、在 **季線之下**，建議縮手觀望，或僅勾選防守性較強的 **策略 11（箱底低接）**。")
-        else:
-            col_m4.metric("大盤多空狀態", "🟡 震盪整理", "介於月季線之間")
-            st.info("ℹ️ **大盤策略指引：** 目前大盤介於月線與季線之間，操作宜穩健，可搭配防守型策略或減少部位。")
-    else:
-        st.warning("⚠️ 目前無法即時連線抓取大盤加權指數 (^TWII) 數據，請確認網路連線。")
-
+st.caption("具備多模組組合篩選、大盤監測、動態技術分析與高速全市場掃描功能。")
 st.divider()
 
 # 若手動點擊自訂搜尋按鈕
@@ -681,7 +674,8 @@ if btn_quick_search:
 
 res_table = st.session_state.screener_results
 
-tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷"])
+# 四個分頁：📋 篩選結果清單 | 📊 大盤監測與K線 | 📈 K 線圖互動瀏覽 | 🩺 個股即時診斷 | 📖 使用說明與策略
+tab1, tab_market, tab2, tab3, tab4 = st.tabs(["📋 篩選結果清單", "📊 大盤監測與 K 線", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷", "📖 使用說明與策略"])
 
 with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
@@ -703,6 +697,40 @@ with tab1:
         )
     else:
         st.info("👈 點擊左側上方的 **【組合一：波段飆股】** 或 **【組合二：回檔低接】** 按鈕，即可立即在畫面上產生對應的潛力股票標的！")
+
+with tab_market:
+    st.subheader("📊 台股大盤監測與趨勢診斷")
+    st.caption("依據大盤位置決定選股策略：大盤在 20MA 之上大膽進攻 (策略 8, 12, 2)；若跌破季線則建議縮手或僅用防守型策略 (策略 11)。")
+    
+    with st.spinner("正在載入台股加權指數 (^TWII) 即時數據..."):
+        df_market = get_market_index_data()
+        if df_market is not None and not df_market.empty:
+            df_market['MA20'] = df_market['Close'].rolling(20).mean()
+            df_market['MA60'] = df_market['Close'].rolling(60).mean()
+            
+            curr_m_close = df_market['Close'].iloc[-1]
+            curr_m_ma20 = df_market['MA20'].iloc[-1]
+            curr_m_ma60 = df_market['MA60'].iloc[-1]
+            
+            col_m1, col_m2, col_m3 = st.columns(3)
+            col_m1.metric("加權指數現價", f"{curr_m_close:,.2f}")
+            col_m2.metric("20MA (月線)", f"{curr_m_ma20:,.2f}")
+            col_m3.metric("60MA (季線)", f"{curr_m_ma60:,.2f}")
+            
+            st.divider()
+            
+            if curr_m_close >= curr_m_ma20:
+                st.success("🟢 **【大盤多頭格局 / 20MA 之上】**：目前大盤強勢，大膽勾選 **策略 8、策略 12、策略 2**（突破與回檔買進勝率極高）！")
+            elif curr_m_close >= curr_m_ma60:
+                st.warning("🟡 **【大盤盤整格局 / 介於月線與季線之間】**：建議控制持股水位，挑選精準的波段或回檔低接標的。")
+            else:
+                st.error("🔴 **【大盤弱勢格局 / 跌破季線之下】**：建議縮手觀望，或僅勾選防守性較強的 **策略 11（箱底低接）**。")
+            
+            # 繪製大盤 K 線圖
+            fig_m = plot_beautified_chart(df_market, "台股加權指數 (^TWII)", 20, enable_first_limit=False)
+            st.plotly_chart(fig_m, use_container_width=True)
+        else:
+            st.warning("⚠️ 目前無法取得大盤指數數據。")
 
 with tab2:
     st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")
@@ -804,3 +832,45 @@ with tab3:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
         st.info("💡 輸入任意台股代號即可獨立檢視其技術分析與 K 線圖診斷。")
+
+with tab4:
+    st.subheader("📖 實戰策略使用說明與組合對照表")
+    
+    st.markdown("""
+    ### 推薦組合一：【波段飆股爆發型】（勝率與爆發力最佳，最推薦）
+    這個組合專門捕捉「主力洗盤完畢、帶量發動」的強勢股，適合台股多頭或盤整偏多時使用。
+    
+    * **1. 勾選策略：**
+        * ☑️ **策略 8**：量縮洗盤後出量站上 MA 第一天（捕捉洗盤結束的起漲點）
+        * ☑️ **策略 12**：突破均線糾結（打底+突破+帶量）（抓中長線大底翻揚）
+    * **2. 數值填入：**
+        * `shakeout_ma_val`（策略 8 目標 MA）：`20`（以月線為防守與突破基準）
+        * `s12_lookback`（策略 12 趨勢天數）：`60`（看一季的打底區間）
+        * `s12_vol_mult`（策略 12 爆量倍數）：`1.8` 或 `2.0`（確保有實質資金敲進）
+        * `min_vol`（成交量）：`800 張`（避開流動性不佳的股票）
+        * `max_growth`（當日漲幅）：`9.5%`（保留上車空間）
+    
+    ---
+    
+    ### 推薦組合二：【強勢回檔低接型】（防守性較好，適合穩健操作）
+    這個組合專門找「曾經漲停過、有主力照顧，現在回測均線量縮」的優質標的，買在相對安全甜蜜點。
+    
+    * **1. 勾選策略：**
+        * ☑️ **策略 2**：前 N 天帶量漲停 + 量縮回踩 MA
+        * ☑️ **策略 7**：首根漲停開盤價支撐回踩
+    * **2. 數值填入：**
+        * `limit_up_days`（策略 2 前 N 天）：`20`（抓最近一個月有表現的股）
+        * `limit_up_ma_period`（策略 2 回踩 MA）：`20`（回測 20MA 月線支撐）
+        * `first_limit_days`（策略 7 天數）：`30`
+        * `first_limit_range`（策略 7 容許區間）：`1.5%` 或 `2.0%`
+        * `min_vol`：`800 張`
+        * `max_growth`：`9.5%`（回檔找買點，漲幅通常不用設太高，此處維持預設即可）
+    
+    ---
+    
+    ### 💡 實戰操作口訣與提醒
+    * **不要貪多**：每次選股時，建議一次只勾選 1 到 2 個策略。如果同時勾選太多互斥的條件（例如要 MACD 回踩又要箱型突破），容易漏掉好股票。
+    * **看大盤做篩選**：
+        * 當大盤在 **20MA（月線）之上** 時：大膽勾選策略 8、策略 12、策略 2（突破與回檔買進勝率極高）。
+        * 當大盤弱勢、在 **季線之下** 時：建議縮手，或僅勾選防守性較強的策略 11（箱底低接）。
+    """)
