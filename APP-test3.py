@@ -135,13 +135,15 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
     
+    # 補上漲跌幅計算欄位，避免 KeyError
+    df_k['daily_change_calc'] = df_k['Close'].pct_change() * 100
+    
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
 
     # 計算首根漲停開盤價支撐
     first_limit_open_val = None
     check_window = df_k.iloc[-first_limit_days:]
-    df_k['daily_change_calc'] = df_k['Close'].pct_change() * 100
     for idx, r in check_window.iterrows():
         if r['daily_change_calc'] >= 9.5:
             loc_in_full = df_k.index.get_loc(idx)
