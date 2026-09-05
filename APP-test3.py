@@ -117,6 +117,19 @@ def get_taiwan_stock_list():
             stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
+def get_taiex_status():
+    try:
+        df = yf.download("^TWII", period="120d", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.capitalize() for c in df.columns]
+        curr = df['Close'].iloc[-1]
+        ma20 = df['Close'].rolling(20).mean().iloc[-1]
+        ma60 = df['Close'].rolling(60).mean().iloc[-1]
+        return float(curr), float(ma20), float(ma60), True
+    except:
+        return 0.0, 0.0, 0.0, False
+
 
 # --- 4. 繪製 K 線圖 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
@@ -504,11 +517,9 @@ def run_quick_screener_sequential():
 # --- 6. 套用組合快捷設定函式 ---
 def apply_combo_1():
     st.session_state.logic_mode = "OR (符合任一勾選條件即可)"
-    # 重置所有策略
     for k in default_params:
         if k.startswith("enable_"):
             st.session_state[k] = False
-    # 組合一設定
     st.session_state.enable_shakeout_breakout = True
     st.session_state.shakeout_ma_val = 20
     st.session_state.enable_trend_breakout = True
@@ -523,7 +534,6 @@ def apply_combo_2():
     for k in default_params:
         if k.startswith("enable_"):
             st.session_state[k] = False
-    # 組合二設定
     st.session_state.enable_limit_up_pullback = True
     st.session_state.limit_up_days = 20
     st.session_state.limit_up_ma_period = 20
@@ -628,11 +638,38 @@ with st.sidebar:
 
 
 # ==========================================
-# 8. 右側主畫面區塊
+# 8. 右側主畫面區塊與大盤監測
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_name}`")
 st.caption("具備多模組組合篩選、動態技術分析與高速全市場掃描功能。")
+
+# 📊 右側大盤監測區塊
+with st.container():
+    st.markdown("### 📊 大盤即時動態與操作指南監測 (^TWII 加權指數)")
+    taiex_curr, taiex_ma20, taiex_ma60, taiex_ok = get_taiex_status()
+    
+    if taiex_ok:
+        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+        col_m1.metric("加權指數現價", f"{taiex_curr:,.2f}")
+        col_m2.metric("20MA (月線)", f"{taiex_ma20:,.2f}")
+        col_m3.metric("60MA (季線)", f"{taiex_ma60:,.2f}")
+        
+        is_above_20ma = taiex_curr >= taiex_ma20
+        is_above_60ma = taiex_curr >= taiex_ma60
+        
+        if is_above_20ma:
+            col_m4.metric("大盤多空狀態", "🟢 多頭強勢", "站上月線")
+            st.success("💡 **大盤策略指引：** 目前大盤在 **20MA（月線）之上**，屬於多頭或盤整偏多格局，強烈建議大膽勾選 **策略 8、策略 12、策略 2**（突破與回檔買進勝率極高）。")
+        elif not is_above_60ma:
+            col_m4.metric("大盤多空狀態", "🔴 弱勢空方", "跌破季線")
+            st.warning("⚠️ **大盤策略指引：** 目前大盤弱勢、在 **季線之下**，建議縮手觀望，或僅勾選防守性較強的 **策略 11（箱底低接）**。")
+        else:
+            col_m4.metric("大盤多空狀態", "🟡 震盪整理", "介於月季線之間")
+            st.info("ℹ️ **大盤策略指引：** 目前大盤介於月線與季線之間，操作宜穩健，可搭配防守型策略或減少部位。")
+    else:
+        st.warning("⚠️ 目前無法即時連線抓取大盤加權指數 (^TWII) 數據，請確認網路連線。")
+
 st.divider()
 
 # 若手動點擊自訂搜尋按鈕
