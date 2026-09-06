@@ -132,138 +132,102 @@ def get_taiwan_stock_list():
 
 
 def get_chip_analysis_data(stock_id):
-    """
-    獲取 7 項指定籌碼指標：
-    1. 外資持股張數 (含 ▲/▼ 箭頭)
-    2. 外資買賣超 (含 ▲/▼ 箭頭)
-    3. 投信持股張數 (含 ▲/▼ 箭頭)
-    4. 融資餘額 (含 ▲/▼ 箭頭)
-    5. 400張以上大戶持股 (含 ▲/▼ 箭頭)
-    6. 20張散戶持股 (含 ▲/▼ 箭頭)
-    7. 總股東人數 (含 ▲/▼ 箭頭)
-    """
+    """獲取外資持股、外資買賣超、投信持股、融資餘額、大戶持股、散戶持股與總股東人數"""
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = (pd.Timestamp.today() - pd.Timedelta(days=60)).strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=90)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
     
-    # 預設結構初始化 (若 API 讀取失敗時回傳預設/模擬格式以保持穩定)
-    chips = {
+    results = {
         "外資持股張數": {"val": 0, "diff": 0, "arrow": "➖"},
-        "外資買賣超": {"val": 0, "diff": 0, "arrow": "➖"},
+        "外資買賣超": {"val": 0, "arrow": "➖"},
         "投信持股張數": {"val": 0, "diff": 0, "arrow": "➖"},
         "融資餘額": {"val": 0, "diff": 0, "arrow": "➖"},
-        "400張以上大戶持股": {"val": 0, "diff": 0, "arrow": "➖"},
-        "20張散戶持股": {"val": 0, "diff": 0, "arrow": "➖"},
+        "400張以上大戶持股": {"val": 0.0, "diff": 0.0, "arrow": "➖"},
+        "20張散戶持股": {"val": 0.0, "diff": 0.0, "arrow": "➖"},
         "總股東人數": {"val": 0, "diff": 0, "arrow": "➖"},
     }
     
+    # 1. 外資、投信持股張數
     try:
-        # 1. 外資買賣超
-        r_inst = requests.get(url, params={"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
-        if r_inst.status_code == 200:
-            d_inst = r_inst.json().get("data")
-            if d_inst:
-                df_i = pd.DataFrame(d_inst)
-                df_i_f = df_i[df_i['name'] == 'Foreign_Investor']
-                if not df_i_f.empty:
-                    net_f = float(df_i_f.iloc[-1].get('buy', 0)) - float(df_i_f.iloc[-1].get('sell', 0))
-                    net_f_lots = net_f / 1000
-                    chips["外資買賣超"] = {"val": round(net_f_lots, 1), "diff": round(net_f_lots, 1), "arrow": "▲" if net_f_lots > 0 else ("▼" if net_f_lots < 0 else "➖")}
-        
-        # 2 & 3. 外資持股張數、投信持股張數
-        r_hold = requests.get(url, params={"dataset": "TaiwanStockHoldingShares", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
-        if r_hold.status_code == 200:
-            d_hold = r_hold.json().get("data")
-            if d_hold:
-                df_h = pd.DataFrame(d_hold)
-                if 'ForeignInvestorsHoldingShares' in df_h.columns and len(df_h) >= 2:
-                    curr_f = float(df_h['ForeignInvestorsHoldingShares'].iloc[-1]) / 1000
-                    prev_f = float(df_h['ForeignInvestorsHoldingShares'].iloc[-2]) / 1000
-                    diff_f = curr_f - prev_f
-                    chips["外資持股張數"] = {"val": round(curr_f, 1), "diff": round(diff_f, 1), "arrow": "▲" if diff_f > 0 else ("▼" if diff_f < 0 else "➖")}
-                if 'InvestmentTrustHoldingShares' in df_h.columns and len(df_h) >= 2:
-                    curr_t = float(df_h['InvestmentTrustHoldingShares'].iloc[-1]) / 1000
-                    prev_t = float(df_h['InvestmentTrustHoldingShares'].iloc[-2]) / 1000
-                    diff_t = curr_t - prev_t
-                    chips["投信持股張數"] = {"val": round(curr_t, 1), "diff": round(diff_t, 1), "arrow": "▲" if diff_t > 0 else ("▼" if diff_t < 0 else "➖")}
-
-        # 4. 融資餘額
-        r_margin = requests.get(url, params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
-        if r_margin.status_code == 200:
-            d_m = r_margin.json().get("data")
-            if d_m:
-                df_m = pd.DataFrame(d_m)
-                if 'MarginPurchaseBalance' in df_m.columns and len(df_m) >= 2:
-                    curr_m = float(df_m['MarginPurchaseBalance'].iloc[-1])
-                    prev_m = float(df_m['MarginPurchaseBalance'].iloc[-2])
-                    diff_m = curr_m - prev_m
-                    chips["融資餘額"] = {"val": int(curr_m), "diff": int(diff_m), "arrow": "▲" if diff_m > 0 else ("▼" if diff_m < 0 else "➖")}
-
-        # 5 & 6. 400張以上大戶持股比例、20張散戶持股比例 (TaiwanStockHoldingSharesPer)
-        r_per = requests.get(url, params={"dataset": "TaiwanStockHoldingSharesPer", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
-        if r_per.status_code == 200:
-            d_p = r_per.json().get("data")
-            if d_p:
-                df_p = pd.DataFrame(d_p)
-                # FinMind 股權分散表通常包含 holding_shares_level (持股分級)
-                if 'holding_shares_level' in df_p.columns and 'percent' in df_p.columns:
-                    # 篩選最新日期
-                    latest_date = df_p['date'].max()
-                    df_latest = df_p[df_p['date'] == latest_date]
-                    prev_date = df_p[df_p['date'] < latest_date]['date'].max()
-                    df_prev = df_p[df_p['date'] == prev_date] if pd.notna(prev_date) else pd.DataFrame()
-                    
-                    # 400張以上大戶 (通常級別包含 400-600, 600-800, 800-1000, 1000+)
-                    large_levels = ['400-600', '600-800', '800-1000', '1000以上', '400張以上']
-                    small_levels = ['1-999股', '1-5張', '5-10張', '10-20張', '20張以下']
-                    
-                    curr_large = df_latest[df_latest['holding_shares_level'].isin(large_levels)]['percent'].sum()
-                    prev_large = df_prev[df_prev['holding_shares_level'].isin(large_levels)]['percent'].sum() if not df_prev.empty else curr_large
-                    diff_large = curr_large - prev_large
-                    chips["400張以上大戶持股"] = {"val": f"{round(curr_large, 2)}%", "diff": round(diff_large, 2), "arrow": "▲" if diff_large > 0 else ("▼" if diff_large < 0 else "➖")}
-
-                    curr_small = df_latest[df_latest['holding_shares_level'].isin(small_levels)]['percent'].sum()
-                    prev_small = df_prev[df_prev['holding_shares_level'].isin(small_levels)]['percent'].sum() if not df_prev.empty else curr_small
-                    diff_small = curr_small - prev_small
-                    chips["20張散戶持股"] = {"val": f"{round(curr_small, 2)}%", "diff": round(diff_small, 2), "arrow": "▲" if diff_small > 0 else ("▼" if diff_small < 0 else "➖")}
-
-        # 7. 總股東人數
-        r_sh = requests.get(url, params={"dataset": "TaiwanStockShareholders", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
-        if r_sh.status_code == 200:
-            d_sh = r_sh.json().get("data")
-            if d_sh:
-                df_s = pd.DataFrame(d_sh)
-                col_name = '股东人数' if '股东人数' in df_s.columns else ('total_shareholders' if 'total_shareholders' in df_s.columns else None)
-                if col_name and len(df_s) >= 2:
-                    curr_s = int(df_s.iloc[-1][col_name])
-                    prev_s = int(df_s.iloc[-2][col_name])
-                    diff_s = curr_s - prev_s
-                    chips["總股東人數"] = {"val": curr_s, "diff": diff_s, "arrow": "▲" if diff_s > 0 else ("▼" if diff_s < 0 else "➖")}
-    except Exception:
+        r = requests.get(url, params={"dataset": "TaiwanStockShareholding", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d = r.json()
+        if d.get("status") == 200 and d.get("data"):
+            df_sh = pd.DataFrame(d["data"])
+            if 'ForeignInvestmentShares' in df_sh.columns and len(df_sh) >= 2:
+                f_shares = df_sh['ForeignInvestmentShares'].astype(float) / 1000
+                diff = f_shares.iloc[-1] - f_shares.iloc[-2]
+                results["外資持股張數"] = {"val": int(f_shares.iloc[-1]), "diff": int(diff), "arrow": "▲" if diff > 0 else ("▼" if diff < 0 else "➖")}
+            if 'InvestmentTrustShares' in df_sh.columns and len(df_sh) >= 2:
+                t_shares = df_sh['InvestmentTrustShares'].astype(float) / 1000
+                diff = t_shares.iloc[-1] - t_shares.iloc[-2]
+                results["投信持股張數"] = {"val": int(t_shares.iloc[-1]), "diff": int(diff), "arrow": "▲" if diff > 0 else ("▼" if diff < 0 else "➖")}
+    except:
         pass
-        
-    return chips
 
+    # 2. 外資買賣超
+    try:
+        r = requests.get(url, params={"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d = r.json()
+        if d.get("status") == 200 and d.get("data"):
+            df_ib = pd.DataFrame(d["data"])
+            df_fi = df_ib[df_ib['name'] == 'Foreign_Investor']
+            if not df_fi.empty:
+                buy = df_fi['buy'].astype(float).iloc[-1]
+                sell = df_fi['sell'].astype(float).iloc[-1]
+                net = (buy - sell) / 1000
+                results["外資買賣超"] = {"val": int(net), "arrow": "▲" if net > 0 else ("▼" if net < 0 else "➖")}
+    except:
+        pass
 
-def render_chip_summary_dashboard(stock_id):
-    """在 Streamlit 中以美觀表格或指標呈現 7 大籌碼與箭頭變動"""
-    st.markdown("### 📊 法人籌碼、融資與大戶/散戶持股即時追蹤")
-    chips_data = get_chip_analysis_data(stock_id)
-    
-    cols = st.columns(4)
-    items = list(chips_data.items())
-    
-    for i, (k, info) in enumerate(items[:4]):
-        with cols[i]:
-            arrow = info['arrow']
-            color = "green" if arrow == "▲" else ("red" if arrow == "▼" else "gray")
-            st.metric(label=k, value=f"{info['val']} {arrow}", delta=f"{info.get('diff', 0)}")
+    # 3. 融資餘額
+    try:
+        r = requests.get(url, params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d = r.json()
+        if d.get("status") == 200 and d.get("data"):
+            df_mg = pd.DataFrame(d["data"])
+            if 'MarginPurchaseTodayBalance' in df_mg.columns and len(df_mg) >= 2:
+                mg = df_mg['MarginPurchaseTodayBalance'].astype(float)
+                diff = mg.iloc[-1] - mg.iloc[-2]
+                results["融資餘額"] = {"val": int(mg.iloc[-1]), "diff": int(diff), "arrow": "▲" if diff > 0 else ("▼" if diff < 0 else "➖")}
+    except:
+        pass
 
-    cols2 = st.columns(3)
-    for i, (k, info) in enumerate(items[4:]):
-        with cols2[i]:
-            arrow = info['arrow']
-            st.metric(label=k, value=f"{info['val']} {arrow}", delta=f"{info.get('diff', 0)}")
+    # 4. 400張以上大戶、20張散戶、總股東人數
+    try:
+        r = requests.get(url, params={"dataset": "TaiwanStockHoldingSharesPer", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d = r.json()
+        if d.get("status") == 200 and d.get("data"):
+            df_hp = pd.DataFrame(d["data"])
+            dates = sorted(df_hp['date'].unique())
+            if len(dates) >= 2:
+                latest_date = dates[-1]
+                prev_date = dates[-2]
+                
+                df_lat = df_hp[df_hp['date'] == latest_date]
+                df_pre = df_hp[df_hp['date'] == prev_date]
+                
+                def calc_holder_metrics(df_sub):
+                    if 'holdingSharesLevel' in df_sub.columns and 'percent' in df_sub.columns:
+                        total_p = df_sub['people'].astype(int).sum()
+                        large_pct = df_sub[df_sub['holdingSharesLevel'].astype(str).str.contains("400|600|800|1000|以上|1,000", na=False)]['percent'].astype(float).sum()
+                        small_pct = df_sub[df_sub['holdingSharesLevel'].astype(str).str.contains("1-|5-|10-|20-|未滿", na=False)]['percent'].astype(float).sum()
+                        return total_p, large_pct, small_pct
+                    return 0, 0.0, 0.0
+                
+                tot_l, lg_l, sm_l = calc_holder_metrics(df_lat)
+                tot_p, lg_p, sm_p = calc_holder_metrics(df_pre)
+                
+                diff_tot = tot_l - tot_p
+                diff_lg = lg_l - lg_p
+                diff_sm = sm_l - sm_p
+                
+                results["總股東人數"] = {"val": tot_l, "diff": diff_tot, "arrow": "▲" if diff_tot > 0 else ("▼" if diff_tot < 0 else "➖")}
+                results["400張以上大戶持股"] = {"val": round(lg_l, 2), "diff": round(diff_lg, 2), "arrow": "▲" if diff_lg > 0 else ("▼" if diff_lg < 0 else "➖")}
+                results["20張散戶持股"] = {"val": round(sm_l, 2), "diff": round(diff_sm, 2), "arrow": "▲" if diff_sm > 0 else ("▼" if diff_sm < 0 else "➖")}
+    except:
+        pass
+
+    return results
 
 
 # --- 4. 繪製美化白色 K 線圖的共用函式 ---
@@ -803,7 +767,6 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
         m_ma20 = df_market['MA20'].iloc[-1]
         m_ma120 = df_market['MA120'].iloc[-1]
         
-        # 大盤狀態判定
         if m_curr_close >= m_ma20:
             st.success("🟢 **目前大盤狀態：在 20MA（月線）之上（多頭或盤整偏多）** -> **大膽勾選策略 8、策略 12、策略 2（突破與回檔買進勝率極高）**")
         elif m_curr_close < m_ma120:
@@ -838,47 +801,6 @@ with col_b2:
 
 st.divider()
 
-# --- 8.3 主畫面：加入使用說明表 ---
-with st.expander("💡 策略組合使用說明書與操作口訣（點擊展開檢視）", expanded=False):
-    st.markdown("""
-    ### 推薦組合一：【波段飆股爆發型】（勝率與爆發力最佳，最推薦）
-    這個組合專門捕捉「主力洗盤完畢、帶量發動」的強勢股，適合台股多頭或盤整偏多時使用。
-    * **勾選策略：**
-      * ☑️ 策略 8：量縮洗盤後出量站上 MA 第一天（捕捉洗盤結束的起漲點）
-      * ☑️ 策略 12：突破均線糾結（打底+突破+帶量）（抓中長線大底翻揚）
-    * **數值設定：**
-      * `shakeout_ma_val`（策略 8 目標 MA）：`20`（以月線為防守與突破基準）
-      * `s12_lookback`（策略 12 趨勢天數）：`60`（看一季的打底區間）
-      * `s12_vol_mult`（策略 12 爆量倍數）：`1.8` 或 `2.0`（確保有實質資金敲進）
-      * `min_vol`（成交量）：`800` 張（避開流動性不佳的股票）
-      * `max_growth`（當日漲幅）：`9.5%`（保留上車空間）
-
-    ---
-
-    ### 推薦組合二：【強勢回檔低接型】（防守性較好，適合穩健操作）
-    這個組合專門找「曾經漲停過、有主力照顧，現在回測均線量縮」的優質標的，買在相對安全甜蜜點。
-    * **勾選策略：**
-      * ☑️ 策略 2：前 N 天帶量漲停 + 量縮回踩 MA
-      * ☑️ 策略 7：首根漲停開盤價支撐回踩
-    * **數值設定：**
-      * `limit_up_days`（策略 2 前 N 天）：`20`（抓最近一個月有表現的股）
-      * `limit_up_ma_period`（策略 2 回踩 MA）：`20`（回測 20MA 月線支撐）
-      * `first_limit_days`（策略 7 天數）：`30`
-      * `first_limit_range`（策略 7 容許區間）：`1.5%` 或 `2.0%`
-      * `min_vol`：`800` 張
-      * `max_growth`：`9.5%`（回檔找買點，漲幅通常不用設太高）
-
-    ---
-
-    ### 💡 實戰操作口訣與提醒
-    1. **不要貪多**：每次選股時，建議一次只勾選 1 到 2 個策略。如果同時勾選太多互斥的條件，容易漏掉好股票。
-    2. **看大盤做篩選**：
-       * 當大盤在 20MA（月線）之上時：大膽勾選策略 8、策略 12、策略 2（突破與回檔買進勝率極高）。
-       * 當大盤弱勢、在季線之下時：建議縮手，或僅勾選防守性較強的策略 11（箱底低接）。
-    """)
-
-st.divider()
-
 # 若手動點擊自訂搜尋按鈕
 if btn_quick_search:
     st.session_state.active_combo_name = "【自訂策略組合】"
@@ -888,7 +810,7 @@ if btn_quick_search:
 
 res_table = st.session_state.screener_results
 
-tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷"])
+tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖與籌碼互動瀏覽", "🩺 個股即時診斷"])
 
 with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
@@ -912,7 +834,7 @@ with tab1:
         st.info("👈 點擊上方主畫面的 **【🚀 組合一】** 或 **【🛡️ 組合二】** 按鈕，即可立即在畫面上產生對應的潛力股票標的！")
 
 with tab2:
-    st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")
+    st.subheader("📈 詳細美化 K 線圖與法人/大戶籌碼指標 (支援左右按鈕與鍵盤方向鍵)")
     if not res_table.empty:
         stock_list = res_table["股票代號"].tolist()
         total_stocks = len(stock_list)
@@ -975,45 +897,72 @@ with tab2:
         """, height=0)
 
         if selected_stock:
-            with st.spinner(f"正在載入 {selected_stock} 的歷史數據與技術指標..."):
+            with st.spinner(f"正在載入 {selected_stock} 的歷史數據與籌碼指標..."):
                 df_k = get_finmind_data(selected_stock)
                 if df_k is not None and not df_k.empty:
                     r_row = res_table[res_table['股票代號']==selected_stock].iloc[0]
                     fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {r_row['股票名稱']} [{r_row['組合邏輯名稱']}]", 20, enable_first_limit=True, first_limit_days=30)
                     st.plotly_chart(fig_res, use_container_width=True)
                     
-                    st.divider()
-                    render_chip_summary_dashboard(selected_stock)
+                    # 顯示新增的 7 項籌碼指標與箭頭
+                    st.markdown("### 🧩 即時籌碼與大戶持股診斷（含增減箭頭）")
+                    chip_data = get_chip_analysis_data(selected_stock)
+                    
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1:
+                        st.metric("1. 外資持股張數", f"{chip_data['外資持股張數']['val']:,} 張", f"{chip_data['外資持股張數']['arrow']} {chip_data['外資持股張數']['diff']:,} 張")
+                        st.metric("2. 外資買賣超", f"{chip_data['外資買賣超']['val']:,} 張", f"{chip_data['外資買賣超']['arrow']}")
+                    with c2:
+                        st.metric("3. 投信持股張數", f"{chip_data['投信持股張數']['val']:,} 張", f"{chip_data['投信持股張數']['arrow']} {chip_data['投信持股張數']['diff']:,} 張")
+                        st.metric("4. 融資餘額", f"{chip_data['融資餘額']['val']:,} 張", f"{chip_data['融資餘額']['arrow']} {chip_data['融資餘額']['diff']:,} 張")
+                    with c3:
+                        st.metric("5. 400張以上大戶持股", f"{chip_data['400張以上大戶持股']['val']}%", f"{chip_data['400張以上大戶持股']['arrow']} {chip_data['400張以上大戶持股']['diff']}%")
+                        st.metric("6. 20張散戶持股", f"{chip_data['20張散戶持股']['val']}%", f"{chip_data['20張散戶持股']['arrow']} {chip_data['20張散戶持股']['diff']}%")
+                    with c4:
+                        st.metric("7. 總股東人數", f"{chip_data['總股東人數']['val']:,} 人", f"{chip_data['總股東人數']['arrow']} {chip_data['總股東人數']['diff']:,} 人")
                 else:
                     st.warning("⚠️ 無法獲取該標的的歷史數據。")
     else:
-        st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表。")
+        st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表與籌碼。")
 
 with tab3:
-    st.subheader("🩺 個股即時 K 線圖診斷")
+    st.subheader("🩺 個股即時 K 線圖與籌碼診斷")
     col_d1, col_d2 = st.columns([2, 1])
     with col_d1:
         diag_code = st.text_input("輸入股票代號進行獨立診斷", placeholder="例如: 2330", key="input_diag_code")
     with col_d2:
         st.write("")
         st.write("")
-        diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
+        diag_btn = st.button("🔎 產出即時圖表與籌碼", use_container_width=True)
 
     if diag_btn and diag_code:
-        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據並繪製..."):
+        with st.spinner(f"正在擷取 {diag_code} 歷史數據與籌碼分析..."):
             df_diag = get_finmind_data(diag_code)
             if df_diag is not None and not df_diag.empty:
                 stock_list_df = get_taiwan_stock_list()
                 matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
                 s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
                 
-                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
+                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時診斷報告")
                 fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", 20, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_diag, use_container_width=True)
                 
-                st.divider()
-                render_chip_summary_dashboard(diag_code)
+                st.markdown("### 🧩 即時籌碼與大戶持股診斷（含增減箭頭）")
+                chip_data = get_chip_analysis_data(diag_code)
+                
+                c1, c2, c3, c4 = st.columns(4)
+                with c1:
+                    st.metric("1. 外資持股張數", f"{chip_data['外資持股張數']['val']:,} 張", f"{chip_data['外資持股張數']['arrow']} {chip_data['外資持股張數']['diff']:,} 張")
+                    st.metric("2. 外資買賣超", f"{chip_data['外資買賣超']['val']:,} 張", f"{chip_data['外資買賣超']['arrow']}")
+                with c2:
+                    st.metric("3. 投信持股張數", f"{chip_data['投信持股張數']['val']:,} 張", f"{chip_data['投信持股張數']['arrow']} {chip_data['投信持股張數']['diff']:,} 張")
+                    st.metric("4. 融資餘額", f"{chip_data['融資餘額']['val']:,} 張", f"{chip_data['融資餘額']['arrow']} {chip_data['融資餘額']['diff']:,} 張")
+                with c3:
+                    st.metric("5. 400張以上大戶持股", f"{chip_data['400張以上大戶持股']['val']}%", f"{chip_data['400張以上大戶持股']['arrow']} {chip_data['400張以上大戶持股']['diff']}%")
+                    st.metric("6. 20張散戶持股", f"{chip_data['20張散戶持股']['val']}%", f"{chip_data['20張散戶持股']['arrow']} {chip_data['20張散戶持股']['diff']}%")
+                with c4:
+                    st.metric("7. 總股東人數", f"{chip_data['總股東人數']['val']:,} 人", f"{chip_data['總股東人數']['arrow']} {chip_data['總股東人數']['diff']:,} 人")
             else:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
-        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析與 K 線圖診斷。")
+        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析與籌碼指標診斷。")
