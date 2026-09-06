@@ -972,7 +972,7 @@ with tab4:
         
         # 四象限判定 (以中位數為中心)
         med_flow = sector_agg["近五日法人總買賣超(萬)"].median()
-        med_ret = sector_agg["近五日漲幅(%)}" if "近五日漲幅(%)" in sector_agg.columns else "近五日漲幅(%)"].median()
+        med_ret = sector_agg["近五日漲幅(%)"].median()
         
         fig_bubble = plotly_go.Figure()
         fig_bubble.add_trace(plotly_go.Scatter(
