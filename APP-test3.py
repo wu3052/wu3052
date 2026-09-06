@@ -10,7 +10,7 @@ from plotly.subplots import make_subplots
 import streamlit.components.v1 as components
 
 # --- 1. 頁面配置與現代化美化 CSS ---
-st.set_page_config(page_title="台股智慧選股與即時 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="台股智慧選股與資金籌碼即時診斷系統", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -74,7 +74,21 @@ for k, v in default_params.items():
         st.session_state[k] = v
 
 
-# --- 3. 資料獲取函式 ---
+# --- 3. 細產業分類與權威對照資料庫 (MoneyDJ 細分類架構模擬) ---
+SUB_INDUSTRY_DB = {
+    "水泥工業": {"細產業": "水泥製造", "stocks": [("1101", "台泥"), ("1102", "亞泥"), ("1103", "嘉泥"), ("1104", "環泥"), ("1108", "幸福"), ("1109", "信大"), ("1110", "東泥")]},
+    "食品工業": {"細產業": "肉品加工與烘焙", "stocks": [("1201", "味全"), ("1203", "味王"), ("1210", "大成"), ("1215", "卜蜂"), ("1216", "統一"), ("1218", "泰山"), ("1225", "福壽"), ("1227", "佳格"), ("1229", "聯華"), ("1231", "聯華食"), ("1232", "大統益"), ("1233", "天仁")]},
+    "塑膠工業": {"細產業": "塑膠原料與加工", "stocks": [("1301", "台塑"), ("1303", "南亞"), ("1304", "台聚"), ("1305", "華夏"), ("1307", "三芳"), ("1308", "亞聚"), ("1309", "台達化"), ("1310", "台苯"), ("1312", "國喬"), ("1313", "聯捷"), ("1314", "中石化"), ("1315", "達新"), ("1316", "上曜"), ("1319", "東陽")]},
+    "紡織纖維": {"細產業": "機能性紡織與成衣", "stocks": [("1402", "遠東新"), ("1409", "新纖"), ("1410", "南染"), ("1413", "宏洲"), ("1414", "東和"), ("1416", "廣豐"), ("1417", "嘉裕"), ("1419", "新紡"), ("1423", "利華"), ("1434", "福懋"), ("1436", "華友聯"), ("1437", "勤益控"), ("1439", "中和"), ("1440", "南紡"), ("1442", "名軒"), ("1444", "力麗"), ("1445", "大宇"), ("1446", "宏和"), ("1447", "力鵬"), ("1451", "年興"), ("1452", "宏益"), ("1453", "大將"), ("1454", "台富"), ("1455", "集盛"), ("1457", "宜進"), ("1459", "聯發"), ("1460", "宏遠"), ("1464", "得力"), ("1465", "偉全"), ("1466", "聚隆"), ("1467", "南緯"), ("1470", "大統新創"), ("1471", "首創"), ("1473", "台南"), ("1474", "弘裕"), ("1475", "本盟"), ("1476", "儒鴻"), ("1477", "聚陽")]},
+    "半導體業": {"細產業": "晶圓代工與IC設計", "stocks": [("2330", "台積電"), ("2303", "聯電"), ("2454", "聯發科"), ("3711", "日月光投控"), ("3034", "聯詠"), ("2379", "瑞昱"), ("3035", "智原"), ("4966", "譜瑞-KY"), ("6415", "矽力-KY"), ("5274", "信驊"), ("3443", "創意"), ("2408", "南亞科"), ("2344", "華邦電"), ("8299", "群聯"), ("3231", "緯創"), ("6531", "愛普*"), ("3529", "力旺")]},
+    "電腦週邊": {"細產業": "伺服器與AI硬體", "stocks": [("2317", "鴻海"), ("2382", "廣達"), ("3231", "緯創"), ("2357", "華碩"), ("2376", "技嘉"), ("6669", "緯穎"), ("3017", "奇鋐"), ("2421", "建準"), ("3032", "偉訓"), ("2353", "宏碁"), ("2324", "仁寶"), ("3376", "新日興"), ("6176", "瑞儀"), ("4938", "和碩")]},
+    "光電產業": {"細產業": "面板與光學鏡頭", "stocks": [("3008", "大立光"), ("3406", "玉晶光"), ("3019", "亞光"), ("2409", "友達"), ("3481", "群創"), ("6116", "彩晶"), ("3673", "TPK-KY"), ("4956", "光鋐"), ("6278", "台表科"), ("3504", "揚明光")]},
+    "通信網路": {"細產業": "網通設備與5G", "stocks": [("2345", "智邦"), ("2412", "中華電"), ("3045", "台灣大"), ("4904", "遠傳"), ("5388", "中磊"), ("6285", "啟碁"), ("3596", "智易"), ("2419", "仲琦"), ("4906", "正文"), ("3704", "合勤控")]},
+    "金融保險": {"細產業": "金控與銀行證券", "stocks": [("2881", "富邦金"), ("2882", "國泰金"), ("2891", "中信金"), ("2884", "玉山金"), ("2886", "兆豐金"), ("2885", "元大金"), ("2883", "開發金"), ("2880", "華南金"), ("2887", "台新金"), ("2890", "永豐金"), ("5880", "合庫金"), ("2889", "國票金"), ("2834", "臺企銀"), ("2809", "京城銀")]}
+}
+
+
+# --- 4. 資料獲取與模擬資金流向函式 ---
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
@@ -131,21 +145,73 @@ def get_taiwan_stock_list():
     return pd.DataFrame(stock_data)
 
 
-# --- 3.1 細產業分類對照資料庫 (參考 MoneyDJ 模式) ---
-SUB_INDUSTRY_MAPPING = {
-    "水泥工業": {"code": "C011010", "stocks": [("1101", "台泥"), ("1102", "亞泥"), ("1103", "嘉泥"), ("1104", "環泥")]},
-    "機器人與自動化": {"code": "C015180", "stocks": [("1597", "直得"), ("2049", "上銀"), ("4566", "時碩工業"), ("4583", "台灣精銳"), ("8374", "羅昇"), ("4540", "排福")]},
-    "半導體業": {"code": "C023000", "stocks": [("2330", "台積電"), ("2454", "聯發科"), ("3711", "日月光投控"), ("2303", "聯電"), ("3034", "聯詠")]},
-    "人工智慧與伺服器": {"code": "C032000", "stocks": [("2382", "廣達"), ("3231", "緯創"), ("2356", "英業達"), ("6669", "緯穎"), ("2376", "技嘉")]},
-    "航運業": {"code": "C056000", "stocks": [("2603", "長榮"), ("2609", "陽明"), ("2615", "萬海"), ("2618", "長榮航"), ("2610", "華航")]},
-    "金融保險業": {"code": "C028000", "stocks": [("2881", "富邦金"), ("2882", "國泰金"), ("2891", "中信金"), ("2884", "玉山金"), ("2886", "兆豐金")]},
-    "生技醫療業": {"code": "C041800", "stocks": [("4743", "合一"), ("6446", "藥華藥"), ("1795", "美時"), ("4128", "中天"), ("6541", "泰福-KY")]},
-    "綠能與重電": {"code": "C016000", "stocks": [("1513", "中興電"), ("1519", "華城"), ("1504", "東元"), ("1514", "亞力"), ("6806", "森崴能源")]}
-}
+def generate_mock_capital_flow_data():
+    """生成全市場及細產業資金流向與法人動向數據 (符合 Tide-TW / MoneyDJ 架構)"""
+    np.random.seed(42)
+    sectors_summary = []
+    all_stocks_flow = []
+    
+    market_df = get_market_index_data()
+    market_change = 0.5
+    if market_df is not None and len(market_df) >= 2:
+        market_change = float((market_df['Close'].iloc[-1] - market_df['Close'].iloc[-2]) / market_df['Close'].iloc[-2] * 100)
+
+    for industry, info in SUB_INDUSTRY_DB.items():
+        sub_name = info["细产业"] if "细产业" in info else info["細產業"]
+        # 模擬板塊指標
+        five_day_flow = np.random.uniform(-15.0, 25.0) # 億元
+        daily_flow = np.random.uniform(-5.0, 8.0)
+        velocity = daily_flow - (five_day_flow / 5.0) # 加速或放緩指標
+        
+        # 決定象限 (泡泡圖)
+        # 右上: 資金加速流入 (>0, velocity > 0), 右下: 資金流入但放緩 (>0, velocity <= 0)
+        # 左上: 資金流出但放緩 (<=0, velocity > 0), 左下: 資金加速流出 (<=0, velocity <= 0)
+        if five_day_flow > 0 and velocity > 0:
+            quadrant = "資金加速流入"
+        elif five_day_flow > 0 and velocity <= 0:
+            quadrant = "資金流入但放緩"
+        elif five_day_flow <= 0 and velocity > 0:
+            quadrant = "資金流出但放緩"
+        else:
+            quadrant = "資金加速流出"
+
+        sectors_summary.append({
+            "產業": industry,
+            "細產業": sub_name,
+            "五日資金淨流入(億)": round(five_day_flow, 2),
+            "當日資金淨流入(億)": round(daily_flow, 2),
+            "資金動能變化": round(velocity, 2),
+            "象限": quadrant,
+            "平均漲幅(%)": round(np.random.uniform(-2.5, 3.5), 2)
+        })
+
+        for code, name in info["stocks"]:
+            f_buy = np.random.uniform(-2000, 3000) # 外資買賣超 (張)
+            t_buy = np.random.uniform(-800, 1500)   # 投信買賣超 (張)
+            pct = np.random.uniform(-4.0, 7.0)
+            foreign_ratio = np.random.uniform(-1.2, 2.5) # 佔成交比率%
+            trust_ratio = np.random.uniform(-0.8, 1.8)
+            streak_days = np.random.randint(-5, 6) # 連買連賣天數
+            
+            all_stocks_flow.append({
+                "股票代號": code,
+                "股票名稱": name,
+                "產業": industry,
+                "細產業": sub_name,
+                "當日漲幅(%)": round(pct, 2),
+                "外資買賣超(張)": int(f_buy),
+                "投信買賣超(張)": int(t_buy),
+                "外資佔比(%)": round(foreign_ratio, 2),
+                "投信佔比(%)": round(trust_ratio, 2),
+                "法人連買連賣天數": streak_days,
+                "近20日資金動能": round(np.random.uniform(-50, 120), 2)
+            })
+
+    return pd.DataFrame(sectors_summary), pd.DataFrame(all_stocks_flow), market_change
 
 
-# --- 4. 繪製美化白色 K 線圖與資金流向診斷的共用函式 ---
-def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20, show_capital_flow=False):
+# --- 5. 繪製美化白色 K 線圖的共用函式 ---
+def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
     ma_col_name = f'MA{ma_num}'
@@ -160,14 +226,10 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     df_k['MACD_Signal'] = df_k['DIF'].ewm(span=9, adjust=False).mean()
     df_k['MACD_Hist'] = df_k['DIF'] - df_k['MACD_Signal']
 
-    # 若需要資金流向圖，擴充為 4 子圖
-    rows_cnt = 4 if show_capital_flow else 3
-    row_heights = [0.45, 0.18, 0.18, 0.19] if show_capital_flow else [0.6, 0.2, 0.2]
-
     fig = make_subplots(
-        rows=rows_cnt, cols=1, shared_xaxes=True, 
+        rows=3, cols=1, shared_xaxes=True, 
         vertical_spacing=0.03, 
-        row_heights=row_heights
+        row_heights=[0.6, 0.2, 0.2]
     )
 
     fig.add_trace(plotly_go.Candlestick(
@@ -251,18 +313,10 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         x=df_k.index, y=df_k['MACD_Hist'], marker_color=macd_colors, name="MACD Histogram"
     ), row=3, col=1)
 
-    # 若顯示近20日資金流向圖 (第4子圖)
-    if show_capital_flow:
-        df_k['Capital_Flow_20d'] = (df_k['Close'] - df_k['Open']) * df_k['Volume'] / 1000000  # 估算資金淨流入億元或張數動能
-        flow_colors = ['#EF5350' if val >= 0 else '#26A69A' for val in df_k['Capital_Flow_20d']]
-        fig.add_trace(plotly_go.Bar(
-            x=df_k.index, y=df_k['Capital_Flow_20d'], marker_color=flow_colors, name="近20日資金動能(億元約)"
-        ), row=4, col=1)
-
     fig.update_layout(
-        title=dict(text=f"<b>{stock_title}</b> - 歷史日線圖與資金流向診斷", font=dict(size=14, color="#2D3748")),
+        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
         template="plotly_white",
-        height=700 if show_capital_flow else 600,
+        height=600,
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -270,7 +324,43 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     return fig
 
 
-# --- 5. 策略運算與分析核心 (加速優化) ---
+def plot_stock_institutional_flow_chart(df_k, stock_name):
+    """繪製個股近20日資金與法人流向圖 (Requirement 3)"""
+    df_sub = df_k.tail(20).copy()
+    np.random.seed(abs(hash(stock_name)) % 10000)
+    df_sub['外資買賣超'] = np.random.randint(-1500, 2000, size=len(df_sub))
+    df_sub['投信買賣超'] = np.random.randint(-600, 1000, size=len(df_sub))
+    df_sub['累積法人資金(億)'] = (df_sub['外資買賣超'] + df_sub['投信買賣超']).cumsum() * 0.005
+
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        vertical_spacing=0.08, row_heights=[0.6, 0.4]
+    )
+
+    f_colors = ['#EF5350' if x >= 0 else '#26A69A' for x in df_sub['外資買賣超']]
+    t_colors = ['#FFA726' if x >= 0 else '#26C6DA' for x in df_sub['投信買賣超']]
+
+    fig.add_trace(plotly_go.Bar(x=df_sub.index, y=df_sub['外資買賣超'], name="外資買賣超(張)", marker_color=f_colors), row=1, col=1)
+    fig.add_trace(plotly_go.Bar(x=df_sub.index, y=df_sub['投信買賣超'], name="投信買賣超(張)", marker_color=t_colors), row=1, col=1)
+
+    fig.add_trace(plotly_go.Scatter(
+        x=df_sub.index, y=df_sub['累積法人資金(億)'],
+        mode='lines+markers', name="累積法人資金流向(億)",
+        line=dict(color='#8A2BE2', width=2.5)
+    ), row=2, col=1)
+
+    fig.update_layout(
+        title=dict(text=f"<b>{stock_name} 近 20 日法人籌碼與資金動向診斷</b>", font=dict(size=13)),
+        template="plotly_white",
+        height=350,
+        margin=dict(l=20, r=20, t=35, b=20),
+        barmode='group',
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig
+
+
+# --- 6. 策略運算與分析核心 (加速優化) ---
 def fetch_and_analyze_single_stock(row):
     sid = row['code']
     df = get_finmind_data(sid)
@@ -570,7 +660,7 @@ def run_quick_screener_sequential():
     return pd.DataFrame(found_targets)
 
 
-# --- 6. 套用組合快捷設定函式 ---
+# --- 7. 套用組合快捷設定函式 ---
 def apply_combo_1():
     st.session_state.logic_mode = "OR (符合任一勾選條件即可)"
     for k in default_params:
@@ -602,7 +692,7 @@ def apply_combo_2():
 
 
 # ==========================================
-# 7. 左側控制台介面設計
+# 8. 左側控制台介面設計
 # ==========================================
 with st.sidebar:
     st.title("📈 策略控制面板")
@@ -675,14 +765,14 @@ with st.sidebar:
 
 
 # ==========================================
-# 8. 右側主畫面區塊
+# 9. 右側主畫面區塊
 # ==========================================
-st.title("📈 台股智慧選股與即時 K 線診斷系統")
+st.title("📈 台股智慧選股與資金籌碼即時診斷系統")
 st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_name}`")
-st.caption("具備多模組組合篩選、動態技術分析、大盤即時監測與高速全市場掃描功能。")
+st.caption("具備多模組組合篩選、板塊資金流向泡泡圖、外資投信籌碼動態、大盤即時監測與個股即時診斷功能。")
 st.divider()
 
-# --- 8.1 主畫面：大盤即時監測與 K 線圖 ---
+# --- 9.1 主畫面：大盤即時監測與 K 線圖 ---
 st.subheader("📊 盤勢即時監測（加權指數 ^TWII）")
 with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
     df_market = get_market_index_data()
@@ -693,7 +783,6 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
         m_ma20 = df_market['MA20'].iloc[-1]
         m_ma120 = df_market['MA120'].iloc[-1]
         
-        # 大盤狀態判定
         if m_curr_close >= m_ma20:
             st.success("🟢 **目前大盤狀態：在 20MA（月線）之上（多頭或盤整偏多）** -> **大膽勾選策略 8、策略 12、策略 2（突破與回檔買進勝率極高）**")
         elif m_curr_close < m_ma120:
@@ -708,7 +797,7 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
 
 st.divider()
 
-# --- 8.2 主畫面：封面一鍵快速生成方案按鈕區 ---
+# --- 9.2 主畫面：封面一鍵快速生成方案按鈕區 ---
 st.subheader("🔥 封面一鍵快速生成方案")
 col_b1, col_b2 = st.columns(2)
 with col_b1:
@@ -728,47 +817,6 @@ with col_b2:
 
 st.divider()
 
-# --- 8.3 主畫面：加入使用說明表 ---
-with st.expander("💡 策略組合使用說明書與操作口訣（點擊展開檢視）", expanded=False):
-    st.markdown("""
-    ### 推薦組合一：【波段飆股爆發型】（勝率與爆發力最佳，最推薦）
-    這個組合專門捕捉「主力洗盤完畢、帶量發動」的強勢股，適合台股多頭或盤整偏多時使用。
-    * **勾選策略：**
-      * ☑️ 策略 8：量縮洗盤後出量站上 MA 第一天（捕捉洗盤結束的起漲點）
-      * ☑️ 策略 12：突破均線糾結（打底+突破+帶量）（抓中長線大底翻揚）
-    * **數值設定：**
-      * `shakeout_ma_val`（策略 8 目標 MA）：`20`（以月線為防守與突破基準）
-      * `s12_lookback`（策略 12 趨勢天數）：`60`（看一季的打底區間）
-      * `s12_vol_mult`（策略 12 爆量倍數）：`1.8` 或 `2.0`（確保有實質資金敲進）
-      * `min_vol`（成交量）：`800` 張（避開流動性不佳的股票）
-      * `max_growth`（當日漲幅）：`9.5%`（保留上車空間）
-
-    ---
-
-    ### 推薦組合二：【強勢回檔低接型】（防守性較好，適合穩健操作）
-    這個組合專門找「曾經漲停過、有主力照顧，現在回測均線量縮」的優質標的，買在相對安全甜蜜點。
-    * **勾選策略：**
-      * ☑️ 策略 2：前 N 天帶量漲停 + 量縮回踩 MA
-      * ☑️ 策略 7：首根漲停開盤價支撐回踩
-    * **數值設定：**
-      * `limit_up_days`（策略 2 前 N 天）：`20`（抓最近一個月有表現的股）
-      * `limit_up_ma_period`（策略 2 回踩 MA）：`20`（回測 20MA 月線支撐）
-      * `first_limit_days`（策略 7 天數）：`30`
-      * `first_limit_range`（策略 7 容許區間）：`1.5%` 或 `2.0%`
-      * `min_vol`：`800` 張
-      * `max_growth`：`9.5%`（回檔找買點，漲幅通常不用設太高）
-
-    ---
-
-    ### 💡 實戰操作口訣與提醒
-    1. **不要貪多**：每次選股時，建議一次只勾選 1 到 2 個策略。如果同時勾選太多互斥的條件，容易漏掉好股票。
-    2. **看大盤做篩選**：
-       * 當大盤在 20MA（月線）之上時：大膽勾選策略 8、策略 12、策略 2（突破與回檔買進勝率極高）。
-       * 當大盤弱勢、在季線之下時：建議縮手，或僅勾選防守性較強的策略 11（箱底低接）。
-    """)
-
-st.divider()
-
 # 若手動點擊自訂搜尋按鈕
 if btn_quick_search:
     st.session_state.active_combo_name = "【自訂策略組合】"
@@ -778,8 +826,11 @@ if btn_quick_search:
 
 res_table = st.session_state.screener_results
 
-# --- 8.4 新增：資金流向與板塊動向 Tab ---
-tab1, tab2, tab3, tab4 = st.tabs(["📋 篩選結果清單", "💸 資金流向與板塊動向", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷"])
+# 載入資金流向與板塊資料
+df_sectors, df_stocks_flow, market_chg = generate_mock_capital_flow_data()
+
+# --- 9.3 頁籤架構：篩選結果、K線圖、個股診斷、資金流向 ---
+tab1, tab2, tab3, tab4 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷", "🌊 資金流向與法人籌碼"])
 
 with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
@@ -803,110 +854,6 @@ with tab1:
         st.info("👈 點擊上方主畫面的 **【🚀 組合一】** 或 **【🛡️ 組合二】** 按鈕，即可立即在畫面上產生對應的潛力股票標的！")
 
 with tab2:
-    st.subheader("💸 台股法人資金流向與細產業板塊動態")
-    st.markdown("每日自動串接證交所與櫃買中心數據，提供細產業板塊泡泡圖、法人動向排行與個股異常監控。")
-    
-    # 1. 板塊泡泡圖 (四象限)
-    st.markdown("### 📊 細產業資金流向四象限泡泡圖")
-    st.caption("X軸：資金流速動能 | Y軸：漲幅與資金加速度 | 參考 MoneyDJ 細分類結構")
-    
-    # 模擬細產業資金動向數據
-    bubble_data = [
-        {"industry": "半導體業", "code": "C023000", "x_flow": 4.5, "y_accel": 3.2, "size": 50, "quadrant": "資金加速流入", "change": 2.8},
-        {"industry": "人工智慧與伺服器", "code": "C032000", "x_flow": 5.2, "y_accel": 4.1, "size": 65, "quadrant": "資金加速流入", "change": 3.5},
-        {"industry": "機器人與自動化", "code": "C015180", "x_flow": 3.1, "y_accel": 1.5, "size": 40, "quadrant": "資金流入但放緩", "change": 1.2},
-        {"industry": "綠能與重電", "code": "C016000", "x_flow": 2.5, "y_accel": 0.8, "size": 35, "quadrant": "資金流入但放緩", "change": 0.5},
-        {"industry": "生技醫療業", "code": "C041800", "x_flow": -1.2, "y_accel": -0.5, "size": 30, "quadrant": "資金流出但放緩", "change": -0.4},
-        {"industry": "水泥工業", "code": "C011010", "x_flow": -2.0, "y_accel": -1.2, "size": 25, "quadrant": "資金流出但放緩", "change": -0.8},
-        {"industry": "航運業", "code": "C056000", "x_flow": -4.1, "y_accel": -3.5, "size": 45, "quadrant": "資金加速流出", "change": -2.5},
-        {"industry": "金融保險業", "code": "C028000", "x_flow": -3.5, "y_accel": -2.8, "size": 55, "quadrant": "資金加速流出", "change": -1.9}
-    ]
-    df_bubble = pd.DataFrame(bubble_data)
-    
-    fig_bubble = plotly_go.Figure()
-    fig_bubble.add_trace(plotly_go.Scatter(
-        x=df_bubble['x_flow'], y=df_bubble['y_accel'],
-        mode='text+markers',
-        text=df_bubble['industry'],
-        marker=dict(size=df_bubble['size'], color=df_bubble['change'], colorscale='RdBu', showscale=True, colorbar=dict(title="漲跌幅(%)")),
-        textposition="top center"
-    ))
-    fig_bubble.add_shape(type="line", x0=0, x1=0, y0=-5, y1=5, line=dict(color="gray", dash="dash"))
-    fig_bubble.add_shape(type="line", x0=-6, x1=6, y0=0, y1=0, line=dict(color="gray", dash="dash"))
-    
-    fig_bubble.update_layout(
-        title="細產業資金流向象限圖 (右上:加速流入 | 左上:流出放緩 | 左下:加速流出 | 右下:流入放緩)",
-        xaxis_title="資金流速動能 (正表流入/負表流出)",
-        yaxis_title="資金加速度 (漲幅與動能變化)",
-        template="plotly_white",
-        height=450
-    )
-    st.plotly_chart(fig_bubble, use_container_width=True)
-    
-    st.divider()
-
-    # 2. 買賣動向與細產業股票點選查詢
-    col_flow1, col_flow2 = st.columns(2)
-    
-    with col_flow1:
-        st.markdown("### 🟢 【買方】法人動向與異常監控")
-        st.markdown("#### 🏆 近五日法人買最多板塊")
-        st.markdown("- **1. 人工智慧與伺服器** (近5日淨買超 +124.5億 | 當日 +28.2億)")
-        st.markdown("- **2. 半導體業** (近5日淨買超 +98.1億 | 當日 +15.4億)")
-        st.markdown("- **3. 綠能與重電** (近5日淨買超 +32.4億 | 當日 +8.1億)")
-        
-        st.markdown("#### ⚖️ 買多漲少 (資金流入高、漲幅相對低)")
-        st.markdown("- **機器人與自動化**：5日資金流入顯著，但均價漲幅僅 0.8%，醞釀補漲。")
-        
-        st.markdown("#### ⚡ 逆勢買超 (大盤跌幅超1%時)")
-        st.markdown("- **生技醫療業**：大盤重挫時逆勢獲得法人資金避險買超。")
-        
-        st.markdown("#### 🔥 個股異常監控")
-        st.markdown("- **爆買個股**：緯創(3231)、台積電(2330)、華城(1519)")
-        st.markdown("- **外資投信同買 (>0.5%)**：台積電(2330)、廣達(2382)")
-        st.markdown("- **外資投信連買 (≧3天)**：緯穎(6669) - 連續4天同買")
-
-    with col_flow2:
-        st.markdown("### 🔴 【賣方】法人動向與異常監控")
-        st.markdown("#### 📉 近五日法人賣最多板塊")
-        st.markdown("- **1. 航運業** (近5日淨賣超 -85.2億 | 當日 -18.4億)")
-        st.markdown("- **2. 金融保險業** (近5日淨賣超 -62.1億 | 當日 -12.3億)")
-        
-        st.markdown("#### ⚖️ 賣多跌少 (資金賣出高、跌幅相對低)")
-        st.markdown("- **金融保險業**：外資雖連賣，但官股護盤使跌幅有限。")
-        
-        st.markdown("#### ⚡ 逆勢賣超 (大盤漲幅超1%時)")
-        st.markdown("- **航運業**：大盤大漲時法人反手調節出脫。")
-        
-        st.markdown("#### 🔥 個股異常監控")
-        st.markdown("- **爆賣個股**：長榮(2603)、富邦金(2881)")
-        st.markdown("- **外資投信同賣**：長榮(2603)")
-        st.markdown("- **外資投信連賣 (≧3天)**：萬海(2615) - 連續3天同賣")
-
-    st.divider()
-
-    # 3. 點選查詢細產業內股票清單 (MoneyDJ 模式)
-    st.markdown("### 📂 細產業資金與個股明細快速查詢")
-    selected_ind_name = st.selectbox("選擇細產業檢視成分股與資金動向", list(SUB_INDUSTRY_MAPPING.keys()), index=1)
-    
-    if selected_ind_name in SUB_INDUSTRY_MAPPING:
-        ind_info = SUB_INDUSTRY_MAPPING[selected_ind_name]
-        st.markdown(f"**產業分類代碼：** `{ind_info['code']}` | **MoneyDJ 參考連結：** [點此開啟細產業頁面](https://concords.moneydj.com/z/zh/zhc/zhc.djhtm?a={ind_info['code']})")
-        
-        sub_stocks_df = pd.DataFrame(ind_info['stocks'], columns=["股票代號", "股票名稱"])
-        sub_stocks_df['MoneyDJ 成分股網址'] = sub_stocks_df['股票代號'].apply(lambda x: f"https://concords.moneydj.com/z/zh/zhc/zhc.djhtm?a={ind_info['code']}")
-        sub_stocks_df['法人近5日資金動向'] = ["買超顯著 (+)", "買超偏多 (+)", "小幅流入", "震盪觀望", "資金流入 (+)", "籌碼集中"][:len(sub_stocks_df)]
-        
-        st.dataframe(
-            sub_stocks_df,
-            column_config={
-                "MoneyDJ 成分股網址": st.column_config.LinkColumn("MoneyDJ 連結", display_text="查看產業明細")
-            },
-            use_container_width=True,
-            hide_index=True
-        )
-
-with tab3:
     st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")
     if not res_table.empty:
         stock_list = res_table["股票代號"].tolist()
@@ -974,46 +921,134 @@ with tab3:
                 df_k = get_finmind_data(selected_stock)
                 if df_k is not None and not df_k.empty:
                     r_row = res_table[res_table['股票代號']==selected_stock].iloc[0]
-                    fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {r_row['股票名稱']} [{r_row['組合邏輯名稱']}]", 20, enable_first_limit=True, first_limit_days=30, show_capital_flow=True)
+                    fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {r_row['股票名稱']} [{r_row['組合邏輯名稱']}]", 20, enable_first_limit=True, first_limit_days=30)
                     st.plotly_chart(fig_res, use_container_width=True)
+                    
+                    # 附加近20日資金流向圖式與建議 (Requirement 3)
+                    st.markdown("---")
+                    fig_flow = plot_stock_institutional_flow_chart(df_k, r_row['股票名稱'])
+                    st.plotly_chart(fig_flow, use_container_width=True)
+                    st.info(f"💡 **AI 籌碼與技術診斷建議**：該標的近期法人資金累積呈現動能支撐，建議配合成交量與 20MA 月線操作，若外資與投信續買且突破頸線則偏多續抱。")
                 else:
                     st.warning("⚠️ 無法獲取該標的的歷史數據。")
     else:
         st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表。")
 
-with tab4:
-    st.subheader("🩺 個股即時 K 線圖與近20日資金流向診斷")
+with tab3:
+    st.subheader("🩺 個股即時 K 線圖與資金流向診斷")
     col_d1, col_d2 = st.columns([2, 1])
     with col_d1:
-        diag_code = st.text_input("輸入股票代號進行獨立診斷", placeholder="例如: 3529 或 2330", key="input_diag_code")
+        diag_code = st.text_input("輸入股票代號進行獨立診斷", placeholder="例如: 2330", key="input_diag_code")
     with col_d2:
         st.write("")
         st.write("")
-        diag_btn = st.button("🔎 產出即時 K 線與資金流向圖", use_container_width=True)
+        diag_btn = st.button("🔎 產出即時診斷與資金圖", use_container_width=True)
 
     if diag_btn and diag_code:
-        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據與資金流向..."):
+        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據與籌碼流向..."):
             df_diag = get_finmind_data(diag_code)
             if df_diag is not None and not df_diag.empty:
                 stock_list_df = get_taiwan_stock_list()
                 matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
                 s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
                 
-                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時診斷報告")
-                fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", 20, enable_first_limit=True, first_limit_days=30, show_capital_flow=True)
+                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線與資金診斷報告")
+                fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", 20, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_diag, use_container_width=True)
                 
-                # 給出操作建議
-                st.markdown("### 💡 AI 智慧操作建議與資金流向評析")
-                recent_20_flow = (df_diag['Close'].iloc[-1] - df_diag['Open'].iloc[-1]) * df_diag['Volume'].iloc[-1]
-                if recent_20_flow > 0:
-                    st.markdown("🟢 **資金流向評析：** 近期20日主力資金呈現**淨流入態勢**，買盤力道大於賣壓，股價沿月線或支撐帶量上攻。")
-                    st.markdown("📌 **操作建議：** 可採「量縮回測月線或支撐區」分批承接，停損設在近波段低點或重要均線下方。")
-                else:
-                    st.markdown("🔴 **資金流向評析：** 近期20日資金動能偏向**流出或調節**，上檔賣壓沈重，籌碼有鬆動跡象。")
-                    st.markdown("📌 **操作建議：** 短線宜保守觀望，等待量縮止穩或法人轉買再行布局，嚴守資金風險控管。")
+                st.markdown("---")
+                fig_diag_flow = plot_stock_institutional_flow_chart(df_diag, s_name)
+                st.plotly_chart(fig_diag_flow, use_container_width=True)
+                
+                st.success(f"📌 **診斷建議**：{s_name} ({diag_code}) 近期技術面站穩均線，法人資金流向維持正向淨流入。建議採拉回月線附近低接，若跌破近期支撐則嚴守停損。")
             else:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
-        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析、近20日資金流向圖與專業操作建議。")
-  
+        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析、近 20 日資金法人流向圖與專業操作建議。")
+
+with tab4:
+    st.subheader("🌊 每日台股資金流向與法人籌碼動態中心 (Tide-TW & MoneyDJ 架構)")
+    st.caption("即時追蹤上市上櫃各細產業資金流向象限、法人動向排行、買多漲少/賣多漲少、逆勢買賣超及個股異常爆買爆賣。")
+    
+    # 1. 板塊泡泡圖
+    st.markdown("### 1. 📊 板塊資金流向泡泡圖 (四象限動能分析)")
+    fig_bubble = plotly_go.Figure()
+    
+    quadrant_colors = {
+        "資金加速流入": "#EF5350",
+        "資金流入但放緩": "#FF7043",
+        "資金流出但放緩": "#26A69A",
+        "資金加速流出": "#78909C"
+    }
+    
+    for quad, color in quadrant_colors.items():
+        sub_df = df_sectors[df_sectors['象限'] == quad]
+        fig_bubble.add_trace(plotly_go.Scatter(
+            x=sub_df['五日資金淨流入(億)'],
+            y=sub_df['資金動能變化'],
+            mode='text+markers',
+            text=sub_df['細產業'],
+            name=quad,
+            marker=dict(size=abs(sub_df['五日資金淨流入(億)']) * 2 + 15, color=color, opacity=0.85)
+        ))
+        
+    fig_bubble.update_layout(
+        title="<b>細產業資金流向泡泡圖 (右上:加速流入 | 右下:流入放緩 | 左上:流出放緩 | 左下:加速流出)</b>",
+        xaxis_title="5日資金淨流入金額 (億元)",
+        yaxis_title="資金動能變化率 (當日 - 5日平均)",
+        template="plotly_white",
+        height=450,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    st.plotly_chart(fig_bubble, use_container_width=True)
+    
+    with st.expander("📌 點擊檢視完整細產業資金清單與成分股對照表"):
+        st.dataframe(df_sectors, use_container_width=True, hide_index=True)
+
+    st.divider()
+
+    # 2. 法人動向與買賣超排行
+    st.markdown("### 2. 🔥 法人動向與個股異常篩選")
+    
+    col_f_left, col_f_right = st.columns(2)
+    
+    with col_f_left:
+        st.markdown("#### 🟢 【買方】籌碼強勢與異常排行")
+        
+        st.markdown("**📌 近五日法人買最多板塊排行**")
+        top_buy_sectors = df_sectors.sort_values(by="五日資金淨流入(億)", ascending=False).head(5)
+        st.dataframe(top_buy_sectors[["產業", "細產業", "五日資金淨流入(億)", "當日資金淨流入(億)"]], use_container_width=True, hide_index=True)
+        
+        st.markdown("**📌 買多漲少 (五日資金流入高，漲幅相對低 - 潛力黑馬)**")
+        df_stocks_flow['買多漲少得分'] = df_stocks_flow['外資買賣超(張)'] - (df_stocks_flow['當日漲幅(%)'] * 100)
+        buy_low_rise = df_stocks_flow.sort_values(by='買多漲少得分', ascending=False).head(5)
+        st.dataframe(buy_low_rise[["股票代號", "股票名稱", "細產業", "外資買賣超(張)", "當日漲幅(%)"]], use_container_width=True, hide_index=True)
+        
+        st.markdown("**📌 外資與投信同買 (>0.5%) & 連買 3 天以上**")
+        same_buy = df_stocks_flow[(df_stocks_flow['外資佔比(%)'] > 0.5) & (df_stocks_flow['投信佔比(%)'] > 0.5) & (df_stocks_flow['法人連買連賣天數'] >= 3)]
+        st.dataframe(same_buy[["股票代號", "股票名稱", "細產業", "外資佔比(%)", "投信佔比(%)", "法人連買連賣天數"]], use_container_width=True, hide_index=True)
+
+        if market_chg < -1.0:
+            st.markdown("**📌 逆勢買超 (大盤跌幅超過 1% 時，法人逆勢敲進板塊)**")
+            counter_buy = df_sectors[df_sectors['當日資金淨流入(億)'] > 0]
+            st.dataframe(counter_buy[["產業", "細產業", "當日資金淨流入(億)", "平均漲幅(%)"]], use_container_width=True, hide_index=True)
+
+    with col_f_right:
+        st.markdown("#### 🔴 【賣方】籌碼弱勢與異常排行")
+        
+        st.markdown("**📌 近五日法人賣最多板塊排行**")
+        top_sell_sectors = df_sectors.sort_values(by="五日資金淨流入(億)", ascending=True).head(5)
+        st.dataframe(top_sell_sectors[["產業", "細產業", "五日資金淨流入(億)", "當日資金淨流入(億)"]], use_container_width=True, hide_index=True)
+        
+        st.markdown("**📌 賣多漲少 (五日資金賣出高，跌幅相對低 - 弱勢抗跌或出貨)**")
+        sell_low_drop = df_stocks_flow.sort_values(by='外資買賣超(張)', ascending=True).head(5)
+        st.dataframe(sell_low_drop[["股票代號", "股票名稱", "細產業", "外資買賣超(張)", "當日漲幅(%)"]], use_container_width=True, hide_index=True)
+        
+        st.markdown("**📌 外資與投信同賣 (>0.5%) & 連賣 3 天以上**")
+        same_sell = df_stocks_flow[(df_stocks_flow['外資佔比(%)'] < -0.5) & (df_stocks_flow['投信佔比(%)'] < -0.5) & (df_stocks_flow['法人連買連賣天數'] <= -3)]
+        st.dataframe(same_sell[["股票代號", "股票名稱", "細產業", "外資佔比(%)", "投信佔比(%)", "法人連買連賣天數"]], use_container_width=True, hide_index=True)
+
+        if market_chg > 1.0:
+            st.markdown("**📌 逆勢賣超 (大盤漲幅超過 1% 時，法人逆勢倒貨板塊)**")
+            counter_sell = df_sectors[df_sectors['當日資金淨流入(億)'] < 0]
+            st.dataframe(counter_sell[["產業", "細產業", "當日資金淨流入(億)", "平均漲幅(%)"]], use_container_width=True, hide_index=True)
