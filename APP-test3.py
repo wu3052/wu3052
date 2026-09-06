@@ -51,7 +51,7 @@ if 'selected_stock_index' not in st.session_state:
 if 'active_combo_name' not in st.session_state:
     st.session_state.active_combo_name = "尚未執行"
 
-# 預設參數對應 State[cite: 1]
+# 預設參數對應 State
 default_params = {
     "logic_mode": "OR (符合任一勾選條件即可)",
     "enable_macd_25ma": False, "macd_ma_period": 25,
@@ -112,7 +112,7 @@ def get_finmind_data(stock_id):
 
 
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料[cite: 1]"""
+    """獲取台股大盤加權指數 (^TWII) 資料"""
     try:
         df = yf.download("^TWII", period="320d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
@@ -127,58 +127,215 @@ def get_taiwan_stock_list():
     stock_data = []
     for code, info in twstock.codes.items():
         if len(code) == 4 and info.type == '股票':
-            stock_data.append({"code": code, "name": info.name, "group": getattr(info, 'group', '其他'), "market": info.market, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
+            stock_data.append({"code": code, "name": info.name, "ticker": f"{code}.TW" if info.market == "上市" else f"{code}.TWO"})
     return pd.DataFrame(stock_data)
 
 
-# --- 3.1 資金流向與法人動態模擬/獲取工具 ---
-def get_institutional_and_sector_flows():
-    """
-    獲取或模擬法人動向、板塊資金流向、個股外資投信買賣超與連買連賣數據
-    （串接 FinMind API 或進行市場統計模擬以確保穩定展示）
-    """
-    stocks = get_taiwan_stock_list()
-    # 建立示範或即時統計的板塊資料結構
-    sectors = stocks['group'].unique()
-    sector_data = []
-    
+# --- 3.1 資金流向與法人籌碼動向資料模組 ---
+def get_sector_fund_flow_data():
+    """生成或獲取細產業板塊資金流向資料（支援泡泡圖與四大象限）"""
     np.random.seed(42)
-    for sec in sectors:
-        if not sec or sec == 'nan': continue
-        inflow_5d = np.random.uniform(-50, 80) # 億元
-        inflow_1d = np.random.uniform(-15, 25)
-        avg_change = np.random.uniform(-2.5, 3.5)
-        sector_data.append({
-            "板塊名稱": sec,
-            "當日資金流入(億)": round(inflow_1d, 2),
-            "近五日資金流入(億)": round(inflow_5d, 2),
-            "板塊平均漲幅(%)": round(avg_change, 2),
-            "成交比重(%)": round(np.random.uniform(1, 15), 2)
-        })
-    df_sector = pd.DataFrame(sector_data)
+    sectors = [
+        {"細產業": "半導體-IC設計", "主板塊": "電子零組件", "5日資金流入(億)": 45.2, "資金流速變動": 3.8, "5日漲幅(%)": 4.5},
+        {"細產業": "半導體-製造", "主板塊": "半導體", "5日資金流入(億)": 120.5, "資金流速變動": 5.2, "5日漲幅(%)": 6.8},
+        {"細產業": "電腦及週邊設備", "主板塊": "電腦週邊", "5日資金流入(億)": 32.1, "資金流速變動": -1.5, "5日漲幅(%)": 1.2},
+        {"細產業": "光電業", "主板塊": "光電", "5日資金流入(億)": -15.4, "資金流速變動": -2.8, "5日漲幅(%)": -2.1},
+        {"細產業": "金融保險", "主板塊": "金融", "5日資金流入(億)": 58.0, "資金流速變動": 1.1, "5日漲幅(%)": 2.5},
+        {"細產業": "生技醫療", "主板塊": "生技", "5日資金流入(億)": -8.2, "資金流速變動": 1.4, "5日漲幅(%)": -0.5},
+        {"細產業": "航運業", "主板塊": "航運", "5日資金流入(億)": -42.6, "資金流速變動": -4.2, "5日漲幅(%)": -4.8},
+        {"細產業": "汽車工業", "主板塊": "汽車", "5日資金流入(億)": 12.3, "資金流速變動": -0.8, "5日漲幅(%)": 0.8},
+        {"細產業": "電子通路", "主板塊": "電子通路", "5日資金流入(億)": 22.4, "資金流速變動": 2.1, "5日漲幅(%)": 3.1},
+        {"細產業": "化學工業", "主板塊": "化學", "5日資金流入(億)": -18.5, "資金流速變動": -1.2, "5日漲幅(%)": -1.8},
+        {"細產業": "通信網路", "主板塊": "通信", "5日資金流入(億)": 18.9, "資金流速變動": 0.5, "5日漲幅(%)": 1.5},
+        {"細產業": "電機機械", "主板塊": "電機", "5日資金流入(億)": 35.6, "資金流速變動": 2.9, "5日漲幅(%)": 5.2},
+    ]
+    df = pd.DataFrame(sectors)
     
-    # 個股法人籌碼與異常模擬資料
-    stock_flows = []
-    for _, row in stocks.iterrows():
-        f_buy = np.random.uniform(-1.5, 2.0) # 外資買賣超佔比 %
-        t_buy = np.random.uniform(-0.8, 1.2) # 投信買賣超佔比 %
-        streak = np.random.randint(-5, 6)
-        chg_20 = np.random.uniform(-10, 25)
-        stock_flows.append({
-            "股票代號": row['code'],
-            "股票名稱": row['name'],
-            "板塊": row['group'],
-            "外資買賣超比率(%)": round(f_buy, 2),
-            "投信買賣超比率(%)": round(t_buy, 2),
-            "法人連買連賣天數": streak,
-            "20日區間漲幅(%)": round(chg_20, 2),
-            "當日成交量(張)": np.random.randint(500, 15000)
-        })
-    df_stocks_flow = pd.DataFrame(stock_flows)
-    return df_sector, df_stocks_flow
+    # 決定四大象限分類
+    # 左上: 資金流出但放緩 (5日資金流入 < 0 且 資金流速變動 > 0)
+    # 左下: 資金加速流出 (5日資金流入 < 0 且 資金流速變動 < 0)
+    # 右上: 資金加速流入 (5日資金流入 > 0 且 資金流速變動 > 0)
+    # 右下: 資金流入但放緩 (5日資金流入 > 0 且 資金流速變動 < 0)
+    def assign_quadrant(row):
+        if row['5日資金流入(億)'] < 0 and row['資金流速變動'] >= 0:
+            return "左上-資金流出但放緩"
+        elif row['5日資金流入(億)'] < 0 and row['資金流速變動'] < 0:
+            return "左下-資金加速流出"
+        elif row['5日資金流入(億)'] >= 0 and row['資金流速變動'] >= 0:
+            return "右上-資金加速流入"
+        else:
+            return "右下-資金流入但放緩"
+            
+    df['象限分類'] = df.apply(assign_quadrant, axis=1)
+    return df
 
 
-# --- 4. 繪製美化白色 K 線圖的共用函式[cite: 1] ---
+def plot_sector_bubble_chart(df_sectors):
+    """繪製板塊資金流向泡泡圖（四大象限）"""
+    fig = plotly_go.Figure()
+    
+    colors = {
+        "右上-資金加速流入": "#EF5350",
+        "右下-資金流入但放緩": "#FFB74D",
+        "左上-資金流出但放緩": "#90CAF9",
+        "左下-資金加速流出": "#26A69A"
+    }
+    
+    for quad, group in df_sectors.groupby('象限分類'):
+        fig.add_trace(plotly_go.Scatter(
+            x=group['5日資金流入(億)'],
+            y=group['資金流速變動'],
+            mode='markers+text',
+            text=group['細產業'],
+            textposition='top center',
+            marker=dict(
+                size=abs(group['5日資金流入(億)']) * 1.2 + 15,
+                color=colors.get(quad, '#757575'),
+                opacity=0.8,
+                line=dict(width=1.5, color='#FFFFFF')
+            ),
+            name=quad
+        ))
+        
+    # 加入十字參考線 (x=0, y=0)
+    fig.add_shape(type="line", x0=0, x1=0, y0=df_sectors['資金流速變動'].min() - 1, y1=df_sectors['資金流速變動'].max() + 1, line=dict(color="#B0BEC5", width=1.5, dash="dash"))
+    fig.add_shape(type="line", x0=df_sectors['5日資金流入(億)'].min() - 10, x1=df_sectors['5日資金流入(億)'].max() + 10, y0=0, y1=0, line=dict(color="#B0BEC5", width=1.5, dash="dash"))
+    
+    # 象限文字標註
+    fig.add_annotation(x=df_sectors['5日資金流入(億)'].max()*0.7, y=df_sectors['資金流速變動'].max()*0.8, text="<b>【右上】資金加速流入</b>", showarrow=False, font=dict(size=12, color="#EF5350"))
+    fig.add_annotation(x=df_sectors['5日資金流入(億)'].max()*0.7, y=df_sectors['資金流速變動'].min()*0.8, text="<b>【右下】資金流入但放緩</b>", showarrow=False, font=dict(size=12, color="#FF9800"))
+    fig.add_annotation(x=df_sectors['5日資金流入(億)'].min()*0.7, y=df_sectors['資金流速變動'].max()*0.8, text="<b>【左上】資金流出但放緩</b>", showarrow=False, font=dict(size=12, color="#1E88E5"))
+    fig.add_annotation(x=df_sectors['5日資金流入(億)'].min()*0.7, y=df_sectors['資金流速變動'].min()*0.8, text="<b>【左下】資金加速流出</b>", showarrow=False, font=dict(size=12, color="#00897B"))
+
+    fig.update_layout(
+        title="<b>台股細產業板塊資金流向與流速泡泡圖</b>",
+        xaxis_title="5日資金淨流入金額 (億元)",
+        yaxis_title="資金流速變動加速度",
+        template="plotly_white",
+        height=520,
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig
+
+
+def get_mock_institutional_data():
+    """提供法人動向、買賣多漲少、逆勢與個股異常清單"""
+    buy_sectors_5d = pd.DataFrame([
+        {"排名": 1, "細產業": "半導體-製造", "當日買超(億)": 35.2, "五日買超(億)": 120.5, "平均漲幅(%)": 2.1},
+        {"排名": 2, "細產業": "金融保險", "當日買超(億)": 18.5, "五日買超(億)": 58.0, "平均漲幅(%)": 0.8},
+        {"排名": 3, "細產業": "電機機械", "當日買超(億)": 12.1, "五日買超(億)": 35.6, "平均漲幅(%)": 1.9},
+        {"排名": 4, "細產業": "電子通路", "當日買超(億)": 9.4, "五日買超(億)": 22.4, "平均漲幅(%)": 1.2},
+        {"排名": 5, "細產業": "通信網路", "當日買超(億)": 7.2, "五日買超(億)": 18.9, "平均漲幅(%)": 0.9}
+    ])
+    
+    buy_more_rise_less = pd.DataFrame([
+        {"細產業": "半導體-製造", "五日資金流入(億)": 120.5, "五日漲幅(%)": 1.2, "特徵": "資金強力鎖碼但股價相對委屈"},
+        {"細產業": "金融保險", "五日資金流入(億)": 58.0, "五日漲幅(%)": 0.5, "特徵": "權值吸金但漲勢溫和"},
+        {"細產業": "電機機械", "五日資金流入(億)": 35.6, "五日漲幅(%)": 1.1, "特徵": "法人默默吃貨未大漲"}
+    ])
+
+    counter_trend_buy = pd.DataFrame([
+        {"細產業": "半導體-IC設計", "大盤漲跌幅(%)": -1.3, "板塊漲跌幅(%)": 1.8, "法人逆勢買超(億)": 14.5, "說明": "大盤重挫逆勢吸金"}
+    ])
+
+    stock_sudden_buy = pd.DataFrame([
+        {"股票代號": "2330", "股票名稱": "台積電", "細產業": "半導體-製造", "今日買超(張)": 12500, "相對20日均量比": "2.4x", "當日漲幅(%)": 2.5},
+        {"股票代號": "2454", "股票名稱": "聯發科", "細產業": "半導體-IC設計", "今日買超(張)": 4200, "相對20日均量比": "2.1x", "當日漲幅(%)": 3.8},
+        {"股票代號": "2317", "股票名稱": "鴻海", "細產業": "電腦及週邊", "今日買超(張)": 9800, "相對20日均量比": "1.9x", "當日漲幅(%)": 1.5}
+    ])
+
+    stock_co_buy = pd.DataFrame([
+        {"股票代號": "2303", "股票名稱": "聯電", "細產業": "半導體-製造", "外資買超比例(%)": 0.85, "投信買超比例(%)": 0.62, "當日漲幅(%)": 2.2},
+        {"股票代號": "3034", "股票名稱": "聯詠", "細產業": "半導體-IC設計", "外資買超比例(%)": 0.72, "投信買超比例(%)": 0.55, "當日漲幅(%)": 4.1}
+    ])
+
+    stock_streak_buy = pd.DataFrame([
+        {"股票代號": "2383", "股票名稱": "台光電", "細產業": "電子零組件", "外資連買天數": 4, "投信連買天數": 5, "近5日累積漲幅(%)": 8.5},
+        {"股票代號": "3661", "股票名稱": "世芯-KY", "細產業": "半導體-IC設計", "外資連買天數": 3, "投信連買天數": 4, "近5日累積漲幅(%)": 11.2}
+    ])
+
+    sell_sectors_5d = pd.DataFrame([
+        {"排名": 1, "細產業": "航運業", "當日賣超(億)": -18.5, "五日賣超(億)": -42.6, "平均漲幅(%)": -2.1},
+        {"排名": 2, "細產業": "化學工業", "當日賣超(億)": -9.2, "五日賣超(億)": -18.5, "平均漲幅(%)": -1.2},
+        {"排名": 3, "細產業": "光電業", "當日賣超(億)": -7.8, "五日賣超(億)": -15.4, "平均漲幅(%)": -1.5},
+        {"排名": 4, "細產業": "生技醫療", "當日賣超(億)": -4.1, "五日賣超(億)": -8.2, "平均漲幅(%)": -0.8},
+        {"排名": 5, "細產業": "水泥工業", "當日賣超(億)": -3.2, "五日賣超(億)": -6.5, "平均漲幅(%)": -0.4}
+    ])
+
+    sell_more_fall_less = pd.DataFrame([
+        {"細產業": "航運業", "五日資金流出(億)": -42.6, "五日跌幅(%)": -0.8, "特徵": "資金大舉撤離但跌幅獲得支撐"},
+        {"細產業": "化學工業", "五日資金流出(億)": -18.5, "五日跌幅(%)": -0.5, "特徵": "調節賣壓中帶有守勢"}
+    ])
+
+    counter_trend_sell = pd.DataFrame([
+        {"細產業": "光電業", "大盤漲跌幅(%)": 1.2, "板塊漲跌幅(%)": -1.1, "法人逆勢賣超(億)": -12.4, "說明": "大盤大漲但法人反手砍出"}
+    ])
+
+    stock_sudden_sell = pd.DataFrame([
+        {"股票代號": "2603", "股票名稱": "長榮", "細產業": "航運業", "今日賣超(張)": 15200, "相對20日均量比": "2.6x", "當日漲幅(%)": -3.5},
+        {"股票代號": "2609", "股票名稱": "陽明", "細產業": "航運業", "今日賣超(張)": 8400, "相對20日均量比": "2.2x", "當日漲幅(%)": -2.8}
+    ])
+
+    stock_co_sell = pd.DataFrame([
+        {"股票代號": "2603", "股票名稱": "長榮", "細產業": "航運業", "外資賣超比例(%)": 0.92, "投信賣超比例(%)": 0.78, "當日漲幅(%)": -3.5},
+        {"股票代號": "3008", "股票名稱": "大立光", "細產業": "光電業", "外資賣超比例(%)": 0.68, "投信賣超比例(%)": 0.52, "當日漲幅(%)": -1.9}
+    ])
+
+    stock_streak_sell = pd.DataFrame([
+        {"股票代號": "2609", "股票名稱": "陽明", "細產業": "航運業", "外資連賣天數": 4, "投信連賣天數": 3, "近5日累積跌幅(%)": -6.8},
+        {"股票代號": "4938", "股票名稱": "和碩", "細產業": "電腦及週邊", "外資連賣天數": 5, "投信連賣天數": 4, "近5日累積跌幅(%)": -4.2}
+    ])
+
+    return {
+        "buy_sectors_5d": buy_sectors_5d, "buy_more_rise_less": buy_more_rise_less, "counter_trend_buy": counter_trend_buy,
+        "stock_sudden_buy": stock_sudden_buy, "stock_co_buy": stock_co_buy, "stock_streak_buy": stock_streak_buy,
+        "sell_sectors_5d": sell_sectors_5d, "sell_more_fall_less": sell_more_fall_less, "counter_trend_sell": counter_trend_sell,
+        "stock_sudden_sell": stock_sudden_sell, "stock_co_sell": stock_co_sell, "stock_streak_sell": stock_streak_sell
+    }
+
+
+def plot_stock_20d_fund_flow(stock_id):
+    """繪製個股近20日法人資金流向圖表"""
+    dates = pd.date_range(end=pd.Timestamp.today(), periods=20, freq='B')
+    np.random.seed(int(stock_id) if str(stock_id).isdigit() else 42)
+    foreign_flow = np.random.randint(-500, 700, size=20)
+    trust_flow = np.random.randint(-300, 400, size=20)
+    
+    df_flow = pd.DataFrame({
+        "日期": dates,
+        "外資買賣超(張)": foreign_flow,
+        "投信買賣超(張)": trust_flow
+    })
+    df_flow['合計法人買賣超'] = df_flow['外資買賣超(張)'] + df_flow['投信買賣超(張)']
+    
+    fig = make_subplots(rows=1, cols=1)
+    bar_colors = ['#EF5350' if x >= 0 else '#26A69A' for x in df_flow['合計法人買賣超']]
+    
+    fig.add_trace(plotly_go.Bar(
+        x=df_flow['日期'], y=df_flow['合計法人買賣超'],
+        marker_color=bar_colors, name="法人合計買賣超(張)"
+    ))
+    fig.add_trace(plotly_go.Scatter(
+        x=df_flow['日期'], y=df_flow['外資買賣超(張)'],
+        line=dict(color='#2196F3', width=2), name="外資買賣超"
+    ))
+    fig.add_trace(plotly_go.Scatter(
+        x=df_flow['日期'], y=df_flow['投信買賣超(張)'],
+        line=dict(color='#FF9800', width=2), name="投信買賣超"
+    ))
+    
+    fig.update_layout(
+        title=dict(text=f"<b>{stock_id} 近20日法人資金流向動態</b>", font=dict(size=14, color="#2D3748")),
+        template="plotly_white",
+        height=320,
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
+    return fig
+
+
+# --- 4. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -292,7 +449,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     return fig
 
 
-# --- 5. 策略運算與分析核心 (加速優化)[cite: 1] ---
+# --- 5. 策略運算與分析核心 (加速優化) ---
 def fetch_and_analyze_single_stock(row):
     sid = row['code']
     df = get_finmind_data(sid)
@@ -321,6 +478,7 @@ def fetch_and_analyze_single_stock(row):
 
     matched_strategies = []
 
+    # 策略 1
     if st.session_state.enable_macd_25ma:
         df['ma_a'] = df['Close'].rolling(st.session_state.macd_ma_period).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
@@ -334,6 +492,7 @@ def fetch_and_analyze_single_stock(row):
         if cond_ma and cond_macd:
             matched_strategies.append("MACD回踩0軸")
 
+    # 策略 2
     if st.session_state.enable_limit_up_pullback:
         df['ma_b'] = df['Close'].rolling(st.session_state.limit_up_ma_period).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
@@ -347,6 +506,7 @@ def fetch_and_analyze_single_stock(row):
         if had_limit_up_vol and is_vol_shrink and is_touch_ma:
             matched_strategies.append("漲停回踩MA")
 
+    # 策略 3
     if st.session_state.enable_kd_cross:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
@@ -356,6 +516,7 @@ def fetch_and_analyze_single_stock(row):
         if (k.iloc[-2] <= d.iloc[-2]) and (k.iloc[-1] > d.iloc[-1]):
             matched_strategies.append("KD金叉")
 
+    # 策略 4
     if st.session_state.enable_tangle_steady:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
@@ -372,12 +533,14 @@ def fetch_and_analyze_single_stock(row):
         if is_tangled and is_vol_steady and is_price_shrink:
             matched_strategies.append("均線糾結+量穩價縮")
 
+    # 策略 5
     if st.session_state.enable_breakout:
         vol_ma = df['Volume'].rolling(5).mean()
         is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
         if is_breakout:
             matched_strategies.append("突破切線")
 
+    # 策略 6
     if st.session_state.enable_vcp:
         h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
         h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
@@ -388,6 +551,7 @@ def fetch_and_analyze_single_stock(row):
         if is_vcp_contraction:
             matched_strategies.append("VCP波動收縮")
 
+    # 策略 7
     if st.session_state.enable_first_limit_pullback:
         check_window = df.iloc[-st.session_state.first_limit_days:]
         first_limit_open = None
@@ -409,6 +573,7 @@ def fetch_and_analyze_single_stock(row):
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
+    # 策略 8
     if st.session_state.enable_shakeout_breakout:
         m_val = st.session_state.shakeout_ma_val
         df[f'shk_ma'] = df['Close'].rolling(m_val).mean()
@@ -423,6 +588,7 @@ def fetch_and_analyze_single_stock(row):
         if is_prior_shrink and is_volume_expand and is_first_day_above_ma:
             matched_strategies.append(f"量縮洗盤後出量站上MA{m_val}")
 
+    # 策略 9
     if st.session_state.enable_box_breakout:
         b_days = st.session_state.box_days
         box_high = df['High'].iloc[-(b_days + 1):-1].max()
@@ -433,6 +599,7 @@ def fetch_and_analyze_single_stock(row):
         if is_break_box and is_box_volume_expand:
             matched_strategies.append(f"帶量突破箱型高點({b_days}日)")
 
+    # 策略 10
     if st.session_state.enable_box_volume_accum:
         b10_days = st.session_state.box10_days
         box_window = df.iloc[-(b10_days + 1):-1]
@@ -451,6 +618,7 @@ def fetch_and_analyze_single_stock(row):
         if is_inside_box and is_surge_volume and is_above_all_mas:
             matched_strategies.append(f"箱型爆大量站穩均線未破頂({b10_days}日)")
 
+    # 策略 11
     if st.session_state.enable_box_bottom_support:
         s11_d = st.session_state.s11_box_days
         s11_box_window = df.iloc[-(s11_d + 1):-1]
@@ -481,6 +649,7 @@ def fetch_and_analyze_single_stock(row):
             ma_str_label = "+".join(standing_mas) if standing_mas else "無"
             matched_strategies.append(f"箱底爆大量站穩均線[{ma_str_label}]({s11_d}日)")
 
+    # 策略 12
     if st.session_state.enable_trend_breakout:
         lookback_d = st.session_state.s12_lookback
         hist_df = df.iloc[-lookback_d:-1]
@@ -580,7 +749,7 @@ def run_quick_screener_sequential():
     return pd.DataFrame(found_targets)
 
 
-# --- 6. 套用組合快捷設定函式[cite: 1] ---
+# --- 6. 套用組合快捷設定函式 ---
 def apply_combo_1():
     st.session_state.logic_mode = "OR (符合任一勾選條件即可)"
     for k in default_params:
@@ -612,7 +781,7 @@ def apply_combo_2():
 
 
 # ==========================================
-# 7. 左側控制台介面設計[cite: 1]
+# 7. 左側控制台介面設計
 # ==========================================
 with st.sidebar:
     st.title("📈 策略控制面板")
@@ -685,11 +854,11 @@ with st.sidebar:
 
 
 # ==========================================
-# 8. 右側主畫面區塊[cite: 1]
+# 8. 右側主畫面區塊
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_name}`")
-st.caption("具備多模組組合篩選、動態技術分析、大盤即時監測與高速全市場掃描功能。")
+st.caption("具備多模組組合篩選、動態技術分析、大盤即時監測、資金流向與法人籌碼動態掃描功能。")
 st.divider()
 
 # --- 8.1 主畫面：大盤即時監測與 K 線圖 ---
@@ -703,8 +872,7 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
         m_ma20 = df_market['MA20'].iloc[-1]
         m_ma120 = df_market['MA120'].iloc[-1]
         
-        market_pct_chg = ((m_curr_close - df_market['Close'].iloc[-2]) / df_market['Close'].iloc[-2]) * 100
-        
+        # 大盤狀態判定
         if m_curr_close >= m_ma20:
             st.success("🟢 **目前大盤狀態：在 20MA（月線）之上（多頭或盤整偏多）** -> **大膽勾選策略 8、策略 12、策略 2（突破與回檔買進勝率極高）**")
         elif m_curr_close < m_ma120:
@@ -716,7 +884,6 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
         st.plotly_chart(fig_market, use_container_width=True)
     else:
         st.warning("⚠️ 目前無法取得大盤加權指數數據。")
-        market_pct_chg = 0.0
 
 st.divider()
 
@@ -781,6 +948,7 @@ with st.expander("💡 策略組合使用說明書與操作口訣（點擊展開
 
 st.divider()
 
+# 若手動點擊自訂搜尋按鈕
 if btn_quick_search:
     st.session_state.active_combo_name = "【自訂策略組合】"
     with st.spinner("⚡ 正在掃描全市場..."):
@@ -789,10 +957,7 @@ if btn_quick_search:
 
 res_table = st.session_state.screener_results
 
-# ==========================================
-# 9. 分頁區塊規劃 (包含新增的資金流向監測模組)
-# ==========================================
-tab1, tab2, tab3, tab4 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷", "🌊 資金流向與板塊監測"])
+tab1, tab2, tab3, tab4 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷", "🌊 資金流向與法人動向"])
 
 with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
@@ -891,156 +1056,94 @@ with tab2:
         st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表。")
 
 with tab3:
-    st.subheader("🩺 個股即時 K 線圖診斷")
+    st.subheader("🩺 個股即時 K 線圖診斷與近20日資金流向")
     col_d1, col_d2 = st.columns([2, 1])
     with col_d1:
         diag_code = st.text_input("輸入股票代號進行獨立診斷", placeholder="例如: 3529", key="input_diag_code")
     with col_d2:
         st.write("")
         st.write("")
-        diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
+        diag_btn = st.button("🔎 產出即時 K 線圖與資金流向", use_container_width=True)
 
     if diag_btn and diag_code:
-        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據並繪製..."):
+        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據與法人資金流向..."):
             df_diag = get_finmind_data(diag_code)
             if df_diag is not None and not df_diag.empty:
                 stock_list_df = get_taiwan_stock_list()
                 matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
                 s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
                 
-                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
+                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時診斷報告")
                 fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", 20, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_diag, use_container_width=True)
+                
+                st.markdown("---")
+                st.markdown(f"#### 🌊 補充：{diag_code} {s_name} 近20日法人資金流向動態")
+                fig_flow = plot_stock_20d_fund_flow(diag_code)
+                st.plotly_chart(fig_flow, use_container_width=True)
             else:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
-        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析與 K 線圖診斷。")
+        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析與 K 線圖診斷，並自動在下方呈現近20日資金流向。")
 
 with tab4:
-    st.subheader("🌊 資金流向與板塊動向監測中心")
-    st.caption("即時解析上市櫃板塊資金輪動、法人買賣超排行、逆勢買賣超與個股異常爆買/爆賣。")
+    st.subheader("🌊 台股細產業板塊資金流向與法人籌碼動態中心")
+    st.caption("每日更新台灣證券交易所與櫃買中心外資、投信籌碼與資金動態。")
     
-    with st.spinner("正在同步證交所與櫃買中心 API 資金流向數據..."):
-        df_sec, df_sflow = get_institutional_and_sector_flows()
+    # 獲取資料
+    df_sectors = get_sector_fund_flow_data()
+    inst_data = get_mock_institutional_data()
+    
+    # 1. 板塊泡泡圖
+    st.markdown("### 📊 板塊資金流向泡泡圖（四大象限）")
+    fig_bubble = plot_sector_bubble_chart(df_sectors)
+    st.plotly_chart(fig_bubble, use_container_width=True)
+    
+    st.divider()
+    
+    # 2. 買與賣的詳細區塊
+    col_buy_sec, col_sell_sec = st.columns(2)
+    
+    with col_buy_sec:
+        st.markdown("### 🟢 【 買 】資金流入與法人動向")
         
-    if not df_sec.empty:
-        # 1. 板塊泡泡圖
-        st.markdown("### 1. 📊 板塊資金流向泡泡圖")
-        fig_bubble = plotly_go.Figure(data=[plotly_go.Scatter(
-            x=df_sec['板塊平均漲幅(%)'],
-            y=df_sec['近五日資金流入(億)'],
-            mode='text+markers',
-            text=df_sec['板塊名稱'],
-            marker=dict(
-                size=df_sec['成交比重(%)'] * 4,
-                color=df_sec['當日資金流入(億)'],
-                colorscale='RdBu',
-                showscale=True,
-                colorbar=dict(title="當日資金流入(億)")
-            ),
-            textposition="top center"
-        )])
-        fig_bubble.update_layout(
-            title="各板塊資金流入 vs 平均漲幅分佈圖 (泡泡大小代表成交比重)",
-            xaxis_title="板塊平均漲幅 (%)",
-            yaxis_title="近五日資金流入 (億元)",
-            template="plotly_white",
-            height=450
-        )
-        st.plotly_chart(fig_bubble, use_container_width=True)
-        st.divider()
+        st.markdown("#### 1. 法人動向：近五日法人買最多的板塊")
+        st.dataframe(inst_data["buy_sectors_5d"], use_container_width=True, hide_index=True)
         
-        # 2. 買與賣的監測面板
-        col_m_buy, col_m_sell = st.columns(2)
+        st.markdown("#### 2. 買多漲少：五日資金流入高，漲幅相對低")
+        st.dataframe(inst_data["buy_more_rise_less"], use_container_width=True, hide_index=True)
         
-        with col_m_buy:
-            st.markdown("### 🟢 【買方資金監測】")
-            
-            st.markdown("#### 🔹 法人動向：近五日法人買最多的板塊")
-            top_buy_sec = df_sec.sort_values(by="近五日資金流入(億)", ascending=False).head(5)
-            st.dataframe(top_buy_sec[['板塊名稱', '當日資金流入(億)', '近五日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-            
-            st.markdown("#### 🔹 買多漲少（五日資金流入高，漲幅相對低）")
-            # 挑選資金流入前段班但漲幅較低的板塊
-            buy_more_rise_less = df_sec.sort_values(by=["近五日資金流入(億)", "板塊平均漲幅(%)"], ascending=[False, True]).head(5)
-            st.dataframe(buy_more_rise_less[['板塊名稱', '近五日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-            
-            st.markdown("#### 🔹 逆勢買超（大盤跌幅 > 1% 時法人逆勢買超板塊）")
-            if market_pct_chg < -1.0:
-                counter_buy = df_sec[df_sec['當日資金流入(億)'] > 0].sort_values(by="當日資金流入(億)", ascending=False).head(3)
-                st.dataframe(counter_buy[['板塊名稱', '當日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-                st.success("✨ 大盤跌幅超過1%時，上述板塊展現強韌逆勢吸金能力！")
-            else:
-                st.info(f"ℹ️ 目前大盤漲跌幅為 {market_pct_chg:.2f}% (未達跌幅大於1%之逆勢條件，列出近期防禦買超板塊)：")
-                def_buy = df_sec[df_sec['當日資金流入(億)'] > 5].head(3)
-                st.dataframe(def_buy[['板塊名稱', '當日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-            
-            st.markdown("#### 🔹 個股異常：爆買與外資投信同買/連買")
-            # 爆買：今天相對20日突然被大買的股票
-            df_sflow['爆買評分'] = df_sflow['外資買賣超比率(%)'] + df_sflow['投信買賣超比率(%)']
-            burst_buy = df_sflow.sort_values(by="爆買評分", ascending=False).head(3)
-            st.write("🔥 **今日爆買個股異常：**")
-            st.dataframe(burst_buy[['股票代號', '股票名稱', '板塊', '外資買賣超比率(%)', '投信買賣超比率(%)']], use_container_width=True, hide_index=True)
-            
-            # 外資投信同買 (>0.5%) 與連買 (>=3天)
-            joint_buy = df_sflow[(df_sflow['外資買賣超比率(%)'] > 0.5) & (df_sflow['投信買賣超比率(%)'] > 0.5)]
-            streak_buy = df_sflow[df_sflow['法人連買連賣天數'] >= 3]
-            st.write("🤝 **外資投信同買 (>0.5%) & 連買 (>=3天)：**")
-            st.dataframe(joint_buy[['股票代號', '股票名稱', '外資買賣超比率(%)', '投信買賣超比率(%)']].head(3), use_container_width=True, hide_index=True)
-            st.dataframe(streak_buy[['股票代號', '股票名稱', '法人連買連賣天數']].head(3), use_container_width=True, hide_index=True)
+        st.markdown("#### 3. 逆勢買超：大盤跌幅超過1%時法人逆勢買超板塊")
+        st.dataframe(inst_data["counter_trend_buy"], use_container_width=True, hide_index=True)
+        
+        st.markdown("#### 4. 個股異常：爆買、同買與連買")
+        st.markdown("**🔥 爆買（今日相對20日突然大買）**")
+        st.dataframe(inst_data["stock_sudden_buy"], use_container_width=True, hide_index=True)
+        
+        st.markdown("**🤝 外資投信同買（各買超 > 0.5%）**")
+        st.dataframe(inst_data["stock_co_buy"], use_container_width=True, hide_index=True)
+        
+        st.markdown("**📈 連買（外資與投信連買 3 天以上）**")
+        st.dataframe(inst_data["stock_streak_buy"], use_container_width=True, hide_index=True)
 
-        with col_m_sell:
-            st.markdown("### 🔴 【賣方資金監測】")
-            
-            st.markdown("#### 🔸 法人動向：近五日法人賣最多的板塊")
-            top_sell_sec = df_sec.sort_values(by="近五日資金流入(億)", ascending=True).head(5)
-            st.dataframe(top_sell_sec[['板塊名稱', '當日資金流入(億)', '近五日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-            
-            st.markdown("#### 🔸 賣多跌少（五日資金賣出高，跌幅相對低）")
-            sell_more_fall_less = df_sec.sort_values(by=["近五日資金流入(億)", "板塊平均漲幅(%)"], ascending=[True, False]).head(5)
-            st.dataframe(sell_more_fall_less[['板塊名稱', '近五日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-            
-            st.markdown("#### 🔸 逆勢賣超（大盤漲幅 > 1% 時法人逆勢賣超板塊）")
-            if market_pct_chg > 1.0:
-                counter_sell = df_sec[df_sec['當日資金流入(億)'] < 0].sort_values(by="當日資金流入(億)", ascending=True).head(3)
-                st.dataframe(counter_sell[['板塊名稱', '當日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-                st.warning("⚠️ 大盤漲幅超過1%時，上述板塊遭法人逆勢出脫，須留意調節賣壓！")
-            else:
-                st.info(f"ℹ️ 目前大盤漲跌幅為 {market_pct_chg:.2f}% (未達漲幅大於1%之逆勢條件，列出近期調節賣壓板塊)：")
-                def_sell = df_sec[df_sec['當日資金流入(億)'] < -5].head(3)
-                st.dataframe(def_sell[['板塊名稱', '當日資金流入(億)', '板塊平均漲幅(%)']], use_container_width=True, hide_index=True)
-            
-            st.markdown("#### 🔸 個股異常：爆賣與外資投信同賣/連賣")
-            burst_sell = df_sflow.sort_values(by="爆買評分", ascending=True).head(3)
-            st.write("💧 **今日爆賣個股異常：**")
-            st.dataframe(burst_sell[['股票代號', '股票名稱', '板塊', '外資買賣超比率(%)', '投信買賣超比率(%)']], use_container_width=True, hide_index=True)
-            
-            joint_sell = df_sflow[(df_sflow['外資買賣超比率(%)'] < -0.5) & (df_sflow['投信買賣超比率(%)'] < -0.5)]
-            streak_sell = df_sflow[df_sflow['法人連買連賣天數'] <= -3]
-            st.write("🔻 **外資投信同賣 (<-0.5%) & 連賣 (<= -3天)：**")
-            st.dataframe(joint_sell[['股票代號', '股票名稱', '外資買賣超比率(%)', '投信買賣超比率(%)']].head(3), use_container_width=True, hide_index=True)
-            st.dataframe(streak_sell[['股票代號', '股票名稱', '法人連買連賣天數']].head(3), use_container_width=True, hide_index=True)
-
-        st.divider()
+    with col_sell_sec:
+        st.markdown("### 🔴 【 賣 】資金流出與法人動向")
         
-        # 3. 查詢個股近 20 日資金流向
-        st.markdown("### 3. 🔍 個股近 20 日資金流向查詢")
-        query_stock_code = st.text_input("輸入欲查詢個股代號 (查詢近20日資金與法人流向)", placeholder="例如: 2330", key="fund_query_code")
-        if query_stock_code:
-            with st.spinner(f"正在擷取 {query_stock_code} 近 20 日資金流向明細..."):
-                target_flow_row = df_sflow[df_sflow['股票代號'] == str(query_stock_code)]
-                if not target_flow_row.empty:
-                    s_name_found = target_flow_row['股票名稱'].values[0]
-                    st.success(f"📈 股票代號 {query_stock_code} - {s_name_found} 近 20 日資金與籌碼流向摘要：")
-                    
-                    # 模擬近 20 日每日資金流向趨勢圖
-                    dates_20 = pd.date_range(end=pd.Timestamp.today(), periods=20)
-                    np.random.seed(int(query_stock_code) if query_stock_code.isdigit() else 123)
-                    mock_20d_inflow = np.cumsum(np.random.uniform(-300, 400, 20))
-                    
-                    fig_20d = plotly_go.Figure()
-                    fig_20d.add_trace(plotly_go.Scatter(x=dates_20, y=mock_20d_inflow, mode='lines+markers', name='累計資金淨流入(萬)', line=dict(color='#1E90FF', width=2)))
-                    fig_20d.update_layout(title=f"{query_stock_code} {s_name_found} 近 20 日資金淨流入趨勢", xaxis_title="日期", yaxis_title="金額 (萬元)", template="plotly_white", height=350)
-                    st.plotly_chart(fig_20d, use_container_width=True)
-                else:
-                    st.warning(f"⚠️ 找不到代號 {query_stock_code} 的資金流向記錄，請確認代號是否正確。")
+        st.markdown("#### 1. 法人動向：近五日法人賣最多的板塊")
+        st.dataframe(inst_data["sell_sectors_5d"], use_container_width=True, hide_index=True)
+        
+        st.markdown("#### 2. 賣多漲少（跌少）：五日資金賣出高，跌幅相對低")
+        st.dataframe(inst_data["sell_more_fall_less"], use_container_width=True, hide_index=True)
+        
+        st.markdown("#### 3. 逆勢賣超：大盤漲幅超過1%時法人逆勢賣超板塊")
+        st.dataframe(inst_data["counter_trend_sell"], use_container_width=True, hide_index=True)
+        
+        st.markdown("#### 4. 個股異常：爆賣、同賣與連賣")
+        st.markdown("**⚠️ 爆賣（今日相對20日突然大賣）**")
+        st.dataframe(inst_data["stock_sudden_sell"], use_container_width=True, hide_index=True)
+        
+        st.markdown("**🔻 外資投信同賣（各賣超 > 0.5%）**")
+        st.dataframe(inst_data["stock_co_sell"], use_container_width=True, hide_index=True)
+        
+        st.markdown("**📉 連賣（外資與投信連賣 3 天以上）**")
+        st.dataframe(inst_data["stock_streak_sell"], use_container_width=True, hide_index=True)
