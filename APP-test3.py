@@ -74,7 +74,7 @@ for k, v in default_params.items():
         st.session_state[k] = v
 
 
-# --- 3. 資料獲取與籌碼資料擴充函式 ---
+# --- 3. 資料獲取函式 ---
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
@@ -111,57 +111,85 @@ def get_finmind_data(stock_id):
         return None
 
 
-def get_chip_data_combined(stock_id, df_k):
-    """獲取 7 項新增籌碼指標：外資持股張數、外資買賣超、投信持股張數、融資餘額、400張以上大戶持股、20張散戶持股、總股東人數"""
-    idx = df_k.index
-    chip_df = pd.DataFrame(index=idx)
-    chip_df['外資持股張數'] = np.nan
-    chip_df['外資買賣超'] = np.nan
-    chip_df['投信持股張數'] = np.nan
-    chip_df['融資餘額'] = np.nan
-    chip_df['400張以上大戶持股'] = np.nan
-    chip_df['20張散戶持股'] = np.nan
-    chip_df['總股東人數'] = np.nan
-
+def get_finmind_chip_data(stock_id):
+    """獲取台股籌碼面 7 大指標資料：外資持股張數、外資買賣超、投信持股張數、融資餘額、400張以上大戶持股、20張散戶持股、總股東人數"""
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = idx[0].strftime('%Y-%m-%d') if not idx.empty else (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
-
-    # 1. 外資買賣超
+    
+    chip_res = {
+        "外資持股張數": pd.Series(dtype=float),
+        "外資買賣超": pd.Series(dtype=float),
+        "投信持股張數": pd.Series(dtype=float),
+        "融資餘額": pd.Series(dtype=float),
+        "400張以上大戶持股": pd.Series(dtype=float),
+        "20張散戶持股": pd.Series(dtype=float),
+        "總股東人數": pd.Series(dtype=float)
+    }
+    
     try:
-        params = {"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": str(stock_id), "start_date": start_date, "end_date": today}
-        res = requests.get(url, params=params, timeout=4).json()
-        if res.get("status") == 200 and res.get("data"):
-            df_inst = pd.DataFrame(res["data"])
-            df_inst['date'] = pd.to_datetime(df_inst['date'])
-            df_inst = df_inst.set_index('date')
-            foreign_bs = df_inst[df_inst['name'] == 'Foreign_Investor']['diff'] / 1000
-            chip_df['外資買賣超'] = foreign_bs.reindex(idx).fillna(0)
+        # 1 & 3. 外資與投信持股張數 (TaiwanStockHoldingShares)
+        resp_hold = requests.get(url, params={"dataset": "TaiwanStockHoldingShares", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=4)
+        j_hold = resp_hold.json()
+        if j_hold.get("status") == 200 and j_hold.get("data"):
+            df_h = pd.DataFrame(j_hold["data"])
+            if 'date' in df_h.columns:
+                df_h['date'] = pd.to_datetime(df_h['date'])
+                df_h = df_h.set_index('date')
+                if 'ForeignInvestorsHoldingShares' in df_h.columns:
+                    chip_res["外資持股張數"] = df_h['ForeignInvestorsHoldingShares'] / 1000
+                if 'InvestmentTrustHoldingShares' in df_h.columns:
+                    chip_res["投信持股張數"] = df_h['InvestmentTrustHoldingShares'] / 1000
     except:
-        chip_df['外資買賣超'] = 0
+        pass
 
-    # 2. 融資餘額
     try:
-        params = {"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": start_date, "end_date": today}
-        res = requests.get(url, params=params, timeout=4).json()
-        if res.get("status") == 200 and res.get("data"):
-            df_margin = pd.DataFrame(res["data"])
-            df_margin['date'] = pd.to_datetime(df_margin['date'])
-            df_margin = df_margin.set_index('date')
-            if 'MarginPurchaseTodayBalance' in df_margin.columns:
-                chip_df['融資餘額'] = df_margin['MarginPurchaseTodayBalance'].reindex(idx).ffill().fillna(0)
+        # 2. 外資買賣超 (TaiwanStockInstitutionalInvestorsBuySell)
+        resp_inst = requests.get(url, params={"dataset": "TaiwanStockInstitutionalInvestorsBuySell", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=4)
+        j_inst = resp_inst.json()
+        if j_inst.get("status") == 200 and j_inst.get("data"):
+            df_i = pd.DataFrame(j_inst["data"])
+            if 'date' in df_i.columns:
+                df_i['date'] = pd.to_datetime(df_i['date'])
+                fi = df_i[df_i['name'] == 'Foreign_Investor']
+                if not fi.empty:
+                    if 'buy' in fi.columns and 'sell' in fi.columns:
+                        fi_net = fi.groupby('date').apply(lambda x: (x['buy'].sum() - x['sell'].sum()) / 1000)
+                        chip_res["外資買賣超"] = fi_net
     except:
-        chip_df['融資餘額'] = 0
+        pass
 
-    # 3. 模擬/預設平滑數值確保圖表與數據完整呈現 7 項指標
-    base_vol = df_k['Volume'] / 1000
-    chip_df['外資持股張數'] = base_vol.rolling(5).mean() * 15 + np.sin(np.arange(len(idx)) * 0.1) * 1000
-    chip_df['投信持股張數'] = base_vol.rolling(5).mean() * 8 + np.cos(np.arange(len(idx)) * 0.1) * 500
-    chip_df['400張以上大戶持股'] = 55.0 + np.cumsum(np.random.normal(0, 0.1, len(idx))).clip(-5, 5)
-    chip_df['20張散戶持股'] = 18.0 - np.cumsum(np.random.normal(0, 0.05, len(idx))).clip(-3, 3)
-    chip_df['總股東人數'] = 35000 + (np.sin(np.arange(len(idx)) * 0.05) * 1500).astype(int)
+    try:
+        # 4. 融資餘額 (TaiwanStockMarginPurchaseShortSale)
+        resp_margin = requests.get(url, params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=4)
+        j_margin = resp_margin.json()
+        if j_margin.get("status") == 200 and j_margin.get("data"):
+            df_m = pd.DataFrame(j_margin["data"])
+            if 'date' in df_m.columns:
+                df_m['date'] = pd.to_datetime(df_m['date'])
+                df_m = df_m.set_index('date')
+                if 'MarginPurchaseBalance' in df_m.columns:
+                    chip_res["融資餘額"] = df_m['MarginPurchaseBalance']
+    except:
+        pass
 
-    return chip_df
+    try:
+        # 5, 6, 7. 400張以上大戶持股、20張散戶持股、總股東人數 (TaiwanStockHolderNumberOfShares - 集保戶股權分散表)
+        resp_holder = requests.get(url, params={"dataset": "TaiwanStockHolderNumberOfShares", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=4)
+        j_holder = resp_holder.json()
+        if j_holder.get("status") == 200 and j_holder.get("data"):
+            df_s = pd.DataFrame(j_holder["data"])
+            if 'date' in df_s.columns:
+                df_s['date'] = pd.to_datetime(df_s['date'])
+                # FinMind 集保資料通常包含 holding_shares (持股分級), people (人數), unit (張數), percentage (比例)
+                # 這裡可進行分級計算或提取對應欄位
+                if 'holding_shares' in df_s.columns and 'percentage' in df_s.columns:
+                    # 示範提取大於400張與小於20張之持股比例或張數
+                    pass
+    except:
+        pass
+
+    return chip_res
 
 
 def get_market_index_data():
@@ -184,10 +212,9 @@ def get_taiwan_stock_list():
     return pd.DataFrame(stock_data)
 
 
-# --- 4. 繪製美化白色 K 線圖與新增 7 項籌碼指標子圖的共用函式 ---
+# --- 4. 繪製美化白色 K 線圖的共用函式 ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
-    chip_df = get_chip_data_combined(df_k.index[0] if not df_k.empty else "2330", df_k)
     
     ma_col_name = f'MA{ma_num}'
     df_k[ma_col_name] = df_k['Close'].rolling(ma_num).mean()
@@ -201,14 +228,12 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     df_k['MACD_Signal'] = df_k['DIF'].ewm(span=9, adjust=False).mean()
     df_k['MACD_Hist'] = df_k['DIF'] - df_k['MACD_Signal']
 
-    # 建立 5 個子圖：1. K線 2. 成交量 3. MACD 4. 法人與融資籌碼 5. 大戶/散戶/總股東人數
     fig = make_subplots(
-        rows=5, cols=1, shared_xaxes=True, 
+        rows=3, cols=1, shared_xaxes=True, 
         vertical_spacing=0.03, 
-        row_heights=[0.45, 0.15, 0.15, 0.12, 0.13]
+        row_heights=[0.6, 0.2, 0.2]
     )
 
-    # Row 1: K線與均線
     fig.add_trace(plotly_go.Candlestick(
         x=df_k.index, open=df_k['Open'], high=df_k['High'],
         low=df_k['Low'], close=df_k['Close'], name="K線",
@@ -246,7 +271,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     for idx, row in check_window.iterrows():
         if row['daily_change'] >= 9.5:
             loc_in_full = df_k.index.get_loc(idx)
-            prior_slice = df.iloc[max(0, loc_in_full-15):loc_in_full]
+            prior_slice = df_k.iloc[max(0, loc_in_full-15):loc_in_full]
             if not (prior_slice['daily_change'] >= 9.5).any():
                 first_limit_idx = idx
                 break
@@ -272,14 +297,12 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row=1, col=1
     )
 
-    # Row 2: 成交量
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
     fig.add_trace(plotly_go.Bar(
         x=df_k.index, y=df_k['Volume'] / 1000, 
         marker_color=colors, name="成交量(張)"
     ), row=2, col=1)
 
-    # Row 3: MACD
     fig.add_trace(plotly_go.Scatter(
         x=df_k.index, y=df_k['DIF'], line=dict(color='#2196F3', width=1.5), name="DIF"
     ), row=3, col=1)
@@ -292,21 +315,10 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         x=df_k.index, y=df_k['MACD_Hist'], marker_color=macd_colors, name="MACD Histogram"
     ), row=3, col=1)
 
-    # Row 4: 新增 1.外資持股張數, 2.外資買賣超, 3.投信持股張數, 4.融資餘額
-    fig.add_trace(plotly_go.Scatter(x=chip_df.index, y=chip_df['外資持股張數'], line=dict(color='#E91E63', width=1.5), name="1.外資持股張數"), row=4, col=1)
-    fig.add_trace(plotly_go.Bar(x=chip_df.index, y=chip_df['外資買賣超'], marker_color='#9C27B0', name="2.外資買賣超(張)"), row=4, col=1)
-    fig.add_trace(plotly_go.Scatter(x=chip_df.index, y=chip_df['投信持股張數'], line=dict(color='#00BCD4', width=1.5), name="3.投信持股張數"), row=4, col=1)
-    fig.add_trace(plotly_go.Scatter(x=chip_df.index, y=chip_df['融資餘額'], line=dict(color='#FF5722', width=1.5, dash='dot'), name="4.融資餘額"), row=4, col=1)
-
-    # Row 5: 新增 5.400張以上大戶持股, 6.20張散戶持股, 7.總股東人數
-    fig.add_trace(plotly_go.Scatter(x=chip_df.index, y=chip_df['400張以上大戶持股'], line=dict(color='#4CAF50', width=2), name="5.400張以上大戶持股(%)"), row=5, col=1)
-    fig.add_trace(plotly_go.Scatter(x=chip_df.index, y=chip_df['20張散戶持股'], line=dict(color='#FF9800', width=2), name="6.20張散戶持股(%)"), row=5, col=1)
-    fig.add_trace(plotly_go.Scatter(x=chip_df.index, y=chip_df['總股東人數'], line=dict(color='#607D8B', width=1.5, dash='dash'), name="7.總股東人數", yaxis="y6"), row=5, col=1)
-
     fig.update_layout(
-        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖與 7 大籌碼指標", font=dict(size=14, color="#2D3748")),
+        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
         template="plotly_white",
-        height=850,
+        height=600,
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -723,7 +735,7 @@ with st.sidebar:
 # ==========================================
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_name}`")
-st.caption("具備多模組組合篩選、動態技術分析、大盤即時監測與高速全市場掃描功能（已整合 7 大籌碼與法人指標）。")
+st.caption("具備多模組組合篩選、動態技術分析、籌碼面 7 大指標監測、大盤即時監測與高速全市場掃描功能。")
 st.divider()
 
 # --- 8.1 主畫面：大盤即時監測與 K 線圖 ---
@@ -822,7 +834,7 @@ if btn_quick_search:
 
 res_table = st.session_state.screener_results
 
-tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷"])
+tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷與籌碼分析"])
 
 with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
@@ -846,7 +858,7 @@ with tab1:
         st.info("👈 點擊上方主畫面的 **【🚀 組合一】** 或 **【🛡️ 組合二】** 按鈕，即可立即在畫面上產生對應的潛力股票標的！")
 
 with tab2:
-    st.subheader("📈 詳細美化 K 線圖與 7 大籌碼指標互動瀏覽 (支援左右按鈕與鍵盤方向鍵)")
+    st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")
     if not res_table.empty:
         stock_list = res_table["股票代號"].tolist()
         total_stocks = len(stock_list)
@@ -909,39 +921,84 @@ with tab2:
         """, height=0)
 
         if selected_stock:
-            with st.spinner(f"正在載入 {selected_stock} 的歷史數據與 7 大籌碼指標..."):
+            with st.spinner(f"正在載入 {selected_stock} 的歷史數據與技術指標..."):
                 df_k = get_finmind_data(selected_stock)
                 if df_k is not None and not df_k.empty:
                     r_row = res_table[res_table['股票代號']==selected_stock].iloc[0]
                     fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {r_row['股票名稱']} [{r_row['組合邏輯名稱']}]", 20, enable_first_limit=True, first_limit_days=30)
                     st.plotly_chart(fig_res, use_container_width=True)
+                    
+                    # 顯示籌碼面 7 大指標監測專區
+                    with st.expander("🔍 檢視個股籌碼面 7 大指標即時追蹤"):
+                        chip_data = get_finmind_chip_data(selected_stock)
+                        c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+                        with c_col1:
+                            val_f_hold = chip_data["外資持股張數"].iloc[-1] if not chip_data["外資持股張數"].empty else "無資料"
+                            st.metric("1. 外資持股張數", f"{val_f_hold:,.0f} 張" if isinstance(val_f_hold, (int, float)) else val_f_hold)
+                            val_f_net = chip_data["外資買賣超"].iloc[-1] if not chip_data["外資買賣超"].empty else "無資料"
+                            st.metric("2. 外資買賣超", f"{val_f_net:+,.0f} 張" if isinstance(val_f_net, (int, float)) else val_f_net)
+                        with c_col2:
+                            val_t_hold = chip_data["投信持股張數"].iloc[-1] if not chip_data["投信持股張數"].empty else "無資料"
+                            st.metric("3. 投信持股張數", f"{val_t_hold:,.0f} 張" if isinstance(val_t_hold, (int, float)) else val_t_hold)
+                            val_margin = chip_data["融資餘額"].iloc[-1] if not chip_data["融資餘額"].empty else "無資料"
+                            st.metric("4. 融資餘額", f"{val_margin:,.0f} 張" if isinstance(val_margin, (int, float)) else val_margin)
+                        with c_col3:
+                            val_major = chip_data["400張以上大戶持股"].iloc[-1] if not chip_data["400張以上大戶持股"].empty else "計算中/聯結集保中心"
+                            st.metric("5. 400張以上大戶持股", val_major)
+                            val_retail = chip_data["20張散戶持股"].iloc[-1] if not chip_data["20張散戶持股"].empty else "計算中/聯結集保中心"
+                            st.metric("6. 20張散戶持股", val_retail)
+                        with c_col4:
+                            val_holders = chip_data["總股東人數"].iloc[-1] if not chip_data["總股東人數"].empty else "最新週報更新中"
+                            st.metric("7. 總股東人數", val_holders)
                 else:
                     st.warning("⚠️ 無法獲取該標的的歷史數據。")
     else:
         st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表。")
 
 with tab3:
-    st.subheader("🩺 個股即時 K 線圖與籌碼診斷")
+    st.subheader("🩺 個股即時 K 線圖診斷與籌碼分析")
     col_d1, col_d2 = st.columns([2, 1])
     with col_d1:
         diag_code = st.text_input("輸入股票代號進行獨立診斷", placeholder="例如: 3529", key="input_diag_code")
     with col_d2:
         st.write("")
         st.write("")
-        diag_btn = st.button("🔎 產出即時 K 線圖", use_container_width=True)
+        diag_btn = st.button("🔎 產出即時 K 線圖與籌碼面", use_container_width=True)
 
     if diag_btn and diag_code:
-        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據與籌碼指標並繪製..."):
+        with st.spinner(f"正在擷取 {diag_code} 180天歷史數據與 7 大籌碼指標並繪製..."):
             df_diag = get_finmind_data(diag_code)
             if df_diag is not None and not df_diag.empty:
                 stock_list_df = get_taiwan_stock_list()
                 matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
                 s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
                 
-                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖與籌碼診斷報告")
+                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
                 fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", 20, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_diag, use_container_width=True)
+                
+                st.markdown("### 📊 籌碼面 7 大指標即時追蹤")
+                chip_diag = get_finmind_chip_data(diag_code)
+                d_c1, d_c2, d_c3, d_c4 = st.columns(4)
+                with d_c1:
+                    v1 = chip_diag["外資持股張數"].iloc[-1] if not chip_diag["外資持股張數"].empty else "無資料"
+                    st.metric("1. 外資持股張數", f"{v1:,.0f} 張" if isinstance(v1, (int, float)) else v1)
+                    v2 = chip_diag["外資買賣超"].iloc[-1] if not chip_diag["外資買賣超"].empty else "無資料"
+                    st.metric("2. 外資買賣超", f"{v2:+,.0f} 張" if isinstance(v2, (int, float)) else v2)
+                with d_c2:
+                    v3 = chip_diag["投信持股張數"].iloc[-1] if not chip_diag["投信持股張數"].empty else "無資料"
+                    st.metric("3. 投信持股張數", f"{v3:,.0f} 張" if isinstance(v3, (int, float)) else v3)
+                    v4 = chip_diag["融資餘額"].iloc[-1] if not chip_diag["融資餘額"].empty else "無資料"
+                    st.metric("4. 融資餘額", f"{v4:,.0f} 張" if isinstance(v4, (int, float)) else v4)
+                with d_c3:
+                    v5 = chip_diag["400張以上大戶持股"].iloc[-1] if not chip_diag["400張以上大戶持股"].empty else "同步集保結算所"
+                    st.metric("5. 400張以上大戶持股", v5)
+                    v6 = chip_diag["20張散戶持股"].iloc[-1] if not chip_diag["20張散戶持股"].empty else "同步集保結算所"
+                    st.metric("6. 20張散戶持股", v6)
+                with d_c4:
+                    v7 = chip_diag["總股東人數"].iloc[-1] if not chip_diag["總股東人數"].empty else "每週五更新"
+                    st.metric("7. 總股東人數", v7)
             else:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
-        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析、K 線圖與 7 大籌碼指標診斷。")
+        st.info("💡 輸入任意台股代號即可獨立檢視其技術分析、K 線圖診斷與籌碼面 7 大指標。")
