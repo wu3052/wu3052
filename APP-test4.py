@@ -8,7 +8,7 @@ import streamlit as st
 # 頁面設定
 st.set_page_config(
     page_title="台股三大法人資金流向板塊",
-    page_icon="📈",
+    page_icon="🌊",
     layout="wide",
 )
 
@@ -37,26 +37,44 @@ def get_institutional_investors(date_str):
       "start_date": date_str,
       "end_date": date_str,
   }
-  # 若有 FinMind Token 可在此帶入 Headers 或 token 參數
   response = requests.get(url, params=parameters)
   data = response.json()
-  if data.get("status") == 200 and len(data["data"]) > 0:
+  if data.get("status") == 200 and len(data.get("data", [])) > 0:
     df = pd.DataFrame(data["data"])
     return df
   return pd.DataFrame()
 
 
+# 計算智慧預設日期（考量每日盤後資料通常於下午 18:00 左右才會更新發布，以及週末假日）
+def get_smart_default_date():
+  now = datetime.datetime.now()
+  d = now.date()
+  # 如果今天是週末，或今天是平日但時間小於下午 6 點 (18:00)，則預設往前推一天（或推至最近的交易日）
+  if d.weekday() >= 5 or (d.weekday() < 5 and now.hour < 18):
+    if d.weekday() == 6:  # 星期日 -> 星期五
+      d = d - datetime.timedelta(days=2)
+    elif d.weekday() == 5:  # 星期六 -> 星期五
+      d = d - datetime.timedelta(days=1)
+    else:  # 平日但未滿 18:00 -> 昨天
+      d = d - datetime.timedelta(days=1)
+      if d.weekday() == 5:  # 昨天是週六 -> 星期五
+        d = d - datetime.timedelta(days=1)
+      elif d.weekday() == 6:  # 昨天是週日 -> 星期五
+        d = d - datetime.timedelta(days=2)
+  return d
+
+
 # 側邊欄設定
 st.sidebar.header("設定面板")
-default_date = datetime.date.today() - datetime.timedelta(days=1)
-# 簡單略過假日（若選到週末自動往前推，此處簡化為日期選擇器）
+default_date = get_smart_default_date()
+
 selected_date = st.sidebar.date_input(
     "選擇交易日期", value=default_date, max_value=datetime.date.today()
 )
 date_str = selected_date.strftime("%Y-%m-%d")
 
 st.sidebar.info(
-    "提示：若當日為假日或資料尚未更新，請嘗試選擇前一個最近的交易日。"
+    "💡 提示：臺灣證券交易所與櫃買中心的三大法人買賣超數據通常會在**每日下午 18:00 左右**結算並對外公布。若您在下午 6 點前查詢當日資料會查無結果，系統已自動為您帶入最近一個完整的交易日。"
 )
 
 # 載入資料
@@ -66,17 +84,14 @@ with st.spinner("正在載入法人資金流向資料..."):
 
 if df_inst.empty:
   st.warning(
-      f"查無 {date_str} 的法人買賣超資料（可能是假日或 API 尚未釋出），請切換日期。"
+      f"查無 {date_str} 的法人買賣超資料（可能是該日為假日、尚未過下午 18:00 更新時間，或 API 尚未釋出），請嘗試切換至前一個交易日。"
   )
 else:
   # 資料處理：整理三大法人買賣超張數與金額
-  # FinMind Institutional Investors 欄位通常包含: stock_id, name (外資等), buy, sell
-  # 轉換數據型態
   df_inst["buy"] = pd.to_numeric(df_inst["buy"], errors="coerce").fillna(0)
   df_inst["sell"] = pd.to_numeric(df_inst["sell"], errors="coerce").fillna(0)
   df_inst["net"] = df_inst["buy"] - df_inst["sell"]
 
-  # 樞紐分析：將不同法人加總
   # 依 stock_id 聚合三大法人合計買賣超
   df_agg = (
       df_inst.groupby("stock_id")
@@ -93,7 +108,6 @@ else:
       df_merged["stock_id"]
   )
 
-  # 計算成交金額或以張數替代（假設以張數或約略金額呈現）
   # 頂部總覽指標
   total_net = df_merged["net"].sum()
   top_buy_stock = df_merged.loc[df_merged["net"].idxmax()]
@@ -101,7 +115,7 @@ else:
 
   col1, col2, col3 = st.columns(3)
   col1.metric(
-      "整體法人淨買賣超(張)",
+      f"({date_str}) 全體法人淨買賣超(張)",
       f"{total_net:,.0f}",
       delta="買超" if total_net > 0 else "賣超",
   )
