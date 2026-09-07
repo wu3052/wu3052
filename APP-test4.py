@@ -77,7 +77,7 @@ if default_end.weekday() == 5:
 elif default_end.weekday() == 6:
   default_end -= datetime.timedelta(days=2)
 
-start_5days = default_end - datetime.timedelta(days=7)  ... # 涵蓋週末抓取 5 個交易日
+start_5days = default_end - datetime.timedelta(days=7)  # 涵蓋週末抓取 5 個交易日
 
 st.sidebar.header("⚙️ 參數控制面板")
 query_date = st.sidebar.date_input("選擇基準日期", value=default_end)
@@ -144,7 +144,6 @@ else:
   # 取得最新股價與漲跌幅
   df_price_latest = df_price[df_price["date"] == latest_date]
   if not df_price_latest.empty:
-    # 假設有 spread 或 change / close 計算報酬率
     if "close" in df_price_latest.columns and "open" in df_price_latest.columns:
       df_price_latest["pct_change"] = (
           pd.to_numeric(df_price_latest["close"], errors="coerce")
@@ -243,7 +242,6 @@ else:
 
     elif "3." in strategy_buy:
       st.markdown("**策略邏輯：** 篩選外資與投信同步買超之優質標的。")
-      # 過濾出外資與投信
       if "name" in df_latest.columns:
         df_foreign = df_latest[df_latest["name"].str.contains("外資", na=False)]
         df_trust = df_latest[df_latest["name"].str.contains("投信", na=False)]
