@@ -1,237 +1,195 @@
-from datetime import datetime, timedelta
+import datetime
+import io
 import pandas as pd
 import requests
 import streamlit as st
 
 # 頁面基本設定
 st.set_page_config(
-    page_title="台股板塊與資金流向戰情室 (官方API)", page_icon="🌊", layout="wide"
+    page_title="台股板塊與資金流向戰情室", page_icon="🌊", layout="wide"
 )
 
 
+@st.cache_data(ttl=3600)
 def get_twse_institutional_data(date_str):
-  """抓取臺灣證券交易所 (TWSE) 上市個股三大法人買賣超日報 (T86)"""
-  # 日期格式化為中華民國年月日或YYYYMMDD，TWSE T86 支援 YYYYMMDD
-  url = f"https://www.twse.com.tw/rwd/zh/fund/T86?response=json&date={date_str}&selectType=ALLBUT0999"
+  """直接從證交所官網抓取指定日期的三大法人買賣超日報 (T86)
+
+  date_str 格式: YYYYMMDD
+  """
+  url = f"https://www.twse.com.tw/rwd/zh/fund/T86?response=json&date={date_str}"
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
+
   try:
-    res = requests.get(url, timeout=10)
-    data = res.json()
-    if data.get("stat") == "OK":
-      fields = data.get("fields", [])
-      rows = data.get("data", [])
-      df = pd.DataFrame(rows, columns=fields)
-      # 清洗欄位
-      # 欄位通常包含: 證券代號, 證券名稱, 外陸資買賣超張數(不含外資自營商), 外資自營商買賣超張數, 投信買賣超張數, 自營商買賣超張數(自行買賣), 自營商買賣超張數(避險), 三大法人買賣超張數等
+    response = requests.get(url, headers=headers, timeout=10)
+    data = response.json()
+
+    if data.get("stat") == "OK" and "data" in data:
+      columns = data["fields"]
+      df = pd.DataFrame(data["data"], columns=columns)
       return df
+    else:
+      return pd.DataFrame()
   except Exception as e:
-    print(f"TWSE API Error: {e}")
-  return pd.DataFrame()
+    st.error(f"連線證交所 API 失敗: {e}")
+    return pd.DataFrame()
 
 
-def get_tpex_institutional_data(date_str):
-  """抓取證券櫃檯買賣中心 (TPEx) 上櫃個股三大法人買賣明細"""
-  # 將 YYYY-MM-DD 轉為民國年份格式 YYYYMMDD (例如 20260907 -> 1150907)
-  dt = datetime.strptime(date_str, "%Y-%m-%d")
-  roc_year = dt.year - 1911
-  roc_date_str = f"{roc_year}{dt.strftime('%m%d')}"
-
-  url = f"https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading?d={roc_date_str}"
-  try:
-    res = requests.get(url, timeout=10)
-    data = res.json()
-    if isinstance(data, list) and len(data) > 0:
-      return pd.DataFrame(data)
-  except Exception as e:
-    print(f"TPEx API Error: {e}")
-  return pd.DataFrame()
-
-
-@st.cache_data(ttl=86400)
-def get_stock_industry_map():
-  """取得上市櫃公司與產業對照 (透過證交所與櫃買中心公開資料)"""
-  mapping = {}
-  # 簡易透過 FinMind 或簡易對照，若追求完全官方可由證交所基本檔帶入
-  # 這裡使用公開穩定股票清單 API
-  try:
-    url = "https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInfo"
-    res = requests.get(url, timeout=10).json()
-    if res.get("status") == 200:
-      df = pd.DataFrame(res.get("data"))
-      for _, row in df.iterrows():
-        mapping[str(row["stock_id"])] = {
-            "name": row.get("stock_name", ""),
-            "industry": row.get("industry_category", "其他"),
-        }
-  except:
-    pass
-  return mapping
-
-
-st.title("🌊 台股板塊與資金流向戰情室")
+st.title("🌊 台股板塊與資金流向戰情室 (TWSE 官方資料)")
 st.markdown(
-    "直接串接 **臺灣證券交易所 (TWSE)** 與 **證券櫃檯買賣中心 (TPEx)** 官方資料源。"
+    "直接串接臺灣證券交易所官方資料，追蹤三大法人在個股與板塊的資金流向。"
 )
 
 # 側邊欄控制項
 st.sidebar.header("參數設定")
-default_date = datetime.today() - timedelta(days=1)
+
+# 預設抓取前一個交易日
+default_date = datetime.date.today() - datetime.timedelta(days=1)
 if default_date.weekday() == 5:
-  default_date -= timedelta(days=1)
+  default_date -= datetime.timedelta(days=1)
 elif default_date.weekday() == 6:
-  default_date -= timedelta(days=2)
+  default_date -= datetime.timedelta(days=2)
 
 query_date = st.sidebar.date_input("選擇交易日", value=default_date)
-date_str = query_date.strftime("%Y-%m-%d")
-date_str_no_hyphen = query_date.strftime("%Y%m%d")
+date_str_api = query_date.strftime("%Y%m%d")
+date_str_dash = query_date.strftime("%Y-%m-%d")
+
+# 新增刪除 ETF 選項
+exclude_etf = st.sidebar.checkbox(
+    "排除 ETF (過濾代號開頭為 00 的基金)", value=True
+)
 
 # 資料載入
-with st.spinner(
-    f"正在向 TWSE 及 TPEx 官方抓取 {date_str} 三大法人資金流向..."
-):
-  df_twse = get_twse_institutional_data(date_str_no_hyphen)
-  df_tpex = get_tpex_institutional_data(date_str)
-  stock_map = get_stock_industry_map()
+with st.spinner(f"正在向證交所擷取 {date_str_dash} 三大法人買賣超資料..."):
+  df_raw = get_twse_institutional_data(date_str_api)
 
-if df_twse.empty and df_tpex.empty:
+if df_raw.empty:
   st.warning(
-      f"找不到 {date_str} 的官方法人資料（可能為假日、非交易日或當日收盤結算中尚未發布），請挑選其他交易日。"
+      f"找不到 {date_str_dash} 的法人資料（可能為假日、非交易日或當日盤後資料尚未更新），請選擇其他日期。"
   )
 else:
-  processed_rows = []
+  # 欄位重新命名與格式整理（證交所 T86 回傳的欄位名稱處理）
+  # 欄位通常為：['證券代號', '證券名稱', '外陸資買進股數(不含外資自營商)', '外陸資賣出股數(不含外資自營商)', '外陸資買賣超股數(不含外資自營商)', ...]
+  try:
+    df = pd.DataFrame()
+    df["stock_id"] = df_raw.iloc[:, 0].astype(str).str.strip()
+    df["stock_name"] = df_raw.iloc[:, 1].str.strip()
 
-  # 1. 處理上市資料 (TWSE T86)
-  if not df_twse.empty:
-    # 欄位名稱通常對應: ['證券代號', '證券名稱', '外陸資買賣超張數(不含外資自營商)', '投信買賣超張數', '自營商買賣超張數(自行買賣)', ...]
-    # 欄位可能含有 commas 需要移除
-    for _, row in df_twse.iterrows():
-      try:
-        s_id = str(row.iloc[0]).strip()
-        s_name = str(row.iloc[1]).strip()
+    # 轉換成張數 (原始資料為股數，除以 1000)
+    # 欄位索引對應: 外資買賣超(4), 投信買賣超(10), 自營商買賣超合計(15), 三大法人買賣超合計(18)
+    # 為了保險，透過欄位名稱尋找
+    col_map = {col: i for i, col in enumerate(df_raw.columns)}
 
-        def clean_val(val):
-          if pd.isna(val):
-            return 0.0
-          return float(str(val).replace(",", "").strip())
+    def clean_num(val):
+      if isinstance(val, str):
+        return pd.to_numeric(val.replace(",", ""), errors="coerce")
+      return pd.to_numeric(val, errors="coerce")
 
-        # 抓取常見欄位並計算
-        # 依 T86 實際回傳欄位索引安全取值
-        foreign = clean_val(row.iloc[4])  # 外資總買賣超
-        trust = clean_val(row.iloc[10])  # 投信買賣超
-        dealer = clean_val(row.iloc[15])  # 自營商總買賣超
+    # 尋找對應欄位名稱
+    foreign_col = [c for c in df_raw.columns if "外陸資" in c and "買賣超" in c]
+    trust_col = [c for c in df_raw.columns if "投信" in c and "買賣超" in c]
+    dealer_col = [c for c in df_raw.columns if "自營商" in c and "買賣超" in c]
+    total_col = [
+        c for c in df_raw.columns if "三大法人" in c and "買賣超" in c
+    ]
 
-        industry = (
-            stock_map.get(s_id, {}).get("industry", "上市其他")
-            if s_id in stock_map
-            else "上市其他"
-        )
+    df["外資"] = (
+        clean_num(df_raw[foreign_col[0]]) / 1000 if foreign_col else 0
+    )
+    df["投信"] = clean_num(df_raw[trust_col[0]]) / 1000 if trust_col else 0
 
-        processed_rows.append({
-            "股票代號": s_id,
-            "股票名稱": s_name,
-            "市場": "上市",
-            "產業": industry,
-            "外資": foreign,
-            "投信": trust,
-            "自營商": dealer,
-            "合計": foreign + trust + dealer,
-        })
-      except Exception:
-        continue
+    # 自營商通常包含 自行買賣 與 避險，取合計欄位或加總
+    if dealer_col:
+      # 取出最後一個包含「買賣超」的自營商欄位通常是合計
+      df["自營商"] = clean_num(df_raw[dealer_col[-1]]) / 1000
+    else:
+      df["自營商"] = 0
 
-  # 2. 處理上櫃資料 (TPEx OpenAPI)
-  if not df_tpex.empty:
-    for _, row in df_tpex.iterrows():
-      try:
-        s_id = str(row.get("SecuritiesCompanyCode", "")).strip()
-        s_name = str(row.get(expression="SecuritiesName", default="")).strip()
-        if not s_name:
-          s_name = str(row.get("CompanyName", s_id)).strip()
-
-        def clean_tpex_val(val):
-          if pd.isna(val):
-            return 0.0
-          return float(str(val).replace(",", "").strip()) / 1000.0  # 股轉張
-
-        foreign = clean_tpex_val(
-            row.get("ForeignNetBuySell", row.get("ForeignTotal", 0))
-        )
-        trust = clean_tpex_val(
-            row.get(
-                "InvestmentTrustNetBuySell", row.get("TrustTotal", 0)
-            )
-        )
-        dealer = clean_tpex_val(
-            row.get("DealerNetBuySell", row.get("DealerTotal", 0))
-        )
-
-        industry = (
-            stock_map.get(s_id, {}).get("industry", "上櫃其他")
-            if s_id in stock_map
-            else "上櫃其他"
-        )
-
-        processed_rows.append({
-            "股票代號": s_id,
-            "股票名稱": s_name,
-            "市場": "上櫃",
-            "產業": industry,
-            "外資": foreign,
-            "投信": trust,
-            "自營商": dealer,
-            "合計": foreign + trust + dealer,
-        })
-      except Exception:
-        continue
-
-  df_final = pd.DataFrame(processed_rows)
-
-  if df_final.empty:
-    st.error("解析官方 API 資料格式時發生錯誤，請稍後再試。")
-  else:
-    # 版面一：板塊資金流向總覽
-    st.header("📊 板塊資金流向總覽（單位：張）")
-    sector_agg = (
-        df_final.groupby("產業")[["外資", "投信", "自營商", "合計"]]
-        .sum()
-        .sort_values(by="合計", ascending=False)
+    df["三大法人合計"] = (
+        clean_num(df_raw[total_col[0]]) / 1000
+        if total_col
+        else df["外資"] + df["投信"] + df["自營商"]
     )
 
-    st.dataframe(
-        sector_agg.style.format("{:,.2f}").background_gradient(
-            cmap="coolwarm", subset=["合計"]
-        ),
-        use_container_width=True,
+  except Exception as e:
+    st.error(f"解析證交所資料格式時發生錯誤: {e}")
+    st.stop()
+
+  # 簡易產業分類對照（示範用：可根據台股代號區間或外掛對照表）
+  # 實務上可串接證交所產業類別 API，此處以代號區間做簡易示範分群
+  def get_industry(stock_id):
+    if stock_id.startswith("00"):
+      return "ETF"
+    elif stock_id in ["2330", "2317", "2454", "2308", "2382"]:
+      return "半導體/電子權值"
+    elif stock_id.startswith("2") or stock_id.startswith("3"):
+      return "一般電子/傳產"
+    elif stock_id.startswith("28"):
+      return "金融保險"
+    else:
+      return "其他產業"
+
+
+  df["industry_category"] = df["stock_id"].apply(get_industry)
+
+  # 執行 ETF 篩選
+  if exclude_etf:
+    df = df[~df["stock_id"].str.startswith("00")]
+
+  # 版面配置：區塊一、個股資金流向排行榜
+  st.header(f"🔍 個股資金流向排行榜 ({date_str_dash})")
+
+  col1, col2 = st.columns(2)
+  with col1:
+    selected_investor = st.selectbox(
+        "選擇法人機構", ["三大法人合計", "外資", "投信", "自營商"]
+    )
+  with col2:
+    sort_order = st.radio(
+        "排序方式", ["買超最多 (由多到少)", "賣超最多 (由少到多)"], horizontal=True
     )
 
-    # 版面二：個股資金流向排行榜
-    st.header("🔍 個股資金流向排行榜")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-      market_filter = st.selectbox("市場選擇", ["全部", "上市", "上櫃"])
-    with c2:
-      investor_col = st.selectbox(
-          "排序法人", ["合計", "外資", "投信", "自營商"]
-      )
-    with c3:
-      sort_dir = st.radio(
-          "排序方向", ["買超最多 (多->少)", "賣超最多 (少->多)"], horizontal=True
-      )
+  is_ascending = True if "賣超" in sort_order else False
+  df_sorted = df.sort_values(by=selected_investor, ascending=is_ascending)
 
-    df_view = df_final.copy()
-    if market_filter != "全部":
-      df_view = df_view[df_view["市場"] == market_filter]
+  st.dataframe(
+      df_sorted[
+          [
+              "stock_id",
+              "stock_name",
+              "industry_category",
+              "外資",
+              "投信",
+              "自營商",
+              "三大法人合計",
+          ]
+      ]
+      .rename(columns={"stock_id": "股票代號", "stock_name": "股票名稱"})
+      .style.format(
+          {
+              "外資": "{:,.2f} 張",
+              "投信": "{:,.2f} 張",
+              "自營商": "{:,.2f} 張",
+              "三大法人合計": "{:,.2f} 張",
+          }
+      ),
+      use_container_width=True,
+  )
 
-    is_asc = True if "賣超" in sort_dir else False
-    df_view = df_view.sort_values(by=investor_col, ascending=is_asc)
+  # 版面配置：區塊二、板塊資金流向總覽
+  st.header("📊 板塊資金流向總覽")
+  sector_summary = (
+      df.groupby("industry_category")[["外資", "投信", "自營商", "三大法人合計"]]
+      .sum()
+      .sort_values(by="三大法人合計", ascending=False)
+  )
 
-    st.dataframe(
-        df_view[
-            ["股票代號", "股票名稱", "市場", "產業", "外資", "投信", "自營商", "合計"]
-        ].style.format({
-            "外資": "{:,.2f}",
-            "投信": "{:,.2f}",
-            "自營商": "{:,.2f}",
-            "合計": "{:,.2f}",
-        }),
-        use_container_width=True,
-    )
+  st.dataframe(
+      sector_summary.style.format("{:,.2f} 張").background_gradient(
+          cmap="coolwarm", subset=["三大法人合計"]
+      ),
+      use_container_width=True,
+  )
