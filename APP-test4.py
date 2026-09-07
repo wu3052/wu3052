@@ -56,8 +56,6 @@ def fetch_twse_tpex_stocks():
             df.columns = df.iloc[0]
             df = df.iloc[1:].copy()
 
-            # 通常有效欄位包含「有價證券代號及名稱」、「產業別」等
-            # 欄位名稱可能是 "有價證券代號及名稱" 或 "股票代號及名稱"
             target_col = None
             for col in df.columns:
                 if col and ("代號" in str(col) and "名稱" in str(col)):
@@ -141,7 +139,7 @@ def fetch_market_data():
                 "股票名稱": row["股票名稱"],
                 "市場別": row["市場別"],
                 "產業類別": row["產業類別"],
-                "細產業": row["產業類別"],  # 可對應或直接用產業別
+                "細產業": row["產業類別"],
                 "收盤價": round(close, 2),
                 "當日漲跌幅(%)": round(chg_1d, 2),
                 "五日漲跌幅(%)": round(chg_5d, 2),
@@ -242,13 +240,13 @@ elif app_mode == "每日多方籌碼精選 (買)":
         )
         st.dataframe(sector_buy, use_container_width=True)
 
-with tab2:
-        st.markdown("### 2. 賣多漲少 - 依「五日資金賣出高，跌幅相對低」排序")
-        df_sell_less_fall = df_stocks.sort_values(
-            by=["五日資金流向(百萬)", "五日漲跌幅(%)"], ascending=[True, False]
+    with tab2:
+        st.markdown("### 2. 買多漲少 - 依「五日資金流入高，漲幅相對低」排序")
+        df_buy_less_rise = df_stocks.sort_values(
+            by=["五日資金流向(百萬)", "五日漲跌幅(%)"], ascending=[False, True]
         )
         st.dataframe(
-            df_sell_less_fall[
+            df_buy_less_rise[
                 [
                     "股票代號",
                     "股票名稱",
