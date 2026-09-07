@@ -242,13 +242,13 @@ elif app_mode == "每日多方籌碼精選 (買)":
         )
         st.dataframe(sector_buy, use_container_width=True)
 
-    with tab2:
-        st.markdown("### 2. 買多漲少 - 依「五日資金流入高，漲幅相對低」排序")
-        df_buy_less_rise = df_stocks.sort_values(
-            by=["五日資金流向(百萬)", "五日漲跌幅(%)"], ascending=[False, True]
+with tab2:
+        st.markdown("### 2. 賣多漲少 - 依「五日資金賣出高，跌幅相對低」排序")
+        df_sell_less_fall = df_stocks.sort_values(
+            by=["五日資金流向(百萬)", "五日漲跌幅(%)"], ascending=[True, False]
         )
         st.dataframe(
-            df_buy_less_rise[
+            df_sell_less_fall[
                 [
                     "股票代號",
                     "股票名稱",
