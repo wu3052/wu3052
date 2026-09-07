@@ -169,7 +169,7 @@ if app_mode == "板塊泡泡輪動圖":
         xaxis_title="五日資金流向 (百萬NTD) [左：流出 | 右：流入]",
         yaxis_title="資金加速動能 [下：加速 | 上：放緩]",
     )
-    st.plotly_graph_objects(fig)
+    st.plotly_chart(fig, use_container_width=True)
 
 
 # ==========================================
