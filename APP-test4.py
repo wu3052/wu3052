@@ -73,7 +73,7 @@ if df_inst.empty:
 else:
   # 證交所 T86 回傳欄位整理（通常欄位包含：證券代號, 證券名稱, 外陸資買賣超股數(不含自營商)...等）
   # 依實際欄位進行重新命名與整理
-  st.success(成功載入 {date_str_display} 證交所法人資料！)
+  st.success(f"成功載入 {date_str_display} 證交所法人資料！")
 
   # 顯示原始資料供檢驗欄位結構
   with st.expander("查看原始資料欄位結構"):
