@@ -3,57 +3,50 @@ import pandas as pd
 import requests
 import streamlit as st
 
-# 頁面基本設定
 st.set_page_config(
-    page_title="台股板塊與資金流向追蹤系統", page_icon="🌊", layout="wide"
+    page_title="台股板塊與資金流向戰情室", page_icon="🌊", layout="wide"
 )
 
 
 @st.cache_data(ttl=3600)
-def get_institutional_data_with_fallback(end_date_str, max_days=5):
-  """自動往回尋找最近一個有法人資料的交易日，避免遇到 API 尚未更新或假日空窗"""
-  current_date = datetime.datetime.strptime(end_date_str, "%Y-%m-%d").date()
+def get_twse_institutional_data(date_str):
+  """直接從證交所 OpenAPI 抓取三大法人買賣超日報表
 
-  for _ in range(max_days):
-    # 略過週末
-    while current_date.weekday() >= 5:
-      current_date -= datetime.timedelta(days=1)
+  date_str 格式需為 YYYYMMDD (例如 20260907)
+  """
+  # 證交所三大法人買賣超日報 API (以民國年月日或西元年月日視 API 版本而定，此處使用通用公開資料集網址)
+  # 註：證交所 OpenAPI JSON 網址範例
+  url = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&response=json"
 
-    check_date_str = current_date.strftime("%Y-%m-%d")
-    url = "https://api.finmindtrade.com/api/v4/data"
-    parameters = {
-        "dataset": "TaiwanStockInstitutionalInvestors",
-        "start_date": check_date_str,
-        "end_date": check_date_str,
-    }
-    response = requests.get(url, params=parameters)
+  try:
+    response = requests.get(url, timeout=10)
     data = response.json()
+    if data.get("stat") == "OK":
+      fields = data.get("fields", [])
+      rows = data.get("data", [])
+      df = pd.DataFrame(rows, columns=fields)
+      return df
+  except Exception as e:
+    st.error(f"連線證交所 API 發生錯誤: {e}")
 
-    if data.get("status") == 200 and len(data.get("data", [])) > 0:
-      return pd.DataFrame(data["data"]), check_date_str
-
-    # 若當天無資料，往前推一天繼續找
-    current_date -= datetime.timedelta(days=1)
-
-  return pd.DataFrame(), None
-
-
-@st.cache_data(ttl=86400)
-def get_stock_info():
-  """取得台股上市櫃公司代號與產業類別對照"""
-  url = "https://api.finmindtrade.com/api/v4/data"
-  parameters = {"dataset": "TaiwanStockInfo"}
-  response = requests.get(url, params=parameters)
-  data = response.json()
-  if data.get("status") == 200:
-    return pd.DataFrame(data["data"])
   return pd.DataFrame()
 
 
-st.title("🌊 台股板塊與資金流向戰情室")
-st.markdown(
-    "追蹤三大法人（外資、投信、自營商）在各產業板塊與個股的資金流向動態。"
-)
+@st.cache_data(ttl=86400)
+def get_stock_info_twse():
+  """取得證交所上市股票代號與產業類別"""
+  url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+  try:
+    response = requests.get(url, timeout=10)
+    data = response.json()
+    df = pd.DataFrame(data)
+    return df
+  except:
+    return pd.DataFrame()
+
+
+st.title("🌊 台股板塊與資金流向戰情室（證交所直連版）")
+st.markdown("直接串接臺灣證券交易所官方資料，追蹤三大法人資金流向。")
 
 # 側邊欄控制項
 st.sidebar.header("參數設定")
@@ -63,109 +56,27 @@ if default_date.weekday() == 5:
 elif default_date.weekday() == 6:
   default_date -= datetime.timedelta(days=2)
 
-query_date = st.sidebar.date_input("選擇基準日期", value=default_date)
-date_str = query_date.strftime("%Y-%m-%d")
+query_date = st.sidebar.date_input("選擇交易日", value=default_date)
+# 證交所 API 通常需要 YYYYMMDD 格式
+date_str_api = query_date.strftime("%Y%m%d")
+date_str_display = query_date.strftime("%Y-%m-%d")
 
-# 資料載入與自動回溯
-with st.spinner("正在向 API 擷取三大法人與產業對照資料..."):
-  df_inst, actual_date = get_institutional_data_with_fallback(date_str)
-  df_info = get_stock_info()
+with st.spinner(f"正在向證交所擷取 {date_str_display} 法人資料..."):
+  df_inst = get_twse_institutional_data(date_str_api)
+  df_info = get_stock_info_twse()
 
 if df_inst.empty:
   st.warning(
-      "找不到近期可用的法人資料，請檢查 API 狀態或嘗試手動選擇更早的日期。"
+      f"找不到 {date_str_display} 的證交所法人資料。可能原因：\n1."
+      " 該日為假日或休市日。\n2. 證交所當日資料尚未收盤結算或釋出。\n建議選擇更早的交易日。"
   )
 else:
-  if actual_date != date_str:
-    st.info(f"ℹ️ 您選擇的日期 `{date_str}` 尚無資料，已自動切換至最近有資料的交易日：`{actual_date}`")
+  # 證交所 T86 回傳欄位整理（通常欄位包含：證券代號, 證券名稱, 外陸資買賣超股數(不含自營商)...等）
+  # 依實際欄位進行重新命名與整理
+  st.success(成功載入 {date_str_display} 證交所法人資料！)
 
-  # 資料整併：將法人資料與產業類別進行合併
-  if not df_info.empty and "stock_id" in df_info.columns:
-    df_merged = pd.merge(
-        df_inst,
-        df_info[["stock_id", "industry_category", "stock_name"]],
-        on="stock_id",
-        how="left",
-    )
-  else:
-    df_merged = df_inst
-    df_merged["industry_category"] = "未分類"
-    df_merged["stock_name"] = df_merged["stock_id"]
+  # 顯示原始資料供檢驗欄位結構
+  with st.expander("查看原始資料欄位結構"):
+    st.dataframe(df_inst.head())
 
-  # 計算淨買賣超張數（買進 - 賣出）/ 1000
-  if "buy" in df_merged.columns and "sell" in df_merged.columns:
-    df_merged["net_shares"] = (
-        pd.to_numeric(df_merged["buy"], errors="coerce")
-        - pd.to_numeric(df_merged["sell"], errors="coerce")
-    ) / 1000
-
-  # 版面配置：區塊一、板塊資金流向總覽
-  st.header("📊 板塊資金流向總覽")
-
-  if "industry_category" in df_merged.columns and "name" in df_merged.columns:
-    sector_pivot = pd.pivot_table(
-        df_merged,
-        values="net_shares",
-        index="industry_category",
-        columns="name",
-        aggfunc="sum",
-        fill_value=0,
-    )
-
-    sector_pivot["Total_Net"] = sector_pivot.sum(axis=1)
-    sector_pivot = sector_pivot.sort_values(by="Total_Net", ascending=False)
-
-    st.dataframe(
-        sector_pivot.style.format("{:,.2f} 張").background_gradient(
-            cmap="coolwarm", subset=["Total_Net"]
-        ),
-        use_container_width=True,
-    )
-
-  # 版面配置：區塊二、個股資金流向排行
-  st.header("🔍 個股資金流向排行榜")
-
-  col1, col2 = st.columns(2)
-  with col1:
-    investor_list = (
-        df_merged["name"].unique().tolist() if "name" in df_merged.columns else []
-    )
-    selected_investor = st.selectbox("選擇法人機構", investor_list)
-
-  with col2:
-    sort_order = st.radio(
-        "排序方式", ["買超最多 (由多到少)", "賣超最多 (由少到多)"], horizontal=True
-    )
-
-  if selected_investor:
-    filtered_df = df_merged[df_merged["name"] == selected_investor].copy()
-    is_ascending = True if "賣超" in sort_order else False
-    filtered_df = filtered_df.sort_values(by="net_shares", ascending=is_ascending)
-
-    display_cols = [
-        "stock_id",
-        "stock_name",
-        "industry_category",
-        "buy",
-        "sell",
-        "net_shares",
-    ]
-    available_cols = [c for c in display_cols if c in filtered_df.columns]
-
-    st.dataframe(
-        filtered_df[available_cols]
-        .rename(
-            columns={
-                "stock_id": "股票代號",
-                "stock_name": "股票名稱",
-                "industry_category": "產業",
-                "buy": "買進股數",
-                "sell": "賣出股數",
-                "net_shares": "淨買賣超(張)",
-            }
-        )
-        .style.format(
-            {"買進股數": "{:,.0f}", "賣出股數": "{:,.0f}", "淨買賣超(張)": "{:,.2f}"}
-        ),
-        use_container_width=True,
-    )
+  st.dataframe(df_inst, use_container_width=True)
