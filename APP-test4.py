@@ -235,5 +235,3 @@ else:
         }),
         use_container_width=True,
     )
-  else:
-    st.warning("整理後無資料，請確認 API 連線狀態。")
