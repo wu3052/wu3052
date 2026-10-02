@@ -186,7 +186,7 @@ def get_stock_chips(stock_id):
 
 
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料"""[cite: 1]
+    """獲取台股大盤加權指數 (^TWII) 資料"""
     try:
         df = yf.download("^TWII", period="320d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
