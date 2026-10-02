@@ -5,11 +5,12 @@ import streamlit as st
 import yfinance as yf
 import twstock
 import requests
+import concurrent.futures
 import plotly.graph_objects as plotly_go
 from plotly.subplots import make_subplots
 import streamlit.components.v1 as components
 
-# --- 1. 頁面配置與現代化美化 CSS ---
+# --- 1. 頁面配置與現代化美化 CSS ---[cite: 1]
 st.set_page_config(page_title="台股智慧選股與即時 K 線診斷系統", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
@@ -41,7 +42,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 初始化 Session State ---
+# --- 2. 初始化 Session State ---[cite: 1]
 if 'screener_results' not in st.session_state:
     st.session_state.screener_results = pd.DataFrame()
 
@@ -51,7 +52,7 @@ if 'selected_stock_index' not in st.session_state:
 if 'active_combo_name' not in st.session_state:
     st.session_state.active_combo_name = "尚未執行"
 
-# 預設參數對應 State (包含新增的過濾選項)
+# 預設參數對應 State
 default_params = {
     "logic_mode": "OR (符合任一勾選條件即可)",
     "enable_macd_25ma": False, "macd_ma_period": 25,
@@ -66,9 +67,8 @@ default_params = {
     "enable_box_volume_accum": False, "box10_days": 60, "box10_vol_mult": 2.0,
     "enable_box_bottom_support": False, "s11_box_days": 120, "s11_vol_mult": 2.0, "s11_target_ma": "", "s11_limit_days": 60,
     "enable_trend_breakout": True, "s12_lookback": 60, "s12_vol_mult": 1.5,
-    # 新增策略開關與參數
     "enable_volume_breakout_52w": False, "s13_vol_mult": 2.0,
-    "enable_asphyxia_volume": False, "s14_days": 5, "s14_vol_ratio": 0.5,
+    "enable_suffocation_volume": False, "s14_days": 3,
     "min_vol": 500, "max_growth": 9.5
 }
 
@@ -77,11 +77,10 @@ for k, v in default_params.items():
         st.session_state[k] = v
 
 
-# --- 3. 資料獲取函式 ---
-@st.cache_data(ttl=3600, show_spinner=False)
+# --- 3. 資料獲取函式 ---[cite: 1]
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=380)).strftime('%Y-%m-%d')
     url = "https://api.finmindtrade.com/api/v4/data"
     parameters = {
         "dataset": "TaiwanStockPrice",
@@ -106,7 +105,7 @@ def get_finmind_data(stock_id):
     
     ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
     try:
-        df = yf.download(ticker, period="320d", interval="1d", progress=False)
+        df = yf.download(ticker, period="380d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
@@ -115,9 +114,79 @@ def get_finmind_data(stock_id):
         return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+def get_stock_chips(stock_id):
+    """獲取台股籌碼數據：外資持股、外資買賣超、投信持股、融資餘額、400張大戶、20張散戶、總股東人數"""[cite: 1]
+    today = pd.Timestamp.today().strftime('%Y-%m-%d')
+    start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
+    url = "https://api.finmindtrade.com/api/v4/data"
+    
+    chips = {
+        "foreign_holding": 0,
+        "foreign_net_buy": 0,
+        "trust_holding": 0,
+        "margin_balance": 0,
+        "major_holding_400": 0,
+        "retail_holding_20": 0,
+        "total_shareholders": 0
+    }
+    
+    try:
+        resp1 = requests.get(url, params={"dataset": "TaiwanStockInstitutionalInvestors", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d1 = resp1.json()
+        if d1.get("status") == 200 and d1.get("data"):
+            df_inst = pd.DataFrame(d1["data"])
+            df_fi = df_inst[df_inst['name'] == 'Foreign_Investor']
+            if not df_fi.empty:
+                chips["foreign_net_buy"] = int((df_fi['buy'].astype(float) - df_fi['sell'].astype(float)).iloc[-1] / 1000)
+                if 'holding' in df_fi.columns:
+                    chips["foreign_holding"] = int(df_fi['holding'].astype(float).iloc[-1] / 1000)
+            df_it = df_inst[df_inst['name'] == 'Investment_Trust']
+            if not df_it.empty and 'holding' in df_it.columns:
+                chips["trust_holding"] = int(df_it['holding'].astype(float).iloc[-1] / 1000)
+    except:
+        pass
+
+    try:
+        resp2 = requests.get(url, params={"dataset": "TaiwanStockMarginPurchaseShortSale", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d2 = resp2.json()
+        if d2.get("status") == 200 and d2.get("data"):
+            df_margin = pd.DataFrame(d2["data"])
+            if 'MarginPurchaseBalance' in df_margin.columns:
+                chips["margin_balance"] = int(df_margin['MarginPurchaseBalance'].astype(float).iloc[-1])
+    except:
+        pass
+
+    try:
+        resp3 = requests.get(url, params={"dataset": "TaiwanStockHoldingSharesPer", "data_id": str(stock_id), "start_date": start_date, "end_date": today}, timeout=3)
+        d3 = resp3.json()
+        if d3.get("status") == 200 and d3.get("data"):
+            df_holding = pd.DataFrame(d3["data"])
+            latest_date = df_holding['date'].max()
+            df_latest = df_holding[df_holding['date'] == latest_date]
+            
+            if 'people' in df_latest.columns:
+                chips["total_shareholders"] = int(df_latest['people'].astype(int).sum())
+            
+            if 'unit' in df_latest.columns:
+                major_rows = df_latest[df_latest['unit'].astype(str).str.contains('400|600|800|1000|>|及以上', na=False)]
+                if not major_rows.empty and 'holding_shares' in major_rows.columns:
+                    chips["major_holding_400"] = int(major_rows['holding_shares'].astype(float).sum() / 1000)
+                elif not major_rows.empty and 'holding' in major_rows.columns:
+                    chips["major_holding_400"] = int(major_rows['holding'].astype(float).sum() / 1000)
+                
+                retail_rows = df_latest[df_latest['unit'].astype(str).str.contains('1-10|1-20|1-50|少於', na=False)]
+                if not retail_rows.empty and 'holding_shares' in retail_rows.columns:
+                    chips["retail_holding_20"] = int(retail_rows['holding_shares'].astype(float).sum() / 1000)
+                elif not retail_rows.empty and 'holding' in retail_rows.columns:
+                    chips["retail_holding_20"] = int(retail_rows['holding'].astype(float).sum() / 1000)
+    except:
+        pass
+
+    return chips
+
+
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料"""
+    """獲取台股大盤加權指數 (^TWII) 資料"""[cite: 1]
     try:
         df = yf.download("^TWII", period="320d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
@@ -128,7 +197,6 @@ def get_market_index_data():
         return None
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
 def get_taiwan_stock_list():
     stock_data = []
     for code, info in twstock.codes.items():
@@ -137,7 +205,7 @@ def get_taiwan_stock_list():
     return pd.DataFrame(stock_data)
 
 
-# --- 4. 繪製美化白色 K 線圖的共用函式 ---
+# --- 4. 繪製美化白色 K 線圖的共用函式 ---[cite: 1]
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -251,7 +319,7 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     return fig
 
 
-# --- 5. 策略運算與分析核心 (加速優化) ---
+# --- 5. 策略運算與分析核心 (加速優化與新策略) ---[cite: 1]
 def fetch_and_analyze_single_stock(row):
     sid = row['code']
     df = get_finmind_data(sid)
@@ -500,27 +568,28 @@ def fetch_and_analyze_single_stock(row):
                     if is_basing and is_breaking and is_volume_surge and is_above_all and is_within_10pct and is_pct_gt_2:
                         matched_strategies.append("12.突破均線糾結(趨勢突破+帶量)")
 
-    # 策略 13 (新增：量能爆發且突破歷史新高/52週新高)
+    # 策略 13：量能爆發且突破歷史新高（52週新高）
     if st.session_state.enable_volume_breakout_52w:
-        # 計算過去 250 天（約 52 週）的高點（排除當日）
-        high_52w = df['High'].iloc[:-1].max() if len(df) >= 250 else df['High'].max()
-        is_new_high = curr_price >= high_52w
-        vol_ma20 = df['Volume'].rolling(20).mean().iloc[-1]
-        is_vol_burst = curr_vol >= (vol_ma20 * st.session_state.s13_vol_mult)
-        if is_new_high and is_vol_burst:
-            matched_strategies.append("🚀 量能爆發且突破52週新高")
+        if len(df) >= 240:
+            high_52w = df['High'].iloc[-250:-1].max() if len(df) >= 250 else df['High'].iloc[:-1].max()
+            vol_ma20 = df['Volume'].rolling(20).mean().iloc[-1]
+            is_breakout_52w = curr_price >= high_52w
+            is_vol_explosion = curr_vol >= (vol_ma20 * st.session_state.s13_vol_mult)
+            if is_breakout_52w and is_vol_explosion:
+                matched_strategies.append("13.量能爆發且突破52週新高")
 
-    # 策略 14 (新增：連續數日量縮無賣壓 / 窒息量)
-    if st.session_state.enable_asphyxia_volume:
-        days_n = st.session_state.s14_days
-        ratio_val = st.session_state.s14_vol_ratio
-        vol_ma_base = df['Volume'].rolling(20).mean()
-        recent_vols = df['Volume'].iloc[-days_n:]
-        recent_vol_mas = vol_ma_base.iloc[-days_n:]
-        # 連續 N 天成交量均小於月均量的特定比例（例如 50%）
-        is_asphyxia = (recent_vols < recent_vol_mas * ratio_val).all()
-        if is_asphyxia:
-            matched_strategies.append(f"🧊 連續{days_n}日量縮無賣壓(窒息量)")
+    # 策略 14：連續數日量縮無賣壓（窒息量）
+    if st.session_state.enable_suffocation_volume:
+        s14_d = st.session_state.s14_days
+        if len(df) >= s14_d + 10:
+            recent_vols = df['Volume'].iloc[-(s14_d + 1):-1]
+            vol_ma20_val = df['Volume'].rolling(20).mean().iloc[-1]
+            # 連續數日成交量低於 20日均量的一定比例（如50%）且逐日量縮或維持極低量
+            is_low_vol = (recent_vols < vol_ma20_val * 0.6).all() and (curr_vol < vol_ma20_val * 0.6)
+            # 價格沒有大幅崩跌（維持在近幾日高低點的相對穩定區間，無賣壓）
+            price_change_check = abs(df['Close'].iloc[-1] - df['Close'].iloc[-s14_d]) / df['Close'].iloc[-s14_d] < 0.03
+            if is_low_vol and price_change_check:
+                matched_strategies.append(f"14.連續{s14_d}日量縮無賣壓(窒息量)")
 
     total_enabled_flags = sum([
         st.session_state.enable_macd_25ma, st.session_state.enable_limit_up_pullback, 
@@ -529,7 +598,7 @@ def fetch_and_analyze_single_stock(row):
         st.session_state.enable_first_limit_pullback, st.session_state.enable_shakeout_breakout, 
         st.session_state.enable_box_breakout, st.session_state.enable_box_volume_accum, 
         st.session_state.enable_box_bottom_support, st.session_state.enable_trend_breakout,
-        st.session_state.enable_volume_breakout_52w, st.session_state.enable_asphyxia_volume
+        st.session_state.enable_volume_breakout_52w, st.session_state.enable_suffocation_volume
     ])
     if total_enabled_flags == 0:
         return None
@@ -551,7 +620,8 @@ def fetch_and_analyze_single_stock(row):
     }
 
 
-def run_quick_screener_sequential():
+def run_quick_screener_parallel():
+    """使用 ThreadPoolExecutor 進行平行化非同步加速選股"""[cite: 1]
     df_stocks = get_taiwan_stock_list()
     found_targets = []
     total_count = len(df_stocks)
@@ -560,22 +630,24 @@ def run_quick_screener_sequential():
     status_text = st.sidebar.empty()
     
     completed = 0
-    for _, row in df_stocks.iterrows():
-        completed += 1
-        if completed % 15 == 0 or completed == total_count:
-            progress_bar.progress(min(completed / total_count, 1.0))
-            status_text.markdown(f"🔍 **篩選進度:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
-        
-        res = fetch_and_analyze_single_stock(row)
-        if res:
-            found_targets.append(res)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
+        future_to_stock = {executor.submit(fetch_and_analyze_single_stock, row): row for _, row in df_stocks.iterrows()}
+        for future in concurrent.futures.as_completed(future_to_stock):
+            completed += 1
+            if completed % 10 == 0 or completed == total_count:
+                progress_bar.progress(min(completed / total_count, 1.0))
+                status_text.markdown(f"⚡ **非同步加速篩選中:** `{completed}/{total_count}` | 🔥 **符合:** `{len(found_targets)}` 檔")
+            
+            res = future.result()
+            if res:
+                found_targets.append(res)
                 
     progress_bar.empty()
     status_text.empty()
     return pd.DataFrame(found_targets)
 
 
-# --- 6. 套用組合快捷設定函式 ---
+# --- 6. 套用組合快捷設定函式 ---[cite: 1]
 def apply_combo_1():
     st.session_state.logic_mode = "OR (符合任一勾選條件即可)"
     for k in default_params:
@@ -586,11 +658,9 @@ def apply_combo_1():
     st.session_state.enable_trend_breakout = True
     st.session_state.s12_lookback = 60
     st.session_state.s12_vol_mult = 1.8
-    st.session_state.enable_volume_breakout_52w = True
-    st.session_state.s13_vol_mult = 2.0
     st.session_state.min_vol = 800
     st.session_state.max_growth = 9.5
-    st.session_state.active_combo_name = "【組合一：波段飆股爆發與52週新高型】"
+    st.session_state.active_combo_name = "【組合一：波段飆股爆發型】"
 
 def apply_combo_2():
     st.session_state.logic_mode = "OR (符合任一勾選條件即可)"
@@ -600,17 +670,17 @@ def apply_combo_2():
     st.session_state.enable_limit_up_pullback = True
     st.session_state.limit_up_days = 20
     st.session_state.limit_up_ma_period = 20
-    st.session_state.enable_asphyxia_volume = True
-    st.session_state.s14_days = 5
-    st.session_state.s14_vol_ratio = 0.5
+    st.session_state.enable_first_limit_pullback = True
+    st.session_state.first_limit_days = 30
+    st.session_state.first_limit_range = 2.0
     st.session_state.min_vol = 800
     st.session_state.max_growth = 9.5
-    st.session_state.active_combo_name = "【組合二：強勢回檔與窒息量低接型】"
+    st.session_state.active_combo_name = "【組合二：強勢回檔低接型】"
 
 
 # ==========================================
 # 7. 左側控制台介面設計
-# ==========================================
+# ==========================================[cite: 1]
 with st.sidebar:
     st.title("📈 策略控制面板")
     st.caption("一鍵載入實戰精選組合或自訂策略")
@@ -666,7 +736,7 @@ with st.sidebar:
         st.session_state.enable_box_bottom_support = st.checkbox("11. 箱底爆大量長均多頭站穩均線", value=st.session_state.enable_box_bottom_support)
         st.session_state.s11_box_days = st.number_input("箱型天數 (策略11)", min_value=20, max_value=250, value=st.session_state.s11_box_days)
 
-    with st.expander("🔥 核心熱門策略與爆發/窒息量選項 (12~14)"):
+    with st.expander("🔥 核心熱門與新選股策略 (12~14)"):
         st.session_state.enable_trend_breakout = st.checkbox("12. 突破均線糾結(打底+突破+帶量)", value=st.session_state.enable_trend_breakout)
         col_t1, col_t2 = st.columns(2)
         with col_t1:
@@ -675,17 +745,11 @@ with st.sidebar:
             st.session_state.s12_vol_mult = st.number_input("突破爆量倍數 (策略12)", min_value=1.1, max_value=3.0, value=st.session_state.s12_vol_mult, step=0.1)
 
         st.divider()
-        # 新增選項一
-        st.session_state.enable_volume_breakout_52w = st.checkbox("13. 量能爆發且突破歷史新高(52週新高)", value=st.session_state.enable_volume_breakout_52w)
-        st.session_state.s13_vol_mult = st.number_input("52週新高突破爆量倍數", min_value=1.2, max_value=5.0, value=st.session_state.s13_vol_mult, step=0.2)
+        st.session_state.enable_volume_breakout_52w = st.checkbox("13. 量能爆發且突破52週新高", value=st.session_state.enable_volume_breakout_52w)
+        st.session_state.s13_vol_mult = st.number_input("52週新高爆量倍數 (策略13)", min_value=1.2, max_value=5.0, value=st.session_state.s13_vol_mult, step=0.2)
 
-        # 新增選項二
-        st.session_state.enable_asphyxia_volume = st.checkbox("14. 連續數日量縮無賣壓(窒息量)", value=st.session_state.enable_asphyxia_volume)
-        col_a1, col_a2 = st.columns(2)
-        with col_a1:
-            st.session_state.s14_days = st.number_input("連續天數 (窒息量)", min_value=2, max_value=20, value=st.session_state.s14_days)
-        with col_a2:
-            st.session_state.s14_vol_ratio = st.number_input("低於月均量比例", min_value=0.2, max_value=0.9, value=st.session_state.s14_vol_ratio, step=0.1)
+        st.session_state.enable_suffocation_volume = st.checkbox("14. 連續數日量縮無賣壓(窒息量)", value=st.session_state.enable_suffocation_volume)
+        st.session_state.s14_days = st.number_input("窒息量連續天數 (策略14)", min_value=2, max_value=10, value=st.session_state.s14_days)
 
     st.divider()
     st.session_state.min_vol = st.number_input("成交量大於 (張)", value=st.session_state.min_vol, step=100)
@@ -696,13 +760,13 @@ with st.sidebar:
 
 # ==========================================
 # 8. 右側主畫面區塊
-# ==========================================
+# ==========================================[cite: 1]
 st.title("📈 台股智慧選股與即時 K 線診斷系統")
 st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_name}`")
-st.caption("具備高效能非同步快取、多模組組合篩選、動態技術分析、大盤即時監測與過濾選項。")
+st.caption("具備多模組組合篩選、動態技術分析、大盤即時監測、三大法人與集保戶籌碼診斷功能。")
 st.divider()
 
-# --- 8.1 主畫面：大盤即時監測與 K 線圖 ---
+# --- 8.1 主畫面：大盤即時監測與 K 線圖 ---[cite: 1]
 st.subheader("📊 盤勢即時監測（加權指數 ^TWII）")
 with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
     df_market = get_market_index_data()
@@ -714,9 +778,9 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
         m_ma120 = df_market['MA120'].iloc[-1]
         
         if m_curr_close >= m_ma20:
-            st.success("🟢 **目前大盤狀態：在 20MA（月線）之上（多頭或盤整偏多）** -> **大膽勾選策略 8、策略 12、策略 13（突破與新高買進勝率極高）**")
+            st.success("🟢 **目前大盤狀態：在 20MA（月線）之上（多頭或盤整偏多）** -> **大膽勾選策略 8、策略 12、策略 13（突破與爆量買進勝率極高）**")
         elif m_curr_close < m_ma120:
-            st.warning("🔴 **目前大盤狀態：在季線之下（弱勢盤勢）** -> **建議縮手，或僅勾選防守性較強的策略 11、策略 14（箱底低接與窒息量佈局）**")
+            st.warning("🔴 **目前大盤狀態：在季線之下（弱勢盤勢）** -> **建議縮手，或僅勾選防守性較強的策略 11、策略 14（箱底低接或窒息量整理）**")
         else:
             st.info("🟡 **目前大盤狀態：介於月線與季線之間（震盪盤整期）** -> **建議精選個股，降低資金水位或使用回檔低接策略**")
             
@@ -727,35 +791,68 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
 
 st.divider()
 
-# --- 8.2 主畫面：封面一鍵快速生成方案按鈕區 ---
+# --- 8.2 主畫面：封面一鍵快速生成方案按鈕區 ---[cite: 1]
 st.subheader("🔥 封面一鍵快速生成方案")
 col_b1, col_b2 = st.columns(2)
 with col_b1:
-    if st.button("🚀 組合一：【波段飆股與52週新高型】一鍵掃描", use_container_width=True, type="primary"):
+    if st.button("🚀 組合一：【波段飆股爆發型】一鍵掃描", use_container_width=True, type="primary"):
         apply_combo_1()
-        with st.spinner("⚡ 正在自動掃描【組合一：波段飆股與52週新高型】..."):
-            st.session_state.screener_results = run_quick_screener_sequential()
+        with st.spinner("⚡ 正在非同步高速掃描【組合一：波段飆股爆發型】..."):
+            st.session_state.screener_results = run_quick_screener_parallel()
             st.session_state.selected_stock_index = 0
         st.rerun()
 with col_b2:
-    if st.button("🛡️ 組合二：【強勢回檔與窒息量低接型】一鍵掃描", use_container_width=True, type="secondary"):
+    if st.button("🛡️ 組合二：【強勢回檔低接型】一鍵掃描", use_container_width=True, type="secondary"):
         apply_combo_2()
-        with st.spinner("⚡ 正在自動掃描【組合二：強勢回檔與窒息量低接型】..."):
-            st.session_state.screener_results = run_quick_screener_sequential()
+        with st.spinner("⚡ 正在非同步高速掃描【組合二：強勢回檔低接型】..."):
+            st.session_state.screener_results = run_quick_screener_parallel()
             st.session_state.selected_stock_index = 0
         st.rerun()
 
 st.divider()
 
+# --- 8.3 主畫面：加入使用說明表 ---[cite: 1]
+with st.expander("💡 策略組合使用說明書與操作口訣（點擊展開檢視）", expanded=False):
+    st.markdown("""
+    ### 推薦組合一：【波段飆股爆發型】（勝率與爆發力最佳，最推薦）
+    這個組合專門捕捉「主力洗盤完畢、帶量發動」的強勢股，適合台股多頭或盤整偏多時使用。
+    * **勾選策略：**
+      * ☑️ 策略 8：量縮洗盤後出量站上 MA 第一天
+      * ☑️ 策略 12：突破均線糾結（打底+突破+帶量）
+      * ☑️ 策略 13：量能爆發且突破52週新高
+    * **數值設定：**
+      * `shakeout_ma_val`（策略 8 目標 MA）：`20`
+      * `s12_lookback`（策略 12 趨勢天數）：`60`
+      * `s13_vol_mult`（策略 13 爆量倍數）：`2.0`
+      * `min_vol`（成交量）：`800` 張
+      * `max_growth`（當日漲幅）：`9.5%`
+
+    ---
+
+    ### 推薦組合二：【強勢回檔低接型】（防守性較好，適合穩健操作）
+    這個組合專門找「曾經漲停過、有主力照顧，現在回測均線量縮」或「量縮無賣壓」的優質標的。
+    * **勾選策略：**
+      * ☑️ 策略 2：前 N 天帶量漲停 + 量縮回踩 MA
+      * ☑️ 策略 14：連續數日量縮無賣壓（窒息量）
+    * **數值設定：**
+      * `limit_up_days`（策略 2 前 N 天）：`20`
+      * `limit_up_ma_period`（策略 2 回踩 MA）：`20`
+      * `s14_days`（策略 14 窒息量天數）：`3`
+      * `min_vol`：`800` 張
+      * `max_growth`：`9.5%`
+    """)
+
+st.divider()
+
 if btn_quick_search:
     st.session_state.active_combo_name = "【自訂策略組合】"
-    with st.spinner("⚡ 正在掃描全市場..."):
-        st.session_state.screener_results = run_quick_screener_sequential()
+    with st.spinner("⚡ 正在非同步高速掃描全市場..."):
+        st.session_state.screener_results = run_quick_screener_parallel()
         st.session_state.selected_stock_index = 0
 
 res_table = st.session_state.screener_results
 
-tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷"])
+tab1, tab2, tab3 = st.tabs(["📋 篩選結果清單", "📈 K 線圖互動瀏覽", "🩺 個股即時診斷與籌碼分析"])
 
 with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
@@ -776,10 +873,10 @@ with tab1:
             hide_index=True
         )
     else:
-        st.info("👈 點擊上方主畫面的按鈕，即可立即在畫面上產生對應的潛力股票標的！")
+        st.info("👈 點擊上方主畫面的 **【🚀 組合一】** 或 **【🛡️ 組合二】** 按鈕，即可立即透過非同步加速在畫面上產生對應的潛力股票標的！")
 
 with tab2:
-    st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")
+    st.subheader("📈 詳細美化 K 線圖與快速瀏覽 (支援左右按鈕與鍵盤方向鍵)")[cite: 1]
     if not res_table.empty:
         stock_list = res_table["股票代號"].tolist()
         total_stocks = len(stock_list)
@@ -854,7 +951,7 @@ with tab2:
         st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表。")
 
 with tab3:
-    st.subheader("🩺 個股即時 K 線圖診斷")
+    st.subheader("🩺 個股即時 K 線圖診斷")[cite: 1]
     col_d1, col_d2 = st.columns([2, 1])
     with col_d1:
         diag_code = st.text_input("輸入股票代號進行獨立診斷", placeholder="例如: 3529", key="input_diag_code")
