@@ -9,3 +9,4 @@ scipy
 yfinance
 streamlit-drawable-canvas
 matplotlib
+aiohttp
