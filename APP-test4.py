@@ -252,16 +252,16 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     return fig
 
 
-# --- 5. 策略運算與分析核心 (支援 1~14 策略) ---
-def fetch_and_analyze_single_stock(row):
+# --- 5. 策略運算與分析核心 (改為接收參數字典，避免執行緒讀取 session_state 失敗) ---
+def fetch_and_analyze_single_stock(row, params):
     sid = row['code']
     df = get_finmind_data(sid)
     required_len = max(
-        st.session_state.box_days, 
-        st.session_state.box10_days, 
-        st.session_state.s11_box_days, 
-        st.session_state.s12_lookback, 
-        260 # 52週約250交易日
+        params['box_days'], 
+        params['box10_days'], 
+        params['s11_box_days'], 
+        params['s12_lookback'], 
+        250 # 52週約250交易日
     ) + 10
     
     if df is None or len(df) < required_len:
@@ -272,9 +272,9 @@ def fetch_and_analyze_single_stock(row):
     prev_close = df['Close'].iloc[-2] if len(df) > 1 else curr_price
     curr_vol = df['Volume'].iloc[-1]
 
-    if curr_vol < (st.session_state.min_vol * 1000): return None
+    if curr_vol < (params['min_vol'] * 1000): return None
     change_pct = ((curr_price - prev_close) / prev_close) * 100
-    if change_pct > st.session_state.max_growth: return None
+    if change_pct > params['max_growth']: return None
 
     df['daily_change'] = df['Close'].pct_change() * 100
     recent_df = df.iloc[-60:]
@@ -283,8 +283,8 @@ def fetch_and_analyze_single_stock(row):
     matched_strategies = []
 
     # 策略 1
-    if st.session_state.enable_macd_25ma:
-        df['ma_a'] = df['Close'].rolling(st.session_state.macd_ma_period).mean()
+    if params['enable_macd_25ma']:
+        df['ma_a'] = df['Close'].rolling(params['macd_ma_period']).mean()
         ma_a_curr = df['ma_a'].iloc[-1]
         exp1 = df['Close'].ewm(span=12, adjust=False).mean()
         exp2 = df['Close'].ewm(span=26, adjust=False).mean()
@@ -297,12 +297,12 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append("MACD回踩0軸")
 
     # 策略 2
-    if st.session_state.enable_limit_up_pullback:
-        df['ma_b'] = df['Close'].rolling(st.session_state.limit_up_ma_period).mean()
+    if params['enable_limit_up_pullback']:
+        df['ma_b'] = df['Close'].rolling(params['limit_up_ma_period']).mean()
         ma_b_curr = df['ma_b'].iloc[-1]
         df['vol_ma5'] = df['Volume'].rolling(5).mean()
         
-        check_range = df.iloc[-st.session_state.limit_up_days:]
+        check_range = df.iloc[-params['limit_up_days']:]
         had_limit_up_vol = ((check_range['daily_change'] >= 9.5) & (check_range['Volume'] > check_range['vol_ma5'] * 1.5)).any()
         is_vol_shrink = curr_vol < df['vol_ma5'].iloc[-1]
         is_touch_ma = (df['Low'].iloc[-1] <= ma_b_curr * 1.015) and (curr_price >= ma_b_curr * 0.985)
@@ -311,7 +311,7 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append("漲停回踩MA")
 
     # 策略 3
-    if st.session_state.enable_kd_cross:
+    if params['enable_kd_cross']:
         low_9 = df['Low'].rolling(9).min()
         high_9 = df['High'].rolling(9).max()
         rsv = (df['Close'] - low_9) / (high_9 - low_9) * 100
@@ -321,10 +321,10 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append("KD金叉")
 
     # 策略 4
-    if st.session_state.enable_tangle_steady:
+    if params['enable_tangle_steady']:
         ma5 = df['Close'].rolling(5).mean()
         ma10 = df['Close'].rolling(10).mean()
-        ma20 = df['Close'].rolling(st.session_state.tangle_ma_period).mean()
+        ma20 = df['Close'].rolling(params['tangle_ma_period']).mean()
         
         ma_max = pd.concat([ma5, ma10, ma20], axis=1).max(axis=1)
         ma_min = pd.concat([ma5, ma10, ma20], axis=1).min(axis=1)
@@ -338,14 +338,14 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append("均線糾結+量穩價縮")
 
     # 策略 5
-    if st.session_state.enable_breakout:
+    if params['enable_breakout']:
         vol_ma = df['Volume'].rolling(5).mean()
         is_breakout = (curr_price > df['High'].iloc[-25:-1].max()) and (curr_vol > vol_ma.iloc[-1] * 1.2)
         if is_breakout:
             matched_strategies.append("突破切線")
 
     # 策略 6
-    if st.session_state.enable_vcp:
+    if params['enable_vcp']:
         h1 = df['High'].iloc[-30:-15].max() - df['Low'].iloc[-30:-15].min()
         h2 = df['High'].iloc[-15:].max() - df['Low'].iloc[-15:].min()
         v1 = df['Volume'].iloc[-30:-15].mean()
@@ -356,8 +356,8 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append("VCP波動收縮")
 
     # 策略 7
-    if st.session_state.enable_first_limit_pullback:
-        check_window = df.iloc[-st.session_state.first_limit_days:]
+    if params['enable_first_limit_pullback']:
+        check_window = df.iloc[-params['first_limit_days']:]
         first_limit_open = None
         for idx, r in check_window.iterrows():
             if r['daily_change'] >= 9.5:
@@ -370,16 +370,16 @@ def fetch_and_analyze_single_stock(row):
         if first_limit_open is not None:
             vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
             is_vol_shrink = curr_vol < vol_ma5
-            lower_bound = first_limit_open * (1 - st.session_state.first_limit_range / 100.0)
-            upper_bound = first_limit_open * (1 + st.session_state.first_limit_range / 100.0)
+            lower_bound = first_limit_open * (1 - params['first_limit_range'] / 100.0)
+            upper_bound = first_limit_open * (1 + params['first_limit_range'] / 100.0)
             is_near_open = (df['Low'].iloc[-1] <= upper_bound) and (curr_price >= lower_bound)
             
             if is_vol_shrink and is_near_open:
                 matched_strategies.append("首根漲停開盤價支撐")
 
     # 策略 8
-    if st.session_state.enable_shakeout_breakout:
-        m_val = st.session_state.shakeout_ma_val
+    if params['enable_shakeout_breakout']:
+        m_val = params['shakeout_ma_val']
         df[f'shk_ma'] = df['Close'].rolling(m_val).mean()
         vol_ma_20 = df['Volume'].rolling(20).mean().iloc[-1]
         is_volume_expand = curr_vol > vol_ma_20 * 1.3
@@ -393,8 +393,8 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append(f"量縮洗盤後出量站上MA{m_val}")
 
     # 策略 9
-    if st.session_state.enable_box_breakout:
-        b_days = st.session_state.box_days
+    if params['enable_box_breakout']:
+        b_days = params['box_days']
         box_high = df['High'].iloc[-(b_days + 1):-1].max()
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
         is_break_box = (curr_price >= box_high) and (df['Close'].iloc[-2] < box_high)
@@ -404,15 +404,15 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append(f"帶量突破箱型高點({b_days}日)")
 
     # 策略 10
-    if st.session_state.enable_box_volume_accum:
-        b10_days = st.session_state.box10_days
+    if params['enable_box_volume_accum']:
+        b10_days = params['box10_days']
         box_window = df.iloc[-(b10_days + 1):-1]
         b_high = box_window['High'].max()
         b_low = box_window['Low'].min()
         
         is_inside_box = (curr_price < b_high) and (curr_price > b_low)
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-        is_surge_volume = curr_vol > (vol_ma5 * st.session_state.box10_vol_mult)
+        is_surge_volume = curr_vol > (vol_ma5 * params['box10_vol_mult'])
         
         ma5 = df['Close'].rolling(5).mean().iloc[-1]
         ma10 = df['Close'].rolling(10).mean().iloc[-1]
@@ -423,8 +423,8 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append(f"箱型爆大量站穩均線未破頂({b10_days}日)")
 
     # 策略 11
-    if st.session_state.enable_box_bottom_support:
-        s11_d = st.session_state.s11_box_days
+    if params['enable_box_bottom_support']:
+        s11_d = params['s11_box_days']
         s11_box_window = df.iloc[-(s11_d + 1):-1]
         s11_b_high = s11_box_window['High'].max()
         s11_b_low = s11_box_window['Low'].min()
@@ -436,7 +436,7 @@ def fetch_and_analyze_single_stock(row):
         is_long_bull = ma120 > ma240
         
         vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-        is_s11_surge = curr_vol > (vol_ma5 * st.session_state.s11_vol_mult)
+        is_s11_surge = curr_vol > (vol_ma5 * params['s11_vol_mult'])
         
         standing_mas = []
         for m_val in [60, 20, 10, 5]:
@@ -444,9 +444,9 @@ def fetch_and_analyze_single_stock(row):
             if curr_price >= m_val_calc:
                 standing_mas.append(f"MA{m_val}")
         
-        target_m = st.session_state.s11_target_ma
+        target_m = params['s11_target_ma']
         is_match_target_ma = target_m in standing_mas if target_m else len(standing_mas) > 0
-        s11_recent_window = df.iloc[-st.session_state.s11_limit_days:]
+        s11_recent_window = df.iloc[-params['s11_limit_days']:]
         had_recent_limit = (s11_recent_window['daily_change'] >= 9.5).any()
         
         if is_at_box_bottom and is_long_bull and is_s11_surge and is_match_target_ma and had_recent_limit:
@@ -454,8 +454,8 @@ def fetch_and_analyze_single_stock(row):
             matched_strategies.append(f"箱底爆大量站穩均線[{ma_str_label}]({s11_d}日)")
 
     # 策略 12
-    if st.session_state.enable_trend_breakout:
-        lookback_d = st.session_state.s12_lookback
+    if params['enable_trend_breakout']:
+        lookback_d = params['s12_lookback']
         hist_df = df.iloc[-lookback_d:-1]
         if len(hist_df) >= 20:
             low_idx1 = hist_df['Low'].idxmin()
@@ -482,7 +482,7 @@ def fetch_and_analyze_single_stock(row):
                     is_breaking = curr_price > resistance_line_val and df['Close'].iloc[-2] <= resistance_line_val
                     
                     vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
-                    is_volume_surge = curr_vol > (vol_ma5 * st.session_state.s12_vol_mult)
+                    is_volume_surge = curr_vol > (vol_ma5 * params['s12_vol_mult'])
                     
                     ma5_v = df['Close'].rolling(5).mean().iloc[-1]
                     ma20_v = df['Close'].rolling(20).mean().iloc[-1]
@@ -499,41 +499,40 @@ def fetch_and_analyze_single_stock(row):
                         matched_strategies.append("12.突破均線糾結(趨勢突破+帶量)")
 
     # 策略 13：量能爆發且突破 52 週新高
-    if st.session_state.enable_new_high_breakout:
+    if params['enable_new_high_breakout']:
         if len(df) >= 250:
             high_52w = df['High'].iloc[-250:-1].max()
             vol_ma5 = df['Volume'].rolling(5).mean().iloc[-1]
             is_new_high = curr_price >= high_52w
-            is_surge = curr_vol > (vol_ma5 * st.session_state.s13_vol_mult)
+            is_surge = curr_vol > (vol_ma5 * params['s13_vol_mult'])
             if is_new_high and is_surge:
                 matched_strategies.append("13.量能爆發突破52週新高")
 
     # 策略 14：連續數日量縮無賣壓（窒息量）
-    if st.session_state.enable_suffocation_vol:
-        shrink_d = st.session_state.s14_shrink_days
+    if params['enable_suffocation_vol']:
+        shrink_d = params['s14_shrink_days']
         if len(df) >= shrink_d + 10:
             vol_ma20 = df['Volume'].rolling(20).mean().iloc[-1]
             recent_vols = df['Volume'].iloc[-(shrink_d):]
-            # 連續數日成交量低於月均量 60%，且股價沒大幅下跌
             is_low_vol = (recent_vols < vol_ma20 * 0.6).all()
             price_change_recent = (df['Close'].iloc[-1] - df['Close'].iloc[-shrink_d]) / df['Close'].iloc[-shrink_d] * 100
-            is_stable_price = abs(price_change_recent) < 4.0 # 價格波動小於4%代表無賣壓
+            is_stable_price = abs(price_change_recent) < 4.0
             if is_low_vol and is_stable_price:
                 matched_strategies.append(f"14.連續{shrink_d}日量縮無賣壓(窒息量)")
 
     total_enabled_flags = sum([
-        st.session_state.enable_macd_25ma, st.session_state.enable_limit_up_pullback, 
-        st.session_state.enable_kd_cross, st.session_state.enable_tangle_steady, 
-        st.session_state.enable_breakout, st.session_state.enable_vcp, 
-        st.session_state.enable_first_limit_pullback, st.session_state.enable_shakeout_breakout, 
-        st.session_state.enable_box_breakout, st.session_state.enable_box_volume_accum, 
-        st.session_state.enable_box_bottom_support, st.session_state.enable_trend_breakout,
-        st.session_state.enable_new_high_breakout, st.session_state.enable_suffocation_vol
+        params['enable_macd_25ma'], params['enable_limit_up_pullback'], 
+        params['enable_kd_cross'], params['enable_tangle_steady'], 
+        params['enable_breakout'], params['enable_vcp'], 
+        params['enable_first_limit_pullback'], params['enable_shakeout_breakout'], 
+        params['enable_box_breakout'], params['enable_box_volume_accum'], 
+        params['enable_box_bottom_support'], params['enable_trend_breakout'],
+        params['enable_new_high_breakout'], params['enable_suffocation_vol']
     ])
     if total_enabled_flags == 0:
         return None
 
-    if st.session_state.logic_mode == "AND (所有勾選條件皆需成立)":
+    if params['logic_mode'] == "AND (所有勾選條件皆需成立)":
         if len(matched_strategies) < total_enabled_flags: return None
     else: 
         if len(matched_strategies) == 0: return None
@@ -550,8 +549,14 @@ def fetch_and_analyze_single_stock(row):
     }
 
 
-# --- 6. 具備多執行緒加速的掃描函式 ---
+# --- 6. 具備多執行緒加速的掃描函式 (在主執行緒打包參數再傳遞) ---
 def run_quick_screener_concurrent():
+    # 建立參數快照字典，解決背景執行緒讀取不到 st.session_state 的問題
+    params = {
+        key: st.session_state[key] for key in default_params.keys()
+    }
+    params['logic_mode'] = st.session_state.get('logic_mode', "OR (符合任一勾選條件即可)")
+
     df_stocks = get_taiwan_stock_list()
     found_targets = []
     total_count = len(df_stocks)
@@ -561,7 +566,7 @@ def run_quick_screener_concurrent():
     
     completed = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=12) as executor:
-        futures = {executor.submit(fetch_and_analyze_single_stock, row): row for _, row in df_stocks.iterrows()}
+        futures = {executor.submit(fetch_and_analyze_single_stock, row, params): row for _, row in df_stocks.iterrows()}
         for future in concurrent.futures.as_completed(futures):
             completed += 1
             if completed % 20 == 0 or completed == total_count:
