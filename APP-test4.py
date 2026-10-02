@@ -1,4 +1,5 @@
 import time
+import os
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -586,9 +587,7 @@ def fetch_and_analyze_single_stock(row):
         if len(df) >= 20 + d_count:
             vol_ma20 = df['Volume'].rolling(20).mean()
             recent_slice = df.iloc[-d_count:]
-            # 檢查最近 N 天成交量是否皆小於 20MA 的指定比例（例如 50%）
             is_suffocating = (recent_slice['Volume'] < (vol_ma20.loc[recent_slice.index] * v_ratio)).all()
-            # 價格相對穩定沒有大跌（例如區間跌幅小於 3%）
             price_change_range = (recent_slice['Close'].max() - recent_slice['Close'].min()) / recent_slice['Close'].iloc[0]
             is_price_steady = price_change_range < 0.04
             
@@ -634,10 +633,8 @@ def run_quick_screener_parallel():
     status_text = st.sidebar.empty()
     
     completed = 0
-    # 使用 ThreadPoolExecutor 進行多執行緒平行抓取與運算，大幅提升速度
     max_workers = min(16, os.cpu_count() * 4 if hasattr(os, 'cpu_count') and os.cpu_count() else 8)
     
-    import os
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_stock = {executor.submit(fetch_and_analyze_single_stock, row): row for _, row in df_stocks.iterrows()}
         
