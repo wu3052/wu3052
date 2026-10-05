@@ -116,39 +116,16 @@ def get_finmind_data(stock_id):
         return None
 
 
-@st.cache_data(ttl=3600)
 def get_market_index_data():
-    """獲取台股大盤加權指數，加入強效防呆與備用方案，避免無限轉圈或選股崩潰"""
-    # 嘗試方案一：從 Yahoo Finance 抓取 ^TWII
+    """獲取台股大盤加權指數 (^TWII) 資料"""
     try:
-        df = yf.download("^TWII", period="100d", interval="1d", progress=False, timeout=3)
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [c.capitalize() for c in df.columns]
-            res = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-            if not res.empty:
-                return res
-    except Exception as e:
-        print(f"Yahoo 大盤下載失敗: {e}")
-
-    # 嘗試方案二：若 Yahoo 失敗，改用台灣 50 (0050.TW) 作為大盤的替代參考基準
-    try:
-        df = yf.download("0050.TW", period="100d", interval="1d", progress=False, timeout=3)
-        if df is not None and not df.empty:
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df.columns = [c.capitalize() for c in df.columns]
-            res = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-            if not res.empty:
-                st.toast("⚠️ 大盤指數暫時無法讀取，系統已自動以 0050 作為大盤替代基準。")
-                return res
-    except Exception as e:
-        print(f"備用大盤下載失敗: {e}")
-
-    # 若所有方案皆失敗，回傳 None 並給予溫馨提示
-    st.warning("⚠️ 目前網路連線緩慢，無法取得大盤資料。選股與診斷系統將暫時切換為「純個股模式」運作。")
-    return None
+        df = yf.download("^TWII", period="320d", interval="1d", progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df.columns = [c.capitalize() for c in df.columns]
+        return df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+    except:
+        return None
 
 
 def get_taiwan_stock_list():
@@ -965,3 +942,4 @@ with tab3:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
         st.info("💡 輸入任意台股代號即可獨立檢視其技術分析 K 線圖。")
+
