@@ -1,4 +1,3 @@
-name=APP-test4 (2)_3.py
 import time
 import pandas as pd
 import numpy as np
