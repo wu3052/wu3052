@@ -51,7 +51,7 @@ if 'selected_stock_index' not in st.session_state:
 if 'active_combo_name' not in st.session_state:
     st.session_state.active_combo_name = "尚未執行"
 
-# 預設參數對應 State
+# 預設參數對應 State (包含新增的策略17參數)
 default_params = {
     "logic_mode": "OR (符合任一勾選條件即可)",
     "enable_macd_25ma": False, "macd_ma_period": 25,
@@ -70,6 +70,7 @@ default_params = {
     "enable_choke_volume": False, "s14_days": 3,
     "enable_bull_pullback_ma": False, "s15_ma_val": 20, "s15_days": 15,
     "enable_obv_divergence": False, "s16_days": 10,
+    "enable_obv_bottom_ma": False, "s17_days": 30, "s17_ma_val": 20,
     "min_vol": 500, "max_growth": 9.5
 }
 
@@ -280,7 +281,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         idx_t2, p_t2, _ = t2
         obv_val_t1 = sub_df['OBV'].iloc[idx_t1]
         obv_val_t2 = sub_df['OBV'].iloc[idx_t2]
-        # 底背離：價格創新低，OBV 創新高
         if p_t2 < p_t1 and obv_val_t2 > obv_val_t1:
             bullish_div_x.append(sub_df.index[idx_t2])
             bullish_div_y.append(obv_val_t2)
@@ -291,7 +291,6 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         idx_pk2, p_pk2, _ = pk2
         obv_val_pk1 = sub_df['OBV'].iloc[idx_pk1]
         obv_val_pk2 = sub_df['OBV'].iloc[idx_pk2]
-        # 頂背離：價格創新高，OBV 創新低
         if p_pk2 > p_pk1 and obv_val_pk2 < obv_val_pk1:
             bearish_div_x.append(sub_df.index[idx_pk2])
             bearish_div_y.append(obv_val_pk2)
@@ -335,7 +334,8 @@ def fetch_and_analyze_single_stock(row):
         st.session_state.box_days, 
         st.session_state.box10_days, 
         st.session_state.s11_box_days, 
-        st.session_state.s12_lookback, 250
+        st.session_state.s12_lookback, 
+        st.session_state.s17_days, 250
     ) + 10
     
     if df is None or len(df) < required_len:
@@ -629,6 +629,35 @@ def fetch_and_analyze_single_stock(row):
         if is_price_flat_or_down and is_obv_surge:
             matched_strategies.append("盤整小跌OBV卻大增(背離)")
 
+    # 策略 17: OBV底背離，股價剛站上(填入數字)MA
+    if st.session_state.enable_obv_bottom_ma:
+        s17_d = st.session_state.s17_days
+        s17_ma = st.session_state.s17_ma_val
+        
+        df[f'ma_s17'] = df['Close'].rolling(s17_ma).mean()
+        
+        if 'OBV' not in df.columns:
+            close_diff = df['Close'].diff()
+            direction = np.where(close_diff > 0, 1, np.where(close_diff < 0, -1, 0))
+            df['OBV'] = (df['Volume'] * direction).cumsum()
+            
+        price_start = df['Close'].iloc[-s17_d]
+        price_end = df['Close'].iloc[-1]
+        obv_start = df['OBV'].iloc[-s17_d]
+        obv_end = df['OBV'].iloc[-1]
+        
+        # OBV底背離條件：價格盤整或下跌，但OBV增加
+        is_price_down_or_flat = price_end <= price_start * 1.02 and price_end >= price_start * 0.85
+        is_obv_rising = obv_end > obv_start
+        
+        # 股價剛站上指定MA：前一天收盤 <= MA，今天收盤 >= MA
+        ma_curr = df[f'ma_s17'].iloc[-1]
+        ma_prev = df[f'ma_s17'].iloc[-2] if len(df) > 1 else ma_curr
+        is_just_above_ma = (df['Close'].iloc[-1] >= ma_curr) and (df['Close'].iloc[-2] <= ma_prev)
+        
+        if is_price_down_or_flat and is_obv_rising and is_just_above_ma:
+            matched_strategies.append(f"OBV底背離且剛站上MA{s17_ma}")
+
     total_enabled_flags = sum([
         st.session_state.enable_macd_25ma, st.session_state.enable_limit_up_pullback, 
         st.session_state.enable_kd_cross, st.session_state.enable_tangle_steady, 
@@ -637,7 +666,8 @@ def fetch_and_analyze_single_stock(row):
         st.session_state.enable_box_breakout, st.session_state.enable_box_volume_accum, 
         st.session_state.enable_box_bottom_support, st.session_state.enable_trend_breakout,
         st.session_state.enable_vol_breakout_high, st.session_state.enable_choke_volume,
-        st.session_state.enable_bull_pullback_ma, st.session_state.enable_obv_divergence
+        st.session_state.enable_bull_pullback_ma, st.session_state.enable_obv_divergence,
+        st.session_state.enable_obv_bottom_ma
     ])
     if total_enabled_flags == 0:
         return None
@@ -768,7 +798,7 @@ with st.sidebar:
         st.session_state.enable_box_bottom_support = st.checkbox("11. 箱底爆大量長均多頭站穩均線", value=st.session_state.enable_box_bottom_support)
         st.session_state.s11_box_days = st.number_input("箱型天數 (策略11)", min_value=20, max_value=250, value=st.session_state.s11_box_days)
 
-    with st.expander("🔥 核心熱門策略 (12~16)"):
+    with st.expander("🔥 核心熱門策略 (12~17)"):
         st.session_state.enable_trend_breakout = st.checkbox("12. 突破均線糾結(打底+突破+帶量)", value=st.session_state.enable_trend_breakout)
         col_t1, col_t2 = st.columns(2)
         with col_t1:
@@ -792,6 +822,14 @@ with st.sidebar:
 
         st.session_state.enable_obv_divergence = st.checkbox("16. 盤整或小跌時OBV卻大增", value=st.session_state.enable_obv_divergence)
         st.session_state.s16_days = st.number_input("OBV背離計算天數 (策略16)", min_value=5, max_value=30, value=st.session_state.s16_days)
+
+        st.divider()
+        st.session_state.enable_obv_bottom_ma = st.checkbox("17. OBV底背離，股價剛站上MA", value=st.session_state.enable_obv_bottom_ma)
+        col_17_1, col_17_2 = st.columns(2)
+        with col_17_1:
+            st.session_state.s17_days = st.number_input("OBV背離計算天數 (策略17)", min_value=10, max_value=120, value=st.session_state.s17_days)
+        with col_17_2:
+            st.session_state.s17_ma_val = st.number_input("剛站上目標 MA 數值 (策略17)", min_value=5, max_value=240, value=st.session_state.s17_ma_val)
 
     st.divider()
     st.session_state.min_vol = st.number_input("成交量大於 (張)", value=st.session_state.min_vol, step=100)
