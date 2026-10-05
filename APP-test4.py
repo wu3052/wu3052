@@ -80,7 +80,6 @@ for k, v in default_params.items():
 
 
 # --- 3. 資料獲取函式 ---
-@st.cache_data(ttl=1800)
 def get_finmind_data(stock_id):
     today = pd.Timestamp.today().strftime('%Y-%m-%d')
     start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
@@ -108,7 +107,7 @@ def get_finmind_data(stock_id):
     
     ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
     try:
-        df = yf.download(ticker, period="320d", interval="1d", progress=False, timeout=5)
+        df = yf.download(ticker, period="320d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
@@ -117,17 +116,17 @@ def get_finmind_data(stock_id):
         return None
 
 
-@st.cache_data(ttl=3600)
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料（已加強逾時與快取防護）"""
+    """獲取台股大盤加權指數 (^TWII) 資料"""
     try:
-        df = yf.download("^TWII", period="320d", interval="1d", progress=False, timeout=5)
+        df = yf.download("^TWII", period="320d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df.columns = [c.capitalize() for c in df.columns]
         return df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
     except:
         return None
+
 
 def get_taiwan_stock_list():
     stock_data = []
