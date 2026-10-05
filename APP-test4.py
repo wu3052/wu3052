@@ -79,55 +79,33 @@ for k, v in default_params.items():
         st.session_state[k] = v
 
 
-# --- 3. 資料獲取函式 ---
+# --- 3. 資料獲取函式（隔離測試版：暫時使用假資料，避開網路卡死） ---
 @st.cache_data(ttl=1800)
 def get_finmind_data(stock_id):
-    today = pd.Timestamp.today().strftime('%Y-%m-%d')
-    start_date = (pd.Timestamp.today() - pd.Timedelta(days=320)).strftime('%Y-%m-%d')
-    url = "https://api.finmindtrade.com/api/v4/data"
-    parameters = {
-        "dataset": "TaiwanStockPrice",
-        "data_id": str(stock_id),
-        "start_date": start_date,
-        "end_date": today,
-    }
-    try:
-        response = requests.get(url, params=parameters, timeout=4)
-        data = response.json()
-        if data.get("status") == 200 and data.get("data"):
-            df = pd.DataFrame(data["data"])
-            df['date'] = pd.to_datetime(df['date'])
-            df = df.set_index('date')
-            df = df.rename(columns={
-                'open': 'Open', 'max': 'High', 'min': 'Low', 
-                'close': 'Close', 'Trading_Volume': 'Volume'
-            })
-            return df[['Open', 'High', 'Low', 'Close', 'Volume']].astype(float)
-    except:
-        pass
-    
-    ticker = f"{stock_id}.TW" if stock_id in twstock.codes and twstock.codes[stock_id].market == "上市" else f"{stock_id}.TWO"
-    try:
-        df = yf.download(ticker, period="320d", interval="1d", progress=False, timeout=5)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = [c.capitalize() for c in df.columns]
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']]
-    except:
-        return None
+    # 建立 10 天的假資料用來測試網頁能否順利開機
+    dates = pd.date_range(end=pd.Timestamp.today(), periods=50)
+    df = pd.DataFrame({
+        'Open': [100.0] * 50,
+        'High': [105.0] * 50,
+        'Low': [95.0] * 50,
+        'Close': [102.0] * 50,
+        'Volume': [10000.0] * 50
+    }, index=dates)
+    return df
 
 
 @st.cache_data(ttl=3600)
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料"""
-    try:
-        df = yf.download("^TWII", period="320d", interval="1d", progress=False, timeout=5)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = [c.capitalize() for c in df.columns]
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-    except:
-        return None
+    """獲取台股大盤加權指數 (^TWII) 資料（隔離測試版）"""
+    dates = pd.date_range(end=pd.Timestamp.today(), periods=50)
+    df = pd.DataFrame({
+        'Open': [20000.0] * 50,
+        'High': [20200.0] * 50,
+        'Low': [19900.0] * 50,
+        'Close': [20100.0] * 50,
+        'Volume': [1000000.0] * 50
+    }, index=dates)
+    return df
 
 def get_taiwan_stock_list():
     stock_data = []
