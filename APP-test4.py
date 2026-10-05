@@ -116,16 +116,21 @@ def get_finmind_data(stock_id):
         return None
 
 
+@st.cache_data(ttl=3600)
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料"""
+    """獲取台股大盤加權指數，加入強效防呆，避免無限轉圈"""
     try:
-        df = yf.download("^TWII", period="320d", interval="1d", progress=False)
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df.columns = [c.capitalize() for c in df.columns]
-        return df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
-    except:
-        return None
+        # 設定極短的 timeout，若 3 秒內沒回應就放棄，改用備用方案或返回空值
+        df = yf.download("^TWII", period="100d", interval="1d", progress=False, timeout=3)
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            df.columns = [c.capitalize() for c in df.columns]
+            return df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna(subset=['Close'])
+    except Exception as e:
+        print(f"大盤下載失敗: {e}")
+    
+    return None
 
 
 def get_taiwan_stock_list():
