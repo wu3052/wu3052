@@ -1,3 +1,4 @@
+name=APP-test4 (2)_3.py
 import time
 import pandas as pd
 import numpy as np
@@ -66,7 +67,6 @@ default_params = {
     "enable_box_volume_accum": False, "box10_days": 60, "box10_vol_mult": 2.0,
     "enable_box_bottom_support": False, "s11_box_days": 120, "s11_vol_mult": 2.0, "s11_target_ma": "", "s11_limit_days": 60,
     "enable_trend_breakout": True, "s12_lookback": 60, "s12_vol_mult": 1.5,
-    # 新增策略 13 ~ 16 預設參數
     "enable_vol_breakout_high": False, "s13_vol_mult": 2.0,
     "enable_choke_volume": False, "s14_days": 3,
     "enable_bull_pullback_ma": False, "s15_ma_val": 20, "s15_days": 15,
@@ -117,7 +117,6 @@ def get_finmind_data(stock_id):
 
 
 def get_market_index_data():
-    """獲取台股大盤加權指數 (^TWII) 資料"""
     try:
         df = yf.download("^TWII", period="320d", interval="1d", progress=False)
         if isinstance(df.columns, pd.MultiIndex):
@@ -136,7 +135,7 @@ def get_taiwan_stock_list():
     return pd.DataFrame(stock_data)
 
 
-# --- 4. 繪製美化白色 K 線圖的共用函式 ---
+# --- 4. 繪製美化白色 K 線圖的共用函式 (含 OBV 與背離標示) ---
 def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, first_limit_days=20):
     df_k = df_k.tail(180).copy()
     
@@ -146,18 +145,26 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
     year_high = df_k['High'].max()
     recent_neckline = df_k['High'].iloc[-25:-1].max()
 
+    # MACD 計算
     exp1 = df_k['Close'].ewm(span=12, adjust=False).mean()
     exp2 = df_k['Close'].ewm(span=26, adjust=False).mean()
     df_k['DIF'] = exp1 - exp2
     df_k['MACD_Signal'] = df_k['DIF'].ewm(span=9, adjust=False).mean()
     df_k['MACD_Hist'] = df_k['DIF'] - df_k['MACD_Signal']
 
+    # OBV 計算
+    df_k['Close_diff'] = df_k['Close'].diff()
+    df_k['OBV_dir'] = np.where(df_k['Close_diff'] > 0, 1, np.where(df_k['Close_diff'] < 0, -1, 0))
+    df_k['OBV'] = (df_k['Volume'] * df_k['OBV_dir']).cumsum()
+
+    # 4個子圖：Row 1: K線+MA, Row 2: 成交量, Row 3: MACD, Row 4: OBV
     fig = make_subplots(
-        rows=3, cols=1, shared_xaxes=True, 
+        rows=4, cols=1, shared_xaxes=True, 
         vertical_spacing=0.03, 
-        row_heights=[0.6, 0.2, 0.2]
+        row_heights=[0.45, 0.15, 0.2, 0.2]
     )
 
+    # Row 1: K線與均線
     fig.add_trace(plotly_go.Candlestick(
         x=df_k.index, open=df_k['Open'], high=df_k['High'],
         low=df_k['Low'], close=df_k['Close'], name="K線",
@@ -221,12 +228,14 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         row=1, col=1
     )
 
+    # Row 2: 成交量
     colors = ['#EF5350' if row['Close'] >= row['Open'] else '#26A69A' for _, row in df_k.iterrows()]
     fig.add_trace(plotly_go.Bar(
         x=df_k.index, y=df_k['Volume'] / 1000, 
         marker_color=colors, name="成交量(張)"
     ), row=2, col=1)
 
+    # Row 3: MACD
     fig.add_trace(plotly_go.Scatter(
         x=df_k.index, y=df_k['DIF'], line=dict(color='#2196F3', width=1.5), name="DIF"
     ), row=3, col=1)
@@ -239,10 +248,79 @@ def plot_beautified_chart(df_k, stock_title, ma_num, enable_first_limit=False, f
         x=df_k.index, y=df_k['MACD_Hist'], marker_color=macd_colors, name="MACD Histogram"
     ), row=3, col=1)
 
+    # Row 4: OBV 能量潮與背離標示
+    fig.add_trace(plotly_go.Scatter(
+        x=df_k.index, y=df_k['OBV'], line=dict(color='#9C27B0', width=1.5), name="OBV 能量潮"
+    ), row=4, col=1)
+
+    # 檢測背離並標示
+    lookback_div = min(60, len(df_k))
+    sub_df = df_k.iloc[-lookback_div:].copy()
+    
+    def find_extrema(series, order=4):
+        extrema = []
+        vals = series.values
+        for i in range(order, len(vals) - order):
+            window = vals[i - order : i + order + 1]
+            if vals[i] == max(window):
+                extrema.append((i, vals[i], 'peak'))
+            elif vals[i] == min(window):
+                extrema.append((i, vals[i], 'trough'))
+        return extrema
+
+    price_extrema = find_extrema(sub_df['Close'], order=4)
+    troughs = [e for e in price_extrema if e[2] == 'trough']
+    peaks = [e for e in price_extrema if e[2] == 'peak']
+
+    bullish_div_x, bullish_div_y = [], []
+    bearish_div_x, bearish_div_y = [], []
+
+    if len(troughs) >= 2:
+        t1, t2 = troughs[-2], troughs[-1]
+        idx_t1, p_t1, _ = t1
+        idx_t2, p_t2, _ = t2
+        obv_val_t1 = sub_df['OBV'].iloc[idx_t1]
+        obv_val_t2 = sub_df['OBV'].iloc[idx_t2]
+        # 底背離：價格創新低，OBV 創新高
+        if p_t2 < p_t1 and obv_val_t2 > obv_val_t1:
+            bullish_div_x.append(sub_df.index[idx_t2])
+            bullish_div_y.append(obv_val_t2)
+
+    if len(peaks) >= 2:
+        pk1, pk2 = peaks[-2], peaks[-1]
+        idx_pk1, p_pk1, _ = pk1
+        idx_pk2, p_pk2, _ = pk2
+        obv_val_pk1 = sub_df['OBV'].iloc[idx_pk1]
+        obv_val_pk2 = sub_df['OBV'].iloc[idx_pk2]
+        # 頂背離：價格創新高，OBV 創新低
+        if p_pk2 > p_pk1 and obv_val_pk2 < obv_val_pk1:
+            bearish_div_x.append(sub_df.index[idx_pk2])
+            bearish_div_y.append(obv_val_pk2)
+
+    if bullish_div_x:
+        fig.add_trace(plotly_go.Scatter(
+            x=bullish_div_x, y=bullish_div_y,
+            mode="markers+text",
+            marker=dict(size=14, color="#FF5252", symbol="triangle-up"),
+            text=["OBV底背離(買進訊號)"],
+            textposition="bottom center",
+            name="OBV底背離"
+        ), row=4, col=1)
+
+    if bearish_div_x:
+        fig.add_trace(plotly_go.Scatter(
+            x=bearish_div_x, y=bearish_div_y,
+            mode="markers+text",
+            marker=dict(size=14, color="#4CAF50", symbol="triangle-down"),
+            text=["OBV頂背離(警戒訊號)"],
+            textposition="top center",
+            name="OBV頂背離"
+        ), row=4, col=1)
+
     fig.update_layout(
-        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線圖", font=dict(size=14, color="#2D3748")),
+        title=dict(text=f"<b>{stock_title}</b> - 180天歷史日線與 OBV 背離診斷圖", font=dict(size=14, color="#2D3748")),
         template="plotly_white",
-        height=600,
+        height=720,
         margin=dict(l=20, r=20, t=40, b=20),
         xaxis_rangeslider_visible=False,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
@@ -498,7 +576,7 @@ def fetch_and_analyze_single_stock(row):
                     if is_basing and is_breaking and is_volume_surge and is_above_all and is_within_10pct and is_pct_gt_2:
                         matched_strategies.append("12.突破均線糾結(趨勢突破+帶量)")
 
-    # 策略 13: 量能爆發且突破歷史新高（52週新高）
+    # 策略 13
     if st.session_state.enable_vol_breakout_high:
         vol_ma20 = df['Volume'].rolling(20).mean().iloc[-1]
         is_vol_outburst = curr_vol > vol_ma20 * st.session_state.s13_vol_mult
@@ -507,7 +585,7 @@ def fetch_and_analyze_single_stock(row):
         if is_vol_outburst and is_new_high:
             matched_strategies.append("量能爆發且突破52週新高")
 
-    # 策略 14: 連續數日量縮無賣壓（窒息量）
+    # 策略 14
     if st.session_state.enable_choke_volume:
         d_count = st.session_state.s14_days
         recent_vol = df['Volume'].iloc[-d_count:]
@@ -516,7 +594,7 @@ def fetch_and_analyze_single_stock(row):
         if is_choke:
             matched_strategies.append(f"連續{d_count}日量縮無賣壓(窒息量)")
 
-    # 策略 15: 股價爆量上漲後(多頭排列),量縮回踩(手動填入)MA的過濾選項
+    # 策略 15
     if st.session_state.enable_bull_pullback_ma:
         ma_target = st.session_state.s15_ma_val
         df[f'ma_s15'] = df['Close'].rolling(ma_target).mean()
@@ -536,7 +614,7 @@ def fetch_and_analyze_single_stock(row):
         if is_bull_align and had_surge and is_vol_shrink and is_touch_ma:
             matched_strategies.append(f"多頭爆量後量縮回踩MA{ma_target}")
 
-    # 策略 16: 股價盤整或小跌時，OBV卻呈現大增的情況時
+    # 策略 16
     if st.session_state.enable_obv_divergence:
         s16_d = st.session_state.s16_days
         close_diff = df['Close'].diff()
@@ -606,7 +684,6 @@ def run_quick_screener_sequential():
     return pd.DataFrame(found_targets)
 
 
-# --- 6. 套用組合快捷設定函式 ---
 def apply_combo_1():
     st.session_state.logic_mode = "OR (符合任一勾選條件即可)"
     for k in default_params:
@@ -664,10 +741,8 @@ with st.sidebar:
             st.session_state.limit_up_ma_period = st.number_input("回踩 MA (策略2)", min_value=1, max_value=240, value=st.session_state.limit_up_ma_period)
 
         st.session_state.enable_kd_cross = st.checkbox("3. 僅顯示 KD 金叉 (日)", value=st.session_state.enable_kd_cross)
-
         st.session_state.enable_tangle_steady = st.checkbox("4. 均線糾結 + 量穩價縮", value=st.session_state.enable_tangle_steady)
         st.session_state.tangle_ma_period = st.number_input("糾結基準長 MA 數值", min_value=1, max_value=240, value=st.session_state.tangle_ma_period)
-
         st.session_state.enable_breakout = st.checkbox("5. 突破切線", value=st.session_state.enable_breakout)
         st.session_state.enable_vcp = st.checkbox("6. VCP 波動收縮", value=st.session_state.enable_vcp)
 
@@ -681,7 +756,6 @@ with st.sidebar:
 
         st.session_state.enable_shakeout_breakout = st.checkbox("8. 量縮洗盤後出量站上 MA 第一天", value=st.session_state.enable_shakeout_breakout)
         st.session_state.shakeout_ma_val = st.number_input("站上目標 MA 數值 (策略8)", min_value=1, max_value=240, value=st.session_state.shakeout_ma_val)
-
         st.session_state.enable_box_breakout = st.checkbox("9. 帶量突破箱型高點", value=st.session_state.enable_box_breakout)
         st.session_state.box_days = st.number_input("箱型計算天數 (策略9)", min_value=5, max_value=250, value=st.session_state.box_days)
 
@@ -735,7 +809,6 @@ st.markdown(f"**目前套用方案模式：** `{st.session_state.active_combo_na
 st.caption("具備多模組組合篩選、動態技術分析、大盤即時監測功能。")
 st.divider()
 
-# --- 8.1 主畫面：大盤即時監測與 K 線圖 ---
 st.subheader("📊 盤勢即時監測（加權指數 ^TWII）")
 with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
     df_market = get_market_index_data()
@@ -760,7 +833,6 @@ with st.spinner("正在獲取台股大盤最新行情與均線狀態..."):
 
 st.divider()
 
-# --- 8.2 主畫面：封面一鍵快速生成方案按鈕區 ---
 st.subheader("🔥 封面一鍵快速生成方案")
 col_b1, col_b2 = st.columns(2)
 with col_b1:
@@ -780,36 +852,6 @@ with col_b2:
 
 st.divider()
 
-# --- 8.3 主畫面：加入使用說明表 ---
-with st.expander("💡 策略組合使用說明書與操作口訣（點擊展開檢視）", expanded=False):
-    st.markdown("""
-    ### 推薦組合一：【波段飆股爆發型】（勝率與爆發力最佳，最推薦）
-    這個組合專門捕捉「主力洗盤完畢、帶量發動」的強勢股，適合台股多頭或盤整偏多時使用。
-    * **勾選策略：**
-      * ☑️ 策略 8：量縮洗盤後出量站上 MA 第一天
-      * ☑️ 策略 12：突破均線糾結(打底+突破+帶量)
-    * **數值設定：**
-      * `shakeout_ma_val`（策略 8 目標 MA）：`20`
-      * `s12_lookback`（策略 12 趨勢天數）：`60`
-      * `min_vol`（成交量）：`800` 張
-      * `max_growth`（當日漲幅）：`9.5%`
-
-    ---
-
-    ### 推薦組合二：【強勢回檔低接型】（防守性較好，適合穩健操作）
-    這個組合專門找「曾經漲停過、有主力照顧，現在回測均線量縮」的優質標的。
-    * **勾選策略：**
-      * ☑️ 策略 2：前 N 天帶量漲停 + 量縮回踩 MA
-      * ☑️ 策略 7：首根漲停開盤價支撐回踩
-    * **數值設定：**
-      * `limit_up_days`：`20`
-      * `limit_up_ma_period`：`20`
-      * `min_vol`：`800` 張
-      * `max_growth`：`9.5%`
-    """)
-
-st.divider()
-
 if btn_quick_search:
     st.session_state.active_combo_name = "【自訂策略組合】"
     with st.spinner("⚡ 正在掃描全市場..."):
@@ -824,7 +866,6 @@ with tab1:
     st.subheader(f"📋 篩選結果清單 — {st.session_state.active_combo_name}")
     if not res_table.empty:
         st.success(f"🎉 掃描完成！共找到 `{len(res_table)}` 檔符合條件的優質標的：")
-        
         display_df = res_table.copy()
         display_df['股票名稱連結'] = display_df.apply(
             lambda r: f"https://www.wantgoo.com/stock/{r['股票代號']}/technical-chart", axis=1
@@ -912,7 +953,7 @@ with tab2:
                     fig_res = plot_beautified_chart(df_k, f"({st.session_state.selected_stock_index+1}/{total_stocks}) {selected_stock} {r_row['股票名稱']} [{r_row['組合邏輯名稱']}]", 20, enable_first_limit=True, first_limit_days=30)
                     st.plotly_chart(fig_res, use_container_width=True)
                 else:
-                    st.warning("⚠️️ 無法獲取該標的的歷史數據。")
+                    st.warning("⚠ 無法獲取該標的的歷史數據。")
     else:
         st.info("💡 請先於主畫面執行任一策略方案，以在此處快速瀏覽圖表。")
 
@@ -929,17 +970,15 @@ with tab3:
     if diag_btn and diag_code:
         with st.spinner(f"正在擷取 {diag_code} 180天歷史數據..."):
             df_diag = get_finmind_data(diag_code)
-            
             if df_diag is not None and not df_diag.empty:
                 stock_list_df = get_taiwan_stock_list()
                 matched_row = stock_list_df[stock_list_df['code'] == str(diag_code)]
                 s_name = matched_row['name'].values[0] if not matched_row.empty else "未知公司"
                 
-                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖診斷報告")
+                st.success(f"📊 股票代號 {diag_code} - {s_name} 即時 K 線圖與 OBV 診斷報告")
                 fig_diag = plot_beautified_chart(df_diag, f"{diag_code} {s_name} 即時診斷", 20, enable_first_limit=True, first_limit_days=30)
                 st.plotly_chart(fig_diag, use_container_width=True)
             else:
                 st.error(f"❌ 查無 {diag_code} 的歷史數據。")
     elif not diag_btn:
         st.info("💡 輸入任意台股代號即可獨立檢視其技術分析 K 線圖。")
-
